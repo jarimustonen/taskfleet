@@ -13,8 +13,9 @@
 //!   validation. Read-only: it never mutates the file. Verbs live in [`show`]
 //!   and [`path`].
 //!
-//! Location: `<resolved Taskfleet home>/config.toml` (canonical
-//! `TASKFLEET_HOME`/`~/.taskfleet`). The file
+//! Location: `<resolved Taskfleet home>/config.toml`. `TASKFLEET_HOME` is
+//! authoritative when set; otherwise `home.rs` selects `~/.taskfleet` or keeps
+//! a meaningful adopted `~/.orchestratectl` root in place. The file
 //! is entirely optional; a missing or empty file yields [`Config::default`], so
 //! every setting falls through to its built-in default. This is the first
 //! config-file layer in the tool — before it, configuration was purely

@@ -310,11 +310,14 @@ pub(crate) fn run() -> ExitCode {
     }
 
     // `_log_guard` owns the non-blocking writer's worker thread. Resolution
-    // above is deliberately complete before this first filesystem write.
+    // above is deliberately complete before this first filesystem write. A
+    // mutating command may establish a fresh selected root here so its first
+    // invocation remains logged; read-only commands never do so merely for
+    // diagnostics.
     let LoggingInit {
         warnings: logging_warnings,
         guard: _log_guard,
-    } = init_logging();
+    } = init_logging(command_writes_state(&cli.command));
 
     info!(
         target: "taskfleet::cli",
@@ -372,6 +375,42 @@ pub(crate) fn run() -> ExitCode {
             e.emit();
             ExitCode::from(e.kind as u8)
         }
+    }
+}
+
+fn command_writes_state(command: &Command) -> bool {
+    match command {
+        Command::Skill { action } => matches!(
+            action,
+            SkillAction::Install {
+                agent: SkillAgentArg::Pi | SkillAgentArg::All,
+                target: None,
+                dest: None,
+                dry_run: false,
+                ..
+            }
+        ),
+        Command::Run { action } => match action {
+            crate::run::RunAction::Create { dry_run, .. }
+            | crate::run::RunAction::Merge { dry_run, .. }
+            | crate::run::RunAction::Salvage { dry_run, .. } => !dry_run,
+            crate::run::RunAction::Cancel { .. } | crate::run::RunAction::Reattach { .. } => true,
+            crate::run::RunAction::List { .. }
+            | crate::run::RunAction::Show { .. }
+            | crate::run::RunAction::Wait { .. } => false,
+        },
+        Command::Event { action } => match action {
+            crate::event::EventAction::Create { dry_run, .. } => !dry_run,
+            crate::event::EventAction::Tail { .. } => false,
+        },
+        Command::Node { action } => match action {
+            crate::node::NodeAction::Telemetry { .. } => true,
+            crate::node::NodeAction::Report { dry_run, .. } => !dry_run,
+            crate::node::NodeAction::List { .. } | crate::node::NodeAction::Show { .. } => false,
+        },
+        Command::Supervise(_) | Command::RunWorker(_) => true,
+        Command::Version | Command::Config { .. } | Command::WorkerHandshake(_) => false,
+        Command::Doctor(args) => args.fix && !args.dry_run,
     }
 }
 
@@ -800,7 +839,7 @@ fn slow_log_write_delay() -> Option<std::time::Duration> {
 /// and periodically `warn!`-ed by the long-lived supervisor. Logs are still
 /// lost on `panic = "abort"`. A `std::process::exit` that bypasses the
 /// guard's `Drop` must call [`flush_logs`] first (see `event tail`).
-fn init_logging() -> LoggingInit {
+fn init_logging(command_writes_state: bool) -> LoggingInit {
     let mut warnings = Vec::new();
     let log_path = if let Some(p) = log_path() {
         p
@@ -810,13 +849,58 @@ fn init_logging() -> LoggingInit {
     };
 
     if let Some(parent) = log_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            warnings.push(format!(
-                "could not create log directory {}: {}",
-                parent.display(),
-                e
-            ));
-            return finish_logging(warnings, None, None);
+        // Logging must not establish the selected state root for a read-only
+        // command. A command that will mutate state may create it here so the
+        // first state-establishing invocation retains its diagnostics.
+        if command_writes_state {
+            if let Err(e) = fs::create_dir_all(parent) {
+                warnings.push(format!(
+                    "could not create log directory {}: {}",
+                    parent.display(),
+                    e
+                ));
+                return finish_logging(warnings, None, None);
+            }
+        } else {
+            let Some(root) = parent.parent() else {
+                warnings.push(format!(
+                    "could not derive state root from log path {}",
+                    log_path.display()
+                ));
+                return finish_logging(warnings, None, None);
+            };
+            match fs::metadata(root) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    warnings.push(format!(
+                        "could not create log directory {}: state root {} is not a directory",
+                        parent.display(),
+                        root.display()
+                    ));
+                    return finish_logging(warnings, None, None);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return finish_logging(warnings, None, None);
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "could not inspect state root {} for logging: {}",
+                        root.display(),
+                        e
+                    ));
+                    return finish_logging(warnings, None, None);
+                }
+            }
+            if let Err(e) = fs::create_dir(parent) {
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    warnings.push(format!(
+                        "could not create log directory {}: {}",
+                        parent.display(),
+                        e
+                    ));
+                    return finish_logging(warnings, None, None);
+                }
+            }
         }
     }
 
@@ -905,7 +989,7 @@ fn init_logging() -> LoggingInit {
 fn log_path() -> Option<PathBuf> {
     crate::home::root_dir()
         .ok()
-        .map(|root| root.join("logs").join("taskfleet.log.jsonl"))
+        .map(|root| root.join("logs").join(crate::home::LOG_FILE_NAME))
 }
 
 #[cfg(test)]

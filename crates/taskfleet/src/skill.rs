@@ -1686,7 +1686,7 @@ pub fn is_simple_skill_name(name: &str) -> bool {
 fn pi_provenance_path() -> Option<PathBuf> {
     home::root_dir()
         .ok()
-        .map(|root| root.join("state").join("pi-installed-skills.json"))
+        .map(|root| root.join("state").join(home::PI_PROVENANCE_FILE_NAME))
 }
 
 /// LENIENT read for the READ-ONLY doctor path: a missing, unreadable,

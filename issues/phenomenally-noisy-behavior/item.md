@@ -1,10 +1,12 @@
 ---
 created: 2026-08-20
-updated: 2026-08-20
+updated: 2026-09-07
 type: feature
-status: untriaged
+status: open
 priority: normal
 provenance: agent:issuectl-stint-wrapup
+lane: run-read-surfaces
+lane_seq: 20
 ---
 
 # run list has no repo filter, so sibling-repo runs are indistinguishable by title

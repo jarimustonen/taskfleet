@@ -1,14 +1,16 @@
 ---
 created: 2026-08-21
-updated: 2026-08-21
+updated: 2026-09-07
 type: feature
 reporter: jari
 status: open
 priority: normal
 related: ['@split-stint-start-handoff', '@stint-start-autonomous', '@stint-handoff-intake-check', '@add-configurable-agent', '@config-subcommand', '@pi-background-jobs-extension']
+lane: workflow-skills
+lane_seq: 50
 ---
 
-# End-to-end stint lifecycle with configurable policy checkpoints
+# Remove end-to-end stint friction without durable lifecycle state
 
 _Source: skills/stint-*_
 
@@ -107,3 +109,9 @@ Start with an ideation/design phase tailored to Jari's actual work pattern. Do n
 - `@add-configurable-agent`
 - `@config-subcommand`
 - `@pi-background-jobs-extension` (obsolete; records the superseding boundary decision)
+
+## Decisions
+
+### 2026-09-07T18:15:49Z · @jari
+
+Selected Option D from `analysis.md` as the first delivery: remove command-chain friction without adding durable stint state, a new Taskfleet lifecycle noun, another scheduler, or a background agent loop. The start path should carry one bounded round through the PO report and emit one exact next action; feedback may drive at most one bounded follow-up; terminal handoff remains the explicit finish. Reassess a durable checkpoint only after observing what friction remains.

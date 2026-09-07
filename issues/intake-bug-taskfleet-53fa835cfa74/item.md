@@ -1,12 +1,15 @@
 ---
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 type: bug
 reporter: jari
-status: untriaged
+status: duplicate
 priority: normal
 provenance: agent:3dbear-stint-handoff
 source_ref: agent:3dbear-stint-handoff/reporter:jari/id:stint-handoff-unrelated-concurrent-agents-20260902
+related: ['@intake-bug-taskfleet-6edf517c691a']
+closed: 2026-09-07
+closed_by: jari
 ---
 
 # stint-handoff blocks on unrelated concurrent agents
@@ -32,3 +35,9 @@ The preflight also treated three old terminal `failed` taskfleet runs as unresol
 An unrelated active agent must not block `/wrap-up`. The skill should preserve foreign changes, commit only its own exact paths, report the concurrent activity, and continue. It should stop only when the current wrap could overwrite, commit, reset, or otherwise interfere with the other agent, or when ownership of the current stint's work is genuinely unresolved.
 
 Please add explicit scope and examples for a shared main worktree, including how to proceed when `git status` contains known foreign paths.
+
+## Resolution
+
+### 2026-09-07T18:15:49Z · @jari
+
+Duplicate of the scheduled session-owned handoff correction; retain this report as the foreign-change regression scenario.

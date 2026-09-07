@@ -1,12 +1,14 @@
 ---
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:stint-handoff-unrelated-global-runs-2026-09-02
+lane: workflow-skills
+lane_seq: 10
 ---
 
 # stint-handoff blocks on unrelated global runs
@@ -38,3 +40,9 @@ Terminal handoff must block only on workers that this stint or agent session lau
 ## Affected artifact
 
 The taskfleet-owned `stint-handoff` skill installed at `~/.pi/agent/skills/stint-handoff/SKILL.md`, preflight step 0.
+
+## Decisions
+
+### 2026-09-07T18:15:48Z · @jari
+
+Accepted the minimal skill-owned correction: stint-start retains the run IDs it launched, and stint-handoff checks only those session-owned IDs. Unrelated global runs and known foreign changes must not block or enter this session's handoff. A durable session-ownership field is not required for this slice; that belongs to any later checkpoint design.

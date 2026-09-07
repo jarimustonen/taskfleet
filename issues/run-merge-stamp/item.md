@@ -1,13 +1,15 @@
 ---
 created: 2026-08-15
-updated: 2026-08-21
+updated: 2026-09-07
 type: feature
-status: untriaged
+status: open
 priority: normal
 epic: lifecycle-architecture-review
+lane: workflow-skills
+lane_seq: 40
 ---
 
-# run merge should stamp Fixes-Issue trailer into the landing commit
+# Stamp issue trailers in issue-driven worktree skills
 
 ## Description
 
@@ -42,3 +44,9 @@ closed through `issuectl close --stamp` directly or merged via `taskfleet run me
   taskfleet half).
 
 Filed from the issuectl 2026-08-15 stint (product-owner: @jari).
+
+## Decisions
+
+### 2026-09-07T18:15:48Z · @jari
+
+Rescoped to a bundled-skill change rather than a new Taskfleet runtime argument. For an issue-driven worker, after the final implementation commit and before `run merge`, run `issuectl close <slug> --stamp --json`, require stamp status `stamped` or `already_present`, then commit the issue closure metadata. Free-form runs without an issue need no trailer; read-only analyses use `Refs-Issue` and do not close.

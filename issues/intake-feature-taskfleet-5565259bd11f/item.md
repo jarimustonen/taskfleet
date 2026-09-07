@@ -1,12 +1,14 @@
 ---
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:taskfleet-stint-start-safe-rebase-20260902
+lane: workflow-skills
+lane_seq: 20
 ---
 
 # stint-start should safely rebase a clean diverged main
@@ -44,3 +46,9 @@ If automatic rebase is intentionally out of scope, the skill should at least des
 ## Impact
 
 The current behavior interrupts otherwise prepared autonomous rounds, confuses non-technical product owners, and requires a manual instruction for the repository's standard synchronization operation.
+
+## Decisions
+
+### 2026-09-07T18:15:48Z · @jari
+
+Accepted with broadened autonomy: try fast-forward, then a normal rebase on a clean source branch; allow the agent to resolve clearly mechanical/simple conflicts and verify them with the repository green gate. Abort and surface semantically ambiguous or broad conflicts. Never force-push.

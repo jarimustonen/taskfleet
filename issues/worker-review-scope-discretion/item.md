@@ -1,13 +1,15 @@
 ---
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-07
 type: improvement
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 labels: [skills, review-workflow]
 provenance: chat
 source_ref: chat:2026-09-01/stint-review-scope-discretion
+lane: workflow-skills
+lane_seq: 30
 ---
 
 # Let workers choose proportionate review depth
@@ -54,3 +56,9 @@ The retry-with-harvest section should follow the same rule. A harvest worker mus
 - [ ] Update retry-with-harvest guidance to reuse adequate prior review evidence and repeat review only when the risk surface materially changes.
 - [ ] Add or update bundled-skill snapshots/tests covering the new wording.
 - [ ] Verify the generated installed `stint-start` skill contains the updated guidance.
+
+## Decisions
+
+### 2026-09-07T18:15:48Z · @jari
+
+Accepted. Replace the unconditional full multi-model review mandate with worker-selected, evidence-based review depth after implementation. Small local well-covered changes may use focused review; security/privacy, destructive, concurrency-sensitive, architectural, broad, hard-to-rollback, or weakly tested changes retain stronger review. Explicit user, issue, repository, or caller mandates still win, and adequate existing evidence should not be repeated unless the risk surface changes.

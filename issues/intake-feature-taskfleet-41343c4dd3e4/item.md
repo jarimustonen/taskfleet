@@ -1,12 +1,15 @@
 ---
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:3dbear-stint-handoff
 source_ref: agent:3dbear-stint-handoff/reporter:jari/id:failed-run-preserved-worktree-teardown-20260902
+lane: terminal-work-disposition
+lane_seq: 20
+blocked_by: ['@cancelled-run-hides-preserved-worktree']
 ---
 
 # Add teardown for terminal failed runs with preserved worktrees
@@ -39,3 +42,9 @@ Provide a safe command such as `taskfleet run abandon <run-id>` or `run cleanup 
 - clearly distinguish cleanup from cancellation and salvage.
 
 This is needed by terminal handoff workflows so superseded failures can be closed without direct git surgery.
+
+## Decisions
+
+### 2026-09-07T18:15:48Z · @jari
+
+Accepted the joint recommendation in `analysis.md`: expose retained terminal resources through `run show.data.preserved_work`, then add an explicit, audited, idempotent `run discard` operation. Keep `run salvage` as the merge path, keep statuses/history unchanged, require explicit force for verified dirty work, and fail closed for unverifiable state. Implement visibility before disposition.

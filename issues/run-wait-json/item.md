@@ -1,9 +1,11 @@
 ---
 created: 2026-08-21
-updated: 2026-08-21
+updated: 2026-09-07
 type: bug
 status: open
 priority: normal
+lane: run-read-surfaces
+lane_seq: 10
 ---
 
 # run wait JSON cannot distinguish a timeout from a settled result

@@ -1,13 +1,15 @@
 ---
 created: 2026-09-06
-updated: 2026-09-06
+updated: 2026-09-07
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: Recovered from a pre-convergence Haapa intake checkout during the final Taskfleet filesystem inventory
 source_ref: haapa:intake-recovery:cancelled-run-preserved-worktree:2026-09-06
+lane: terminal-work-disposition
+lane_seq: 10
 ---
 
 # Cancelled run hides preserved dirty worktree
@@ -56,3 +58,9 @@ If cancellation intentionally preserves dirty work, document and expose that as 
 3. Run `taskfleet run show <id> --output json` and `git worktree list`.
 4. Observe whether the worktree remains while `recoverable_work` is null.
 5. Repeat `taskfleet run cancel <id> --output json` and observe that it reports already cancelled without resolving or surfacing the retained state.
+
+## Decisions
+
+### 2026-09-07T18:15:48Z · @jari
+
+Accepted the joint recommendation in `analysis.md`: expose retained terminal resources through `run show.data.preserved_work`, then add an explicit, audited, idempotent `run discard` operation. Keep `run salvage` as the merge path, keep statuses/history unchanged, require explicit force for verified dirty work, and fail closed for unverifiable state. Implement visibility before disposition.

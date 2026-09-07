@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "taskfleet"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "taskfleet-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "fs4",

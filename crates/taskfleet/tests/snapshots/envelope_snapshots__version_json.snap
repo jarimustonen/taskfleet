@@ -5,72 +5,72 @@ expression: value
 {
   "schema_version": 1,
   "data": {
-    "version": "0.7.0",
+    "version": "0.7.1",
     "commit": "[COMMIT]",
     "skills": [
       {
         "name": "taskfleet-overview",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "taskfleet-run-overview",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "taskfleet-spawn-spinoff",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree-spinoff",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree-merge",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree-research",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree-technical-decision",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree-bug-analysis",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "worktree-status",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "stint-start",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "stint-handoff",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       },
       {
         "name": "fan-out",
-        "cli_version": "0.7.0",
+        "cli_version": "0.7.1",
         "schema_version": 1
       }
     ],

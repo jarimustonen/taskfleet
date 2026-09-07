@@ -14,6 +14,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.7.1] - 2026-09-07
+
+### Changed
+
+- Converge canonical Taskfleet filesystem paths (`taskfleet-filesystem-path-convergence`).
+
+### Fixed
+
+- Taskfleet selects incidental canonical state over adopted legacy runs (`taskfleet-dual-state-root`).
+
 ## [0.7.0] - 2026-09-06
 
 ### Changed

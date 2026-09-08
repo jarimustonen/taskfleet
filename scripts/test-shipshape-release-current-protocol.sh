@@ -179,6 +179,19 @@ jq '.activation = "ready" | .source_repository.current = "jarimustonen/taskfleet
 mv "$tmp/distribution.json" "$tmp/repo/release/taskfleet-distribution.json"
 sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/dist-workspace.toml"
 rm "$tmp/repo/dist-workspace.toml.bak"
+# Own the simulated next release's input inside the fixture. Production HEAD may
+# legitimately have an empty Unreleased section immediately after finalization.
+cat >"$tmp/repo/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+<!-- oss-changelog:unreleased-start -->
+## [Unreleased]
+
+### Fixed
+
+- Exercise the isolated Shipshape held-tag protocol.
+<!-- oss-changelog:unreleased-end -->
+CHANGELOG
 cat >"$tmp/repo/scripts/validate-local-release.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -189,7 +202,8 @@ STUB
 chmod +x "$tmp/repo/scripts/validate-local-release.sh"
 grep -F 'https://github.com/jarimustonen/taskfleet' "$tmp/repo/Cargo.toml" >/dev/null
 git -C "$tmp/repo" add release/taskfleet-release.json release/taskfleet-distribution.json \
-  dist-workspace.toml Cargo.toml .github/workflows/release.yml scripts/validate-local-release.sh
+  dist-workspace.toml Cargo.toml CHANGELOG.md .github/workflows/release.yml \
+  scripts/validate-local-release.sh
 git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
 git -C "$tmp/repo" push -q origin HEAD:refs/heads/main
 
@@ -262,7 +276,12 @@ set -e
   cat "$tmp/cut.stderr" >&2
   exit 1
 }
-grep -F reached-exact-commit-local-validation "$tmp/cut.stderr" >/dev/null
+if ! grep -F reached-exact-commit-local-validation "$tmp/cut.stderr" >/dev/null; then
+  echo "real shipshape cut did not reach exact-commit local validation" >&2
+  echo "--- cut stderr ---" >&2
+  cat "$tmp/cut.stderr" >&2
+  exit 1
+fi
 
 (
   cd "$tmp/repo"

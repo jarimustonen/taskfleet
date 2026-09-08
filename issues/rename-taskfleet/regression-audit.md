@@ -111,9 +111,15 @@ main for these units:
   findings and expected snapshot mismatches were corrected before the final gate;
   no required validation failure remained. The conductor verified the canonical
   merge report and resulting source on main.
+- Canonical triage producer (`cdbe84b`, closure `89ed081`): the analysis skill
+  requires the exact heading consumed by issuectl. Its rendered-contract test
+  ignores line wrapping while rejecting the former alternative. All five gates,
+  the identity inventory, local release build, rendered output inspection, and
+  issue doctor passed. The focused suite produced no new snapshots. The conductor
+  verified the durable merge report and actual main diff; the worktree was removed.
 
 These per-unit results do not replace the final integrated gate. Recovery status
-and the observed producer-contract correction below are still in progress.
+is still in progress.
 
 ## Additional observed producer mismatch
 

@@ -6,6 +6,11 @@ status: done
 priority: high
 lane: release-toolchain
 closed: 2026-09-08
+commits:
+- hash: 6a77f7ba7982450b7103891f377c57971d3bd811
+  summary: 'chore: close current Shipshape protocol issue'
+- hash: 6bf6ba0e45b3252880e422d1b77ae7fbc772f631
+  summary: 'refactor(release): adopt current Shipshape protocol'
 ---
 
 # Use current Shipshape release protocol

@@ -103,9 +103,29 @@ main for these units:
   to workmux-owned naming. All five gates passed (1,077 nextest tests), rendered
   contracts and catalog snapshots were reviewed, and local release skill output
   was inspected. All five assigned workflow issues are closed.
+- Retained-work visibility and discard (`aca8b46`, closure `ec7ec51`): both
+  assigned issues are closed. All five final gates, the identity inventory, and
+  the local release build passed. Thirteen disposable real-Git command tests
+  also passed with PATH containing only an explicit Git link. Final help/show
+  snapshots and rendered overview/handoff guidance were reviewed. Initial clippy
+  findings and expected snapshot mismatches were corrected before the final gate;
+  no required validation failure remained. The conductor verified the canonical
+  merge report and resulting source on main.
 
-These per-unit results do not replace the final integrated gate. Retained-work
-disposition and recovery-status work are still in progress.
+These per-unit results do not replace the final integrated gate. Recovery status
+and the observed producer-contract correction below are still in progress.
+
+## Additional observed producer mismatch
+
+During the round, another agent transferred `@canonical-triage-heading` from
+issuectl review (`fbe3f41`). The conductor verified that Taskfleet's current bug
+analysis template permits either `Triage analysis` or `Suspected Root Cause`,
+while issuectl's current intake implementation derives its analysis field from
+the exact former heading. This directly fits the user's request to learn from
+other agents and remove redundant consumer interpretation. The bounded fix was
+accepted and scheduled under that request: make this producer emit the agreed
+heading, with a rendered-contract regression. No consumer parser or compatibility
+layer is added, and issuectl's repository and installed artifacts remain untouched.
 
 ## Findings from observing implementation
 

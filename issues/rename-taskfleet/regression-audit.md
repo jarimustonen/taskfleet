@@ -97,6 +97,12 @@ main for these units:
   binding remain validated. All five gates passed (1,072 nextest tests), as did
   disposable-home and stripped-PATH checks and the local release build. The
   conductor reran the identity inventory on main: zero retired-identity references.
+- Workflow guidance (`222dfd1`, closure `06ac685`): one bounded round, exact
+  session-owned run IDs, explicit composable handoff, proportionate review, and
+  issuectl-owned commit stamping. Historical kind-emoji examples were corrected
+  to workmux-owned naming. All five gates passed (1,077 nextest tests), rendered
+  contracts and catalog snapshots were reviewed, and local release skill output
+  was inspected. All five assigned workflow issues are closed.
 
-These per-unit results do not replace the final integrated gate. Workflow,
-retained-work disposition, and recovery-status work are still in progress.
+These per-unit results do not replace the final integrated gate. Retained-work
+disposition and recovery-status work are still in progress.

@@ -301,10 +301,17 @@ default="local"
         )
     });
     let expected_prefix = format!(
-        "{run_id}\nn-0001\n0\nunset\nunset\n5\n{}\none two\nquote'arg\n--\n",
+        "{run_id}\nn-0001\n0\nunset\nunset\n7\n{}\none two\nquote'arg\n--session\n",
         worker.display()
     );
-    assert!(observed_bytes.starts_with(&expected_prefix));
+    assert!(
+        observed_bytes.starts_with(&expected_prefix),
+        "observed={observed_bytes:?}"
+    );
+    assert!(
+        observed_bytes.contains(&format!("/.creating/pi-sessions/{run_id}/pi-session-")),
+        "exact private session path reaches the selected Pi argv: {observed_bytes:?}"
+    );
     assert!(observed_bytes.ends_with("\n\ndo it\n"));
     // The recorded PID is the run-worker shim. Let its short-lived child exit
     // naturally so the shim records the durable worker.exited fact.

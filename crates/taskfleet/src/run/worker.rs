@@ -109,6 +109,7 @@ mod tests {
             base_sha: None,
             tmux_window: None,
             tmux_identity: None,
+            evidence: None,
             agent_pid: Some(42),
             agent_pid_start_time: Some(Utc.timestamp_opt(100, 0).unwrap()),
             supervisor_pid: None,

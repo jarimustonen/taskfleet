@@ -48,6 +48,12 @@ struct ShowPayload<'a> {
     /// convenience surface for callers that otherwise need `node show`; the
     /// projection-native `node show` field remains `last_report`.
     report: Option<Value>,
+    /// Native Pi transcript/session and final terminal evidence for the worker.
+    /// Archived artifact paths are run-relative; the pending live-session path
+    /// is the exact run-bound private source. `status` is explicit
+    /// (`pending|failed|complete`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<taskfleet_core::WorkerEvidence>,
     /// The `recoverable_work` block from the default node's terminal report,
     /// present only when a dead agent left unmerged commits ahead of source
     /// (issue `agent-death-strands-recoverable-work`). Surfaced so a caller can
@@ -81,6 +87,7 @@ struct LandingFields {
     branch: Option<String>,
     base_sha: Option<String>,
     report: Option<Value>,
+    evidence: Option<taskfleet_core::WorkerEvidence>,
 }
 
 #[derive(Serialize)]
@@ -213,7 +220,8 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             worktree_path: node.as_ref().and_then(|n| n.worktree_path.clone()),
             branch: node.as_ref().and_then(|n| n.branch.clone()),
             base_sha: node.as_ref().and_then(|n| n.base_sha.clone()),
-            report: node.and_then(|n| n.last_report),
+            report: node.as_ref().and_then(|n| n.last_report.clone()),
+            evidence: node.and_then(|n| n.evidence),
         };
         Ok(Some((
             manifest,
@@ -331,6 +339,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         report: (manifest.node_count == 1)
             .then(|| landing.report.clone())
             .flatten(),
+        evidence: (manifest.node_count == 1)
+            .then(|| landing.evidence.clone())
+            .flatten(),
         recoverable_work,
         preserved_work,
         false_failed,
@@ -411,6 +422,23 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 "landed:        {} ({})",
                 payload.landed, payload.landed_method
             );
+            if let Some(evidence) = &payload.evidence {
+                println!(
+                    "evidence:      {} session={} transcript={}",
+                    evidence.status,
+                    evidence.session_id,
+                    evidence
+                        .transcript_path
+                        .as_deref()
+                        .unwrap_or(match evidence.status {
+                            taskfleet_core::EvidenceStatus::Failed => "(failed)",
+                            _ => "(pending)",
+                        })
+                );
+                if let Some(error) = evidence.error.as_deref() {
+                    println!("evidence-error: {}", output::escape_one_line(error));
+                }
+            }
             if let Some(ff) = &payload.false_failed {
                 // Non-terminal-changing hint: the run is `failed` but its content
                 // is git-verified in source with no `run merge` recorded (raw-git

@@ -50,6 +50,7 @@
 
 // Production git subprocesses now route through `crate::git::repo::Git`; the raw
 // `Command`/`Stdio` types are only used by the real-git test fixtures below.
+use std::path::Path;
 #[cfg(test)]
 use std::process::{Command, Stdio};
 
@@ -210,7 +211,7 @@ pub fn rollup_decision(
 /// the same teardown autonomous kinds always get (issue `bundle-worktree-merge`).
 /// Autonomous kinds don't depend on this — they clean up on any terminal report.
 pub fn any_node_merged_explicitly(paths: &RunPaths) -> bool {
-    list_nodes(paths).iter().any(node_merged_explicitly)
+    list_nodes(paths).is_ok_and(|nodes| nodes.iter().any(node_merged_explicitly))
 }
 
 /// True when THIS node's terminal `node.report` was submitted by an explicit
@@ -252,12 +253,25 @@ fn preserve_reason(outcome: Option<crate::supervise::outcome::TerminalOutcome>) 
 /// ([`any_node_merged_explicitly`]). This function does not re-check (it is the
 /// cleanup mechanism, not the gate). Every step is best-effort and never
 /// panics, so a partially-torn-down run still makes forward progress.
-pub fn cleanup_terminal_nodes(paths: &RunPaths) {
+pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
     let tmux = tmux_bin();
     let git = git_bin();
-    for n in list_nodes(paths) {
+    let Ok(nodes) = list_nodes(paths) else {
+        return false;
+    };
+    for n in nodes {
         cleanup_node(paths, &n, &tmux, &git);
     }
+    // Re-read after archive events fold. A failed/incomplete Pi capture or an
+    // unreadable/incomplete projection set vetoes managed-session cleanup.
+    let Ok(nodes) = list_nodes(paths) else {
+        return false;
+    };
+    nodes.iter().all(|node| {
+        node.evidence
+            .as_ref()
+            .is_none_or(|evidence| evidence.status == taskfleet_core::EvidenceStatus::Complete)
+    })
 }
 
 /// Kill the managed `--headless` / `--tmux-session` session Taskfleet
@@ -337,7 +351,10 @@ fn managed_session(paths: &RunPaths) -> Option<String> {
 /// session. `None` falls back to tmux's default socket — which is where
 /// the native materializer's `tmux new-session -d` bootstraps a headless session anyway.
 fn managed_session_socket(paths: &RunPaths, session: &str) -> Option<String> {
-    for n in list_nodes(paths) {
+    let Ok(nodes) = list_nodes(paths) else {
+        return None;
+    };
+    for n in nodes {
         if let Some(id) = n.tmux_identity {
             if id.session == session {
                 if let Some(sock) = id.socket {
@@ -418,6 +435,31 @@ fn record_session_retained(paths: &RunPaths, session: &str) {
 /// <removed-path>` would then fail), and kill the tmux window first so the
 /// agent's own Claude session ends before its worktree is pulled.
 pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
+    // Final evidence is a prerequisite, not a best-effort diagnostic. Capture
+    // while the exact recorded pane and native transcript still exist; any
+    // failure is durable and preserves all cleanup inputs for a later retry.
+    if !crate::supervise::evidence::archive_before_cleanup(paths, n, tmux) {
+        return;
+    }
+    cleanup_node_after_evidence(paths, n, tmux, git);
+}
+
+/// Tear down an empty-handed attempt superseded by a durable `node.retry`.
+/// It has no terminal report and is not the node's current projected evidence,
+/// so routing it through terminal evidence capture would incorrectly fold the
+/// stale attempt's failure onto the fresh attempt. The retry transaction has
+/// already proved it empty-handed and durably rewired the node before calling.
+pub(crate) fn cleanup_superseded_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
+    cleanup_node_after_evidence(paths, n, tmux, git);
+    if n.worktree_path
+        .as_deref()
+        .is_none_or(|path| !Path::new(path).exists())
+    {
+        crate::supervise::evidence::discard_superseded_source(paths, n);
+    }
+}
+
+fn cleanup_node_after_evidence(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     close_tmux_window(paths, n, tmux);
 
     let Some(worktree_path) = n.worktree_path.as_deref() else {
@@ -1441,30 +1483,62 @@ fn delete_branch(
     }
 }
 
-/// Read every `nodes/*.json` projection for the run. Unreadable or
-/// non-`node-id` entries are skipped; a missing `nodes/` dir yields an empty
-/// list. Mirrors the watchdog's own scan.
-fn list_nodes(paths: &RunPaths) -> Vec<Node> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(paths.nodes_dir()) else {
-        return out;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
-            continue;
+/// Read the complete node projection set under one shared lock. Any missing or
+/// unreadable projection fails closed: a partial set must never authorize
+/// managed-session destruction before evidence capture.
+fn list_nodes(paths: &RunPaths) -> taskfleet_core::Result<Vec<Node>> {
+    taskfleet_core::RunLock::with_shared_lock(&paths.lock(), || {
+        let manifest =
+            read_manifest_opt(paths)?.ok_or_else(|| taskfleet_core::Error::CorruptEventLog {
+                path: paths.events(),
+                reason: "manifest missing during cleanup".into(),
+            })?;
+        let entries = match std::fs::read_dir(paths.nodes_dir()) {
+            Ok(entries) => Some(entries),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && manifest.node_count == 0 =>
+            {
+                None
+            }
+            Err(error) => return Err(taskfleet_core::Error::io(paths.nodes_dir(), error)),
         };
-        let Ok(nid) = NodeId::parse_str(stem) else {
-            continue;
+        let mut out = Vec::new();
+        let Some(entries) = entries else {
+            return Ok(out);
         };
-        if let Ok(Some(n)) = read_node_opt(paths, &nid) {
-            out.push(n);
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| taskfleet_core::Error::io(paths.nodes_dir(), error))?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Ok(node_id) = NodeId::parse_str(stem) else {
+                continue;
+            };
+            let node = read_node_opt(paths, &node_id)?.ok_or_else(|| {
+                taskfleet_core::Error::CorruptEventLog {
+                    path: paths.events(),
+                    reason: format!("node projection {node_id} disappeared during cleanup"),
+                }
+            })?;
+            out.push(node);
         }
-    }
-    out
+        if out.len() != manifest.node_count as usize {
+            return Err(taskfleet_core::Error::CorruptEventLog {
+                path: paths.events(),
+                reason: format!(
+                    "manifest node_count={} but cleanup read {} node projections",
+                    manifest.node_count,
+                    out.len()
+                ),
+            });
+        }
+        Ok(out)
+    })
 }
 
 #[cfg(test)]
@@ -1540,6 +1614,19 @@ mod tests {
 
     fn tmux_log(dir: &std::path::Path) -> String {
         std::fs::read_to_string(dir.join("tmux.log")).unwrap_or_default()
+    }
+
+    #[test]
+    fn cleanup_accepts_absent_nodes_directory_for_a_true_zero_node_run() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        assert!(
+            !paths.nodes_dir().exists(),
+            "zero-node run has no node directory"
+        );
+        assert!(list_nodes(&paths).unwrap().is_empty());
+        assert!(cleanup_terminal_nodes(&paths));
     }
 
     /// All events of a given `kind` recorded in the run's event log.
@@ -3313,8 +3400,8 @@ mod tests {
             read_node_opt(&paths, &n2).unwrap().is_none(),
             "projection gone"
         );
-        // The projection scan the old implementation used sees only n-0001.
-        assert_eq!(list_nodes(&paths).len(), 1, "n-0002 hidden from the scan");
+        // Cleanup enumeration now fails closed over the hidden projection too.
+        assert!(list_nodes(&paths).is_err(), "n-0002 absence is visible");
 
         assert_eq!(
             rollup_status(&paths, true),

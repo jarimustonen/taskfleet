@@ -76,6 +76,9 @@ pub struct RunWorkerArgs {
     pub run_id: String,
     /// Node id inside the run whose worker this is (e.g. `n-0001`).
     pub node_id: String,
+    /// Absolute worker-attempt generation (zero for legacy launchers).
+    #[arg(long, default_value_t = 0)]
+    pub attempt: u32,
     /// The worker command and its arguments, given after `--`
     /// (e.g. `run-worker <run> <node> -- pi --task …`).
     #[arg(last = true, required = true)]
@@ -153,6 +156,7 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
             // than let the supervisor fall back to pid-guessing) and then surface
             // the error normally.
             let mut data = serde_json::Map::new();
+            data.insert("attempt".into(), json!(args.attempt));
             data.insert("exit_code".into(), json!(SPAWN_FAILURE_EXIT_CODE));
             record_worker_exit(&paths, &node_id, &args, Value::Object(data));
             return Err(CliError::system(
@@ -191,6 +195,7 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
     let exit_code = status.code();
     let signal = status.signal();
     let mut data = serde_json::Map::new();
+    data.insert("attempt".into(), json!(args.attempt));
     match (signal, exit_code) {
         (Some(s), _) => {
             data.insert("signal".into(), json!(s));

@@ -82,6 +82,7 @@ exit 1
             r#"#!/bin/sh
 # This is a complete private fake server: its socket and inventory live only
 # under NativeSpawnTools' cryptographically unique TempDir.
+if [ "$1" = "-S" ]; then shift 2; fi
 case "$1" in
   new-session|has-session) : > "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
   rename-window) exit 97 ;; # workmux, not Taskfleet, owns display naming
@@ -93,6 +94,10 @@ case "$1" in
     esac
     exit 0 ;;
   list-windows) [ -f "$NATIVE_TEST_TMUX_STATE" ] && printf '@77\n'; exit 0 ;;
+  pipe-pane) exit 0 ;;
+  capture-pane)
+    printf 'fixture final pane\n'
+    exit 0 ;;
 esac
 exit 1
 "#,

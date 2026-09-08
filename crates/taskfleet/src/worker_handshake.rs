@@ -29,6 +29,10 @@ pub struct WorkerHandshakeArgs {
     pub pid: u32,
     #[arg(long)]
     pub state_root: PathBuf,
+    #[arg(long)]
+    pub pi_session_id: Option<String>,
+    #[arg(long)]
+    pub pi_session_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -44,6 +48,12 @@ pub struct WorkerHandshake {
     /// ticks on Linux. This closes same-second PID reuse in the create path.
     pub start_identity: String,
     pub tmux_pane_id: String,
+    #[serde(default)]
+    pub pi_session_id: Option<String>,
+    #[serde(default)]
+    pub pi_session_path: Option<String>,
+    #[serde(default)]
+    pub pi_session_cwd: Option<String>,
 }
 
 pub fn dispatch(args: WorkerHandshakeArgs) -> Result<(), CliError> {
@@ -133,6 +143,13 @@ pub fn dispatch(args: WorkerHandshakeArgs) -> Result<(), CliError> {
             format!("TMUX_PANE has invalid form: {tmux_pane_id:?}"),
         ));
     }
+    let pi_session = prepare_pi_session(
+        args.pi_session_id.as_deref(),
+        args.pi_session_path.as_deref(),
+        parent,
+        &args.state_root,
+        &args.run_id,
+    )?;
     let record = WorkerHandshake {
         schema_version: 1,
         run_id: args.run_id,
@@ -143,6 +160,9 @@ pub fn dispatch(args: WorkerHandshakeArgs) -> Result<(), CliError> {
         start_time,
         start_identity,
         tmux_pane_id,
+        pi_session_id: pi_session.as_ref().map(|v| v.0.clone()),
+        pi_session_path: pi_session.as_ref().map(|v| v.1.clone()),
+        pi_session_cwd: pi_session.map(|v| v.2),
     };
     write_durable_json(&args.path, &record)
 }
@@ -211,6 +231,127 @@ fn validate_handshake_path(
         }
     }
     Ok(())
+}
+
+fn prepare_pi_session(
+    session_id: Option<&str>,
+    session_path: Option<&Path>,
+    _staging_run_dir: &Path,
+    state_root: &Path,
+    run_id: &str,
+) -> Result<Option<(String, String, String)>, CliError> {
+    let (Some(session_id), Some(session_path)) = (session_id, session_path) else {
+        if session_id.is_some() || session_path.is_some() {
+            return Err(CliError::system(
+                "worker_handshake_session_invalid",
+                "Pi session id and path must be supplied together",
+            ));
+        }
+        return Ok(None);
+    };
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return Err(CliError::system(
+            "worker_handshake_session_invalid",
+            format!("Pi session id is not a UUID: {session_id:?}"),
+        ));
+    }
+    let expected_name = format!("pi-session-{session_id}.jsonl");
+    let expected_parent = state_root
+        .join(".creating")
+        .join("pi-sessions")
+        .join(run_id);
+    if session_path.parent() != Some(expected_parent.as_path())
+        || session_path.file_name().and_then(|v| v.to_str()) != Some(&expected_name)
+    {
+        return Err(CliError::system(
+            "worker_handshake_session_invalid",
+            "Pi session path is not the attempt-bound file in the run directory",
+        ));
+    }
+    let cwd = std::env::current_dir().map_err(|e| {
+        CliError::system(
+            "worker_handshake_session_io",
+            format!("read worker cwd: {e}"),
+        )
+    })?;
+    let cwd = cwd.canonicalize().map_err(|e| {
+        CliError::system(
+            "worker_handshake_session_io",
+            format!("resolve worker cwd {}: {e}", cwd.display()),
+        )
+    })?;
+    let header = serde_json::json!({
+        "type": "session",
+        "version": 3,
+        "id": session_id,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "cwd": cwd,
+    });
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+        taskfleet_core::nofollow(&mut options);
+    }
+    let mut file = options.open(session_path).map_err(|e| {
+        CliError::system(
+            "worker_handshake_session_io",
+            format!("create native Pi session {}: {e}", session_path.display()),
+        )
+    })?;
+    serde_json::to_writer(&mut file, &header).map_err(|e| {
+        CliError::system(
+            "worker_handshake_session_io",
+            format!("write native Pi session {}: {e}", session_path.display()),
+        )
+    })?;
+    file.write_all(b"\n")
+        .and_then(|()| file.sync_all())
+        .map_err(|e| {
+            CliError::system(
+                "worker_handshake_session_io",
+                format!("sync native Pi session {}: {e}", session_path.display()),
+            )
+        })?;
+    std::fs::File::open(&expected_parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| {
+            CliError::system(
+                "worker_handshake_session_io",
+                format!(
+                    "sync Pi session directory {}: {e}",
+                    expected_parent.display()
+                ),
+            )
+        })?;
+    let relative_path = session_path.strip_prefix(state_root).map_err(|_| {
+        CliError::system(
+            "worker_handshake_session_invalid",
+            "Pi session path is outside the state root",
+        )
+    })?;
+    Ok(Some((
+        session_id.to_string(),
+        relative_path
+            .to_str()
+            .ok_or_else(|| {
+                CliError::system(
+                    "worker_handshake_session_invalid",
+                    "Pi session path is not UTF-8",
+                )
+            })?
+            .to_string(),
+        cwd.to_str()
+            .ok_or_else(|| {
+                CliError::system(
+                    "worker_handshake_session_invalid",
+                    "worker cwd is not UTF-8",
+                )
+            })?
+            .to_string(),
+    )))
 }
 
 pub fn process_start_identity(pid: u32) -> Option<String> {

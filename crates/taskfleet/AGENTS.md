@@ -69,6 +69,34 @@ For an explicit real-pi operator check, use `scripts/native-spawn-smoke.sh` afte
 
 `tests/e2e_spinoff.rs` drives one full autonomous-spinoff round-trip on every run — native `run create --kind spinoff --headless` (real generated launcher, durable PID handshake, detached supervisor) → live stub candidate → `run merge` → supervisor rolls the run up to `done`, tears down, and exits. It asserts the canonical event sequence (`run.created`, `node.created`, `supervisor.started`, `node.report`, `run.status`, `supervisor.exited`) and terminal manifest.
 
+## Durable native Pi worker evidence
+
+Every Pi launcher owns session selection. It assigns a UUID, creates the exact
+native v3 session header from the launcher's real cwd in the run-bound private
+source at `.creating/pi-sessions/<run-id>/`, and invokes Pi through its supported
+`--session <path>` surface. That source path is stable across atomic run
+publication, so Pi can start immediately without replacing the assigned identity
+with an implicit/newest session. Profile argv containing session-selection flags
+is rejected rather than silently overridden.
+
+On a terminal transition, `supervise::evidence` captures evidence **before**
+window/worktree/session cleanup: a byte-identical original JSONL transcript, a
+separate resume JSONL whose header alone changes `cwd` to the surviving source
+repo, the final stable pane history, and the exact terminal report. The
+`worker.evidence.archived` / `worker.evidence.failed` events fold under the run
+lock into `Node.evidence`; `run show` exposes the explicit
+`pending|failed|complete` status, a state-root-relative live source, and
+run-relative artifact paths. Capture checks the native header against the
+launch-time UUID/cwd, stops an identity-checked live writer without destroying
+its pane, and fails closed if the file or writer state changes across transcript
+and pane capture. A failure is durable, backs off up to 64 seconds, vetoes
+cleanup, and retries (including after restart); partial artifacts are never
+labeled complete. The original transcript is never rewritten. Runs self-exec
+their creating binary; manually reattaching one with a pre-evidence binary is an
+unsupported downgrade that cannot enforce this newer cleanup prerequisite. Do
+not infer sessions from mtimes, scan for a newest file, or integrate a harness
+process manager.
+
 ## `run create --profile` / legacy `--harness` (worker selection)
 
 Executable profiles are defined only in the user-owned

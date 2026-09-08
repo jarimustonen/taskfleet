@@ -877,6 +877,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // returning the error. Best-effort: a leftover dir is far less harmful
     // than a panic mid-error-handling, so a remove failure is swallowed.
     let cleanup_orphan_child = || {
+        agent_launcher.cleanup_private_session();
         let _ = std::fs::remove_dir_all(&staging_dir);
         // The reservation remains armed until publication, so an ordinary spawn
         // failure releases it on unwind and a keyed retry starts cleanly. A hard
@@ -914,6 +915,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         outcome.agent_start_time,
         &outcome.agent_start_identity,
     ) {
+        drop(outcome);
         cleanup_orphan_child();
         return Err(e);
     }
@@ -934,6 +936,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "tmux_session": outcome.tmux_session,
         "tmux_window_id": outcome.tmux_window_id,
         "tmux_pane_id": outcome.tmux_pane_id,
+        // Exact native Pi session identity was assigned and its header durably
+        // created by the pre-exec handshake before the candidate started.
+        "pi_session_id": outcome.pi_session_id,
+        "pi_session_path": outcome.pi_session_path,
+        "pi_session_cwd": outcome.pi_session_cwd,
+        "attempt": 0,
         "agent_pid": outcome.agent_pid_hint,
         "agent_pid_start_time": chrono::DateTime::<Utc>::from_timestamp(
             i64::try_from(outcome.agent_start_time).unwrap_or(i64::MAX),
@@ -949,6 +957,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         None,
         node_data,
     ) {
+        drop(outcome);
         cleanup_orphan_child();
         return Err(from_core(error));
     }
@@ -957,6 +966,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // single rename before telling a parent about it or launching a supervisor:
     // every successful `run create` therefore names an already-existing node.
     if let Err(error) = publish_staging_run(&staging_dir, &child_dir) {
+        drop(outcome);
         cleanup_orphan_child();
         return Err(error);
     }

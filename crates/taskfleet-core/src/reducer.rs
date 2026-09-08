@@ -55,8 +55,8 @@ use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::report::ReportOrigin;
 use crate::schema::{
-    ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId,
-    Status, TmuxIdentity, WorkerExit, STATE_SCHEMA_VERSION,
+    ChildRef, Event, EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node,
+    NodeId, RunId, Status, TmuxIdentity, WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -296,6 +296,8 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
+        "worker.evidence.archived" => reduce_worker_evidence_archived(paths, ev),
+        "worker.evidence.failed" => reduce_worker_evidence_failed(paths, ev),
         "node.death_observed" => reduce_node_death_observed(paths, ev),
         "node.awaiting_input" => reduce_node_awaiting_input(paths, ev),
         "node.input_resolved" => reduce_node_input_resolved(paths, ev),
@@ -612,6 +614,105 @@ fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
     })
 }
 
+fn worker_evidence_from_spawn_data(
+    events_path: &Path,
+    ev: &Event,
+    data: &Value,
+) -> Result<Option<WorkerEvidence>> {
+    let Some(session_id) = data.get("pi_session_id") else {
+        if data.get("pi_session_path").is_some() || data.get("pi_session_cwd").is_some() {
+            return Err(Error::CorruptEventLog {
+                path: events_path.to_path_buf(),
+                reason: format!(
+                    "event seq={} Pi evidence fields must be all-or-none",
+                    ev.seq
+                ),
+            });
+        }
+        return Ok(None);
+    };
+    if session_id.is_null() {
+        if data
+            .get("pi_session_path")
+            .is_some_and(|value| !value.is_null())
+            || data
+                .get("pi_session_cwd")
+                .is_some_and(|value| !value.is_null())
+        {
+            return Err(Error::CorruptEventLog {
+                path: events_path.to_path_buf(),
+                reason: format!(
+                    "event seq={} Pi evidence fields must be all-or-none",
+                    ev.seq
+                ),
+            });
+        }
+        return Ok(None);
+    }
+    let session_id = session_id
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} pi_session_id must be a non-empty string",
+                ev.seq
+            ),
+        })?;
+    if session_id.len() != 36
+        || !session_id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!("event seq={} pi_session_id must be a UUID", ev.seq),
+        });
+    }
+    let original_cwd = want_str(events_path, ev, data, "pi_session_cwd")?;
+    let live_session_path = want_str(events_path, ev, data, "pi_session_path")?;
+    let expected_live_path = format!(
+        ".creating/pi-sessions/{}/pi-session-{session_id}.jsonl",
+        ev.run_id.as_str()
+    );
+    if live_session_path != expected_live_path {
+        return Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} pi_session_path is not the canonical state-relative path",
+                ev.seq
+            ),
+        });
+    }
+    let attempt = match data.get("attempt") {
+        None | Some(Value::Null) => 0,
+        Some(value) => value
+            .as_u64()
+            .and_then(|raw| u32::try_from(raw).ok())
+            .ok_or_else(|| Error::CorruptEventLog {
+                path: events_path.to_path_buf(),
+                reason: format!("event seq={} attempt must be a u32", ev.seq),
+            })?,
+    };
+    Ok(Some(WorkerEvidence {
+        attempt,
+        session_id: session_id.to_string(),
+        original_cwd: original_cwd.to_string(),
+        live_session_path: live_session_path.to_string(),
+        status: EvidenceStatus::Pending,
+        transcript_path: None,
+        resume_path: None,
+        pane_path: None,
+        report_path: None,
+        transcript_sha256: None,
+        error: None,
+    }))
+}
+
 fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     // The envelope `node_id` is already a validated `NodeId` (parsed on read),
@@ -655,6 +756,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
             .and_then(Value::as_str)
             .map(str::to_string),
         tmux_identity: tmux_identity_from_data(d),
+        evidence: worker_evidence_from_spawn_data(&events_path, ev, d)?,
         agent_pid: optional_i32(d, "agent_pid", &events_path, ev)?,
         agent_pid_start_time: optional_ts(d, "agent_pid_start_time", &events_path, ev)?,
         supervisor_pid: optional_i32(d, "supervisor_pid", &events_path, ev)?,
@@ -745,6 +847,7 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
         .and_then(Value::as_str)
         .map(str::to_string);
     n.tmux_identity = tmux_identity_from_data(d);
+    n.evidence = worker_evidence_from_spawn_data(&events_path, ev, d)?;
     n.agent_pid = optional_i32(d, "agent_pid", &events_path, ev)?;
     n.agent_pid_start_time = optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
     n.status = Status::Pending;
@@ -935,6 +1038,10 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
 fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let node_id = require_envelope_node_id(&events_path, ev)?;
+    let attempt = match ev.data.get("attempt") {
+        None | Some(Value::Null) => 0,
+        Some(_) => evidence_attempt(&events_path, ev)?,
+    };
     let code = optional_i32(&ev.data, "exit_code", &events_path, ev)?;
     let signal = optional_i32(&ev.data, "signal", &events_path, ev)?;
     // A worker exit is EXACTLY one of a normal return (code) or a signal death
@@ -966,7 +1073,7 @@ fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
     // First-write-wins: the shim fires exactly once per worker, so an existing
     // record is a replay/duplicate. Leaving it untouched keeps the fold a pure
     // function of the first exit event and never churns `updated_at`.
-    if n.worker_exit.is_some() {
+    if attempt != n.retry_attempts || n.worker_exit.is_some() {
         return Ok(vec![]);
     }
     n.worker_exit = Some(WorkerExit {
@@ -980,6 +1087,126 @@ fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
     n.awaiting_input = None;
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
+}
+
+fn evidence_attempt(events_path: &Path, ev: &Event) -> Result<u32> {
+    ev.data
+        .get("attempt")
+        .and_then(Value::as_u64)
+        .and_then(|raw| u32::try_from(raw).ok())
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!("event seq={} attempt must be a u32", ev.seq),
+        })
+}
+
+fn reduce_worker_evidence_archived(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let attempt = evidence_attempt(&events_path, ev)?;
+    let session_id = want_str(&events_path, ev, &ev.data, "session_id")?.to_string();
+    let mut values = Vec::new();
+    for field in [
+        "transcript_path",
+        "resume_path",
+        "pane_path",
+        "report_path",
+        "transcript_sha256",
+    ] {
+        values.push(want_str(&events_path, ev, &ev.data, field)?.to_string());
+    }
+    let expected_prefix = format!("evidence/{}/", node_id.as_str());
+    for (index, suffix) in [
+        "pi-session.original.jsonl",
+        "pi-session.resume.jsonl",
+        "final-pane.log",
+        "terminal-report.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if values[index] != format!("{expected_prefix}{suffix}") {
+            return Err(Error::CorruptEventLog {
+                path: events_path,
+                reason: format!(
+                    "event seq={} evidence artifact path is not canonical",
+                    ev.seq
+                ),
+            });
+        }
+    }
+    if values[4].len() != 64
+        || !values[4]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(Error::CorruptEventLog {
+            path: events_path,
+            reason: format!(
+                "event seq={} transcript_sha256 is not lowercase SHA-256",
+                ev.seq
+            ),
+        });
+    }
+    let mut node = match read_node_opt(paths, &node_id)? {
+        Some(node) => node,
+        None => return Ok(vec![]),
+    };
+    let Some(evidence) = node.evidence.as_mut() else {
+        return Err(Error::CorruptEventLog {
+            path: events_path,
+            reason: format!(
+                "event seq={} evidence archive has no recorded Pi session",
+                ev.seq
+            ),
+        });
+    };
+    if evidence.attempt != attempt || evidence.session_id != session_id {
+        return Ok(vec![]);
+    }
+    if evidence.status == EvidenceStatus::Complete {
+        return Ok(vec![]);
+    }
+    evidence.transcript_path = Some(values.remove(0));
+    evidence.resume_path = Some(values.remove(0));
+    evidence.pane_path = Some(values.remove(0));
+    evidence.report_path = Some(values.remove(0));
+    evidence.transcript_sha256 = Some(values.remove(0));
+    evidence.status = EvidenceStatus::Complete;
+    evidence.error = None;
+    node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
+}
+
+fn reduce_worker_evidence_failed(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let attempt = evidence_attempt(&events_path, ev)?;
+    let session_id = want_str(&events_path, ev, &ev.data, "session_id")?.to_string();
+    let detail = want_str(&events_path, ev, &ev.data, "error")?.to_string();
+    let mut node = match read_node_opt(paths, &node_id)? {
+        Some(node) => node,
+        None => return Ok(vec![]),
+    };
+    let Some(evidence) = node.evidence.as_mut() else {
+        return Err(Error::CorruptEventLog {
+            path: events_path,
+            reason: format!(
+                "event seq={} evidence failure has no recorded Pi session",
+                ev.seq
+            ),
+        });
+    };
+    if evidence.attempt != attempt || evidence.session_id != session_id {
+        return Ok(vec![]);
+    }
+    if evidence.status == EvidenceStatus::Complete {
+        return Ok(vec![]);
+    }
+    evidence.status = EvidenceStatus::Failed;
+    evidence.error = Some(detail);
+    node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
 }
 
 /// Fold a `node.death_observed` event onto [`Node::first_death_at`], recording
@@ -1611,6 +1838,69 @@ mod tests {
         });
         apply_event(&paths, &retry2).expect("node.retry applies");
         assert_eq!(read_n0001(&paths).retry_attempts, 2);
+    }
+
+    #[test]
+    fn stale_worker_evidence_and_exit_do_not_cross_retry_generation() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        let current_session = "018f5f64-b137-7d44-b2b4-4f02c3f646e8";
+
+        let mut retry = event(run_id);
+        retry.seq = 3;
+        retry.kind = "node.retry".into();
+        retry.node_id = Some(nid.clone());
+        retry.data = serde_json::json!({
+            "attempt": 1, "reason": "agent-died", "branch": "wt/foo-r1",
+            "worktree_path": "/tmp/new-wt", "agent_pid": 222,
+            "pi_session_id": current_session,
+            "pi_session_path": format!(".creating/pi-sessions/{run_id}/pi-session-{current_session}.jsonl"),
+            "pi_session_cwd": "/tmp/new-wt"
+        });
+        apply_event(&paths, &retry).unwrap();
+
+        let mut stale_failure = event(run_id);
+        stale_failure.seq = 4;
+        stale_failure.kind = "worker.evidence.failed".into();
+        stale_failure.node_id = Some(nid.clone());
+        stale_failure.data = serde_json::json!({
+            "attempt": 0,
+            "session_id": "118f5f64-b137-7d44-b2b4-4f02c3f646e8",
+            "error": "old attempt"
+        });
+        apply_event(&paths, &stale_failure).unwrap();
+        assert_eq!(
+            read_n0001(&paths).evidence.unwrap().status,
+            EvidenceStatus::Pending
+        );
+
+        let mut stale_exit = event(run_id);
+        stale_exit.seq = 5;
+        stale_exit.kind = "worker.exited".into();
+        stale_exit.node_id = Some(nid.clone());
+        stale_exit.data = serde_json::json!({"attempt":0,"exit_code":9});
+        apply_event(&paths, &stale_exit).unwrap();
+        assert!(read_n0001(&paths).worker_exit.is_none());
+
+        let mut archived = event(run_id);
+        archived.seq = 6;
+        archived.kind = "worker.evidence.archived".into();
+        archived.node_id = Some(nid);
+        archived.data = serde_json::json!({
+            "attempt":1, "session_id":current_session,
+            "transcript_path":"evidence/n-0001/pi-session.original.jsonl",
+            "resume_path":"evidence/n-0001/pi-session.resume.jsonl",
+            "pane_path":"evidence/n-0001/final-pane.log",
+            "report_path":"evidence/n-0001/terminal-report.json",
+            "transcript_sha256":"0".repeat(64)
+        });
+        apply_event(&paths, &archived).unwrap();
+        assert_eq!(
+            read_n0001(&paths).evidence.unwrap().status,
+            EvidenceStatus::Complete
+        );
     }
 
     /// A `node.retry` against an already-terminal node is a dead event: the

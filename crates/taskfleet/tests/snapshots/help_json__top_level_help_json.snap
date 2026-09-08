@@ -4691,6 +4691,37 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "attempt",
+            "long": "attempt",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Absolute worker-attempt generation (zero for legacy launchers)",
+            "value_names": [
+              "ATTEMPT"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "0"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "help",
             "long": "help",
             "short": "h",
@@ -6020,6 +6051,62 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "pi_session_id",
+            "long": "pi-session-id",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "PI_SESSION_ID"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "pi_session_path",
+            "long": "pi-session-path",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "PI_SESSION_PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
             "is_global": false,
             "hidden": false,
             "deprecated": false,

@@ -29,6 +29,9 @@ pub struct SpawnOutcome {
     pub tmux_session: Option<String>,
     pub tmux_window_id: Option<String>,
     pub tmux_pane_id: Option<String>,
+    pub pi_session_id: Option<String>,
+    pub pi_session_path: Option<String>,
+    pub pi_session_cwd: Option<String>,
     rollback: Option<Rollback>,
 }
 
@@ -69,11 +72,21 @@ pub struct AgentLauncher {
     run_id: String,
     node_id: String,
     attempt: u32,
+    pi_session_source_path: Option<PathBuf>,
 }
 
 impl AgentLauncher {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn cleanup_private_session(&self) {
+        if let Some(path) = self.pi_session_source_path.as_deref() {
+            let _ = std::fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
     }
 }
 
@@ -142,6 +155,52 @@ pub fn write_agent_launcher(
         "worker-handshake-{}-attempt-{attempt}.json",
         node.as_str()
     ));
+    let pi_session = if selected.harness == "pi" {
+        for arg in &selected.command[1..] {
+            if matches!(
+                arg.as_str(),
+                "--session"
+                    | "--session-id"
+                    | "--session-dir"
+                    | "--continue"
+                    | "-c"
+                    | "--resume"
+                    | "-r"
+                    | "--fork"
+                    | "--no-session"
+            ) || arg == "--"
+                || arg.starts_with("--session=")
+                || arg.starts_with("--session-id=")
+                || arg.starts_with("--session-dir=")
+                || arg.starts_with("--continue=")
+                || arg.starts_with("--resume=")
+                || arg.starts_with("--fork=")
+                || (arg.starts_with("-r") && arg.len() > 2)
+            {
+                return Err(CliError::user(
+                    "recorded_agent_session_conflict",
+                    format!("Pi candidate argv contains Taskfleet-owned session flag {arg:?}"),
+                ));
+            }
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        // Keep the live writer in a run-bound private area outside the staging
+        // directory that publication renames. This lets Pi start before
+        // publication (preserving the live-worker transaction) while never
+        // touching Pi's global/default session tree.
+        let creating = state_root.join(".creating");
+        ensure_private_directory(&creating)?;
+        let sessions = creating.join("pi-sessions");
+        ensure_private_directory(&sessions)?;
+        let dir = sessions.join(run_id);
+        ensure_private_directory(&dir)?;
+        let path = dir.join(format!("pi-session-{id}.jsonl"));
+        Some((id, path))
+    } else {
+        None
+    };
+    let mut private_session_guard =
+        PrivateSessionGuard(pi_session.as_ref().map(|(_, path)| path.clone()));
     match std::fs::symlink_metadata(&handshake_path) {
         Ok(meta) if meta.file_type().is_file() || meta.file_type().is_symlink() => {
             std::fs::remove_file(&handshake_path)
@@ -189,7 +248,17 @@ pub fn write_agent_launcher(
             "$${RAW}".into(),
             "--state-root".into(),
             os_string(&state_root)?,
-        ],
+        ]
+        .into_iter()
+        .chain(pi_session.as_ref().into_iter().flat_map(|(id, path)| {
+            [
+                "--pi-session-id".to_string(),
+                id.clone(),
+                "--pi-session-path".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]
+        }))
+        .collect::<Vec<_>>(),
         true,
     ));
     inner_body.extend_from_slice(b"unset ");
@@ -198,6 +267,10 @@ pub fn write_agent_launcher(
     for arg in &selected.command {
         inner_body.push(b' ');
         inner_body.extend_from_slice(shell_literal(arg).as_bytes());
+    }
+    if let Some((_, path)) = pi_session.as_ref() {
+        inner_body.extend_from_slice(b" --session ");
+        inner_body.extend_from_slice(&shell_literal_path(path));
     }
     inner_body.extend_from_slice(b" \"$@\"\n");
     write_executable(&inner, &inner_body)?;
@@ -224,6 +297,8 @@ pub fn write_agent_launcher(
         body.extend_from_slice(shell_literal(run_id).as_bytes());
         body.push(b' ');
         body.extend_from_slice(shell_literal(node_id).as_bytes());
+        body.extend_from_slice(b" --attempt ");
+        body.extend_from_slice(shell_literal(&attempt.to_string()).as_bytes());
         body.extend_from_slice(b" -- ");
     } else {
         body.extend_from_slice(b"exec ");
@@ -232,7 +307,7 @@ pub fn write_agent_launcher(
     body.extend_from_slice(b" \"$@\"\n");
     write_executable(&outer, &body)?;
 
-    Ok(AgentLauncher {
+    let launcher = AgentLauncher {
         path: outer
             .canonicalize()
             .map_err(|e| io_error("canonicalize", &outer, e))?,
@@ -241,7 +316,36 @@ pub fn write_agent_launcher(
         run_id: run_id.into(),
         node_id: node_id.into(),
         attempt,
-    })
+        pi_session_source_path: pi_session.as_ref().map(|(_, path)| path.clone()),
+    };
+    private_session_guard.0 = None;
+    Ok(launcher)
+}
+
+fn ensure_private_directory(path: &Path) -> Result<(), CliError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(CliError::system(
+                    "private_session_path_invalid",
+                    format!("{} is not a real directory", path.display()),
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            builder
+                .create(path)
+                .map_err(|e| io_error("mkdir", path, e))?;
+        }
+        Err(error) => return Err(io_error("stat", path, error)),
+    }
+    Ok(())
 }
 
 fn shell_command(exe: &Path, args: &[String], raw_pid: bool) -> Vec<u8> {
@@ -432,6 +536,9 @@ fn test_script_materialize(req: &SpawnRequest<'_>) -> Option<Result<SpawnOutcome
                 tmux_session: o.tmux_session,
                 tmux_window_id: o.tmux_window_id,
                 tmux_pane_id: o.tmux_pane_id,
+                pi_session_id: None,
+                pi_session_path: None,
+                pi_session_cwd: None,
                 rollback: None,
             })
             .map_err(|e| CliError::system("create_sh_unparseable_stdout", e.to_string())),
@@ -558,6 +665,9 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         tmux_session: Some(session),
         tmux_window_id: Some(window.identity.window_id),
         tmux_pane_id: Some(pane),
+        pi_session_id: handshake.pi_session_id,
+        pi_session_path: handshake.pi_session_path,
+        pi_session_cwd: handshake.pi_session_cwd,
         rollback: Some(rollback),
     })
 }
@@ -722,6 +832,19 @@ fn query_tmux_window(
         },
         name: name.into(),
     })
+}
+
+struct PrivateSessionGuard(Option<PathBuf>);
+
+impl Drop for PrivateSessionGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.as_deref() {
+            let _ = std::fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -900,6 +1023,7 @@ pub(crate) mod tests {
             run_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             node_id: "n-0001".into(),
             attempt: 3,
+            pi_session_source_path: None,
         }
     }
 
@@ -915,7 +1039,96 @@ pub(crate) mod tests {
             start_time: crate::supervise::watchdog::pid_start_time(pid).unwrap(),
             start_identity: crate::worker_handshake::process_start_identity(pid).unwrap(),
             tmux_pane_id: "%7".into(),
+            pi_session_id: None,
+            pi_session_path: None,
+            pi_session_cwd: None,
         }
+    }
+
+    #[test]
+    fn launcher_cleanup_removes_only_its_exact_session_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join(".creating/pi-sessions/run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let owned = dir.join("pi-session-owned.jsonl");
+        let sibling = dir.join("pi-session-sibling.jsonl");
+        std::fs::write(&owned, "owned").unwrap();
+        std::fs::write(&sibling, "sibling").unwrap();
+        let mut launcher = launcher(tmp.path());
+        launcher.pi_session_source_path = Some(owned.clone());
+
+        launcher.cleanup_private_session();
+
+        assert!(!owned.exists());
+        assert!(sibling.exists(), "sibling attempt transcript survives");
+        assert!(
+            dir.exists(),
+            "non-empty shared parent is never recursive-deleted"
+        );
+    }
+
+    #[test]
+    fn pi_launcher_assigns_one_exact_native_session_before_exec() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("runs/01jxsnap000000000000000000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let fake_self = tmp.path().join("taskfleet-test");
+        std::fs::write(&fake_self, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&fake_self).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt as _;
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_self, permissions).unwrap();
+        let prior = std::env::var_os("TASKFLEET_TEST_SELF_EXE");
+        std::env::set_var("TASKFLEET_TEST_SELF_EXE", &fake_self);
+        let selection = builtin_agent_selection("pi", true);
+        let launcher = write_agent_launcher(
+            &run_dir,
+            tmp.path(),
+            &selection,
+            "01jxsnap000000000000000000",
+            "n-0001",
+            0,
+        )
+        .unwrap();
+        match prior {
+            Some(value) => std::env::set_var("TASKFLEET_TEST_SELF_EXE", value),
+            None => std::env::remove_var("TASKFLEET_TEST_SELF_EXE"),
+        }
+        let inner =
+            std::fs::read_to_string(run_dir.join("candidate-launch-n-0001-attempt-0.sh")).unwrap();
+        assert!(inner.contains("worker-handshake"));
+        assert!(inner.contains("--pi-session-id"));
+        assert!(inner.contains("--pi-session-path"));
+        assert!(inner.contains("exec 'pi' --session"));
+        let marker = "/pi-session-";
+        let id_start = inner.find(marker).unwrap() + marker.len();
+        let id = &inner[id_start..id_start + 36];
+        assert!(uuid::Uuid::parse_str(id).is_ok());
+        assert!(
+            inner.matches(id).count() >= 2,
+            "same id binds helper and Pi path"
+        );
+        assert!(launcher.path().is_absolute());
+    }
+
+    #[test]
+    fn pi_launcher_rejects_caller_owned_session_selection() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("runs/01jxsnap000000000000000000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let mut selection = builtin_agent_selection("pi", true);
+        selection.selected.command.push("--continue".into());
+        let error = write_agent_launcher(
+            &run_dir,
+            tmp.path(),
+            &selection,
+            "01jxsnap000000000000000000",
+            "n-0001",
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "recorded_agent_session_conflict");
     }
 
     #[test]

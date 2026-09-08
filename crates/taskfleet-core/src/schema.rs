@@ -706,6 +706,64 @@ pub struct ChildRef {
     pub node_id: NodeId,
 }
 
+/// State of durable native worker evidence capture.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceStatus {
+    /// Capture has not completed yet.
+    Pending,
+    /// The latest capture attempt failed and cleanup remains vetoed.
+    Failed,
+    /// Every durable artifact was synced and recorded.
+    Complete,
+}
+
+impl std::fmt::Display for EvidenceStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pending => "pending",
+            Self::Failed => "failed",
+            Self::Complete => "complete",
+        })
+    }
+}
+
+/// Durable native Pi session and terminal evidence for one worker attempt.
+///
+/// This is folded onto the node projection from append-only events. The live
+/// source is state-root-relative; completed artifact paths are run-relative.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerEvidence {
+    /// Worker attempt this evidence belongs to.
+    pub attempt: u32,
+    /// Exact Pi session identifier assigned before the candidate starts.
+    pub session_id: String,
+    /// Original cwd stored in the native transcript header.
+    pub original_cwd: String,
+    /// State-root-relative live native transcript path.
+    pub live_session_path: String,
+    /// Typed capture state.
+    pub status: EvidenceStatus,
+    /// Run-relative byte-identical archived transcript, once complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// Run-relative resume copy whose header names a surviving cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_path: Option<String>,
+    /// Run-relative final tmux pane snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_path: Option<String>,
+    /// Run-relative exact terminal report JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_path: Option<String>,
+    /// SHA-256 of the archived original transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_sha256: Option<String>,
+    /// Explicit capture failure detail. Never present on complete evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// `nodes/<node-id>.json` (design.md §1.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -756,6 +814,10 @@ pub struct Node {
     /// returns it.
     #[serde(default)]
     pub tmux_identity: Option<TmuxIdentity>,
+    /// Native worker evidence, when this attempt uses Pi. Initialized before
+    /// publication and advanced only by locked evidence events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<WorkerEvidence>,
     /// PID of the running agent process, if live.
     pub agent_pid: Option<i32>,
     /// Start time of the agent process, used to detect PID reuse.

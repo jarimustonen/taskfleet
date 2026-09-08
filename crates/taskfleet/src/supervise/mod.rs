@@ -24,6 +24,7 @@
 
 pub mod capture;
 pub mod cleanup;
+pub mod evidence;
 pub mod notify;
 pub mod outcome;
 pub mod pid_file;
@@ -1334,18 +1335,14 @@ pub fn dispatch(
                     // to protect via `any_node_merged_explicitly`), so terminal
                     // teardown is always warranted now.
                     if !cleaned {
-                        cleanup::cleanup_terminal_nodes(&paths);
-                        // After the node windows are closed, tear down the
-                        // managed `--headless` session if this run owned one and
-                        // it now holds only its synthetic bootstrap shell window
-                        // (issue `headless-tmux-session-not-torn-down`). A no-op
-                        // for foreground runs and for a session a sibling run is
-                        // still working in.
-                        cleanup::cleanup_managed_session(&paths);
+                        cleaned = cleanup::cleanup_terminal_nodes(&paths);
+                        if cleaned {
+                            // Only after every node's required evidence is
+                            // complete and its window is closed may the managed
+                            // session itself be removed.
+                            cleanup::cleanup_managed_session(&paths);
+                        }
                     }
-                    // Mark done even when cleanup was not warranted so we don't
-                    // re-read the manifest every tick until the loop exits.
-                    cleaned = true;
                 }
             }
         }
@@ -1378,7 +1375,7 @@ pub fn dispatch(
         // transient marker-append failure gets its retry ticks before the loop
         // exits. `notify_attempts` bounds this, so a persistent failure still
         // lets us leave.
-        if notified && all_work_done(&paths, &child_tails) {
+        if notified && cleaned && all_work_done(&paths, &child_tails) {
             // Report the spawn failure honestly rather than as `work-complete`
             // when the no-worker guard is what terminalized the run.
             break if spawn_failed_terminal {
@@ -2491,7 +2488,13 @@ fn reconcile_agent_retries(
                     node = %node_id, error = %e,
                     "could not lock run to record node.retry; tearing down fresh spawn, will retry"
                 );
-                teardown_respawn_outcome(&spawn, manifest.source_repo.as_deref(), &tmux, &git);
+                teardown_respawn_outcome(
+                    paths,
+                    &spawn,
+                    manifest.source_repo.as_deref(),
+                    &tmux,
+                    &git,
+                );
                 continue;
             }
         };
@@ -2517,7 +2520,7 @@ fn reconcile_agent_retries(
                  tearing down fresh spawn, dropping park"
             );
             drop(guard);
-            teardown_respawn_outcome(&spawn, manifest.source_repo.as_deref(), &tmux, &git);
+            teardown_respawn_outcome(paths, &spawn, manifest.source_repo.as_deref(), &tmux, &git);
             retry_states.remove(&node_id);
             continue;
         }
@@ -2531,6 +2534,9 @@ fn reconcile_agent_retries(
             "tmux_socket": spawn.tmux_socket,
             "tmux_session": spawn.tmux_session,
             "tmux_window_id": spawn.tmux_window_id,
+            "pi_session_id": spawn.pi_session_id,
+            "pi_session_path": spawn.pi_session_path,
+            "pi_session_cwd": spawn.pi_session_cwd,
             "agent_pid": spawn.agent_pid,
             "agent_pid_start_time": spawn.agent_pid_start_time,
         });
@@ -2546,7 +2552,7 @@ fn reconcile_agent_retries(
             drop(guard);
             // Tear down the fresh spawn so the next re-fire spawns cleanly on the
             // same `-rN` name (no orphan, no collision).
-            teardown_respawn_outcome(&spawn, manifest.source_repo.as_deref(), &tmux, &git);
+            teardown_respawn_outcome(paths, &spawn, manifest.source_repo.as_deref(), &tmux, &git);
             continue;
         }
         drop(guard);
@@ -2558,7 +2564,7 @@ fn reconcile_agent_retries(
         // stale worktree + branch + tmux window (still empty-handed, re-checked by
         // `cleanup_node`'s own source-relative guard, which PRESERVES rather than
         // deletes if commits somehow appeared — never destroying committed work).
-        cleanup::cleanup_node(paths, &node, &tmux, &git);
+        cleanup::cleanup_superseded_node(paths, &node, &tmux, &git);
         info!(
             target: "taskfleet::supervise",
             node = %node_id, attempt, branch = %spawn.branch,
@@ -2576,16 +2582,37 @@ fn reconcile_agent_retries(
 /// is freed for a clean re-fire (issue `autoretry-agent-died-worker`, from
 /// llm-review). Every step is independent and swallows its own errors; a partial
 /// teardown still makes progress.
-fn teardown_respawn_outcome(spawn: &RespawnOutcome, repo: Option<&str>, tmux: &str, git: &str) {
+fn teardown_respawn_outcome(
+    paths: &RunPaths,
+    spawn: &RespawnOutcome,
+    repo: Option<&str>,
+    tmux: &str,
+    git: &str,
+) {
     use std::process::{Command, Stdio};
-    // Kill the agent process first so it stops editing before its worktree is
-    // pulled. TERM (not KILL) lets it shut down its own child processes.
+    // Kill and reap the agent before unlinking the transcript: otherwise a Pi
+    // writer can keep appending to an unlinked inode during rollback.
     if spawn.agent_pid > 0 {
         let _ = Command::new("kill")
             .arg(spawn.agent_pid.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while crate::supervise::pid_file::pid_alive(spawn.agent_pid as u32)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    if let Some(relative) = spawn.pi_session_path.as_deref() {
+        if let Some(state_root) = paths.root.parent().and_then(std::path::Path::parent) {
+            let path = state_root.join(relative);
+            let _ = std::fs::remove_file(&path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
     }
     // Close the tmux window (best-effort; a nonexistent window / unavailable tmux
     // is a clean no-op). Kept as a raw, fully-silent shell-out rather than routed
@@ -2641,6 +2668,9 @@ struct RespawnOutcome {
     tmux_socket: Option<String>,
     tmux_session: Option<String>,
     tmux_window_id: Option<String>,
+    pi_session_id: Option<String>,
+    pi_session_path: Option<String>,
+    pi_session_cwd: Option<String>,
     agent_pid: i64,
     agent_pid_start_time: Option<DateTime<Utc>>,
     materialization: Option<crate::run::spawn::SpawnOutcome>,
@@ -2736,15 +2766,25 @@ fn respawn_agent(
         cwd: source_repo,
         launcher: Some(&agent_launcher),
     };
-    let outcome = crate::run::spawn::materialize_native(&req)?;
+    let outcome = match crate::run::spawn::materialize_native(&req) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            agent_launcher.cleanup_private_session();
+            return Err(error);
+        }
+    };
     // Re-verify the freshly discovered PID is still alive (mirrors `run create`),
     // so a re-spawn that raced a just-died agent is treated as a spawn failure
     // rather than recording a dead pid onto the node.
-    crate::run::spawn::verify_agent_pid(
+    if let Err(error) = crate::run::spawn::verify_agent_pid(
         outcome.agent_pid_hint,
         outcome.agent_start_time,
         &outcome.agent_start_identity,
-    )?;
+    ) {
+        drop(outcome);
+        agent_launcher.cleanup_private_session();
+        return Err(error);
+    }
     Ok(RespawnOutcome {
         branch: outcome.branch.clone(),
         worktree_path: outcome.worktree_path.clone(),
@@ -2752,6 +2792,9 @@ fn respawn_agent(
         tmux_socket: outcome.tmux_socket.clone(),
         tmux_session: outcome.tmux_session.clone(),
         tmux_window_id: outcome.tmux_window_id.clone(),
+        pi_session_id: outcome.pi_session_id.clone(),
+        pi_session_path: outcome.pi_session_path.clone(),
+        pi_session_cwd: outcome.pi_session_cwd.clone(),
         agent_pid: outcome.agent_pid_hint,
         agent_pid_start_time: DateTime::<Utc>::from_timestamp(
             i64::try_from(outcome.agent_start_time).unwrap_or(i64::MAX),
@@ -3732,6 +3775,7 @@ mod tests {
             base_sha: None,
             tmux_window: None,
             tmux_identity: None,
+            evidence: None,
             agent_pid: Some(4242),
             agent_pid_start_time: None,
             supervisor_pid: None,
@@ -4699,14 +4743,24 @@ EOF
         let _self_exe = EnvGuard::set("TASKFLEET_TEST_SELF_EXE", self_exe.to_str().unwrap());
 
         let spawned = respawn_agent(&paths, &node, &manifest, 3).unwrap();
-        let expected = format!("{}\nn-0001\n3\n2\n--\nretry prompt\n", manifest.run_id);
         let observed_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::fs::read_to_string(&observed).unwrap_or_default() != expected
-            && std::time::Instant::now() < observed_deadline
-        {
+        while !observed.exists() && std::time::Instant::now() < observed_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(std::fs::read_to_string(observed).unwrap(), expected);
+        let observed = std::fs::read_to_string(observed).unwrap();
+        let expected_prefix = format!("{}\nn-0001\n3\n4\n--session\n", manifest.run_id);
+        assert!(
+            observed.starts_with(&expected_prefix),
+            "observed={observed:?}"
+        );
+        assert!(
+            observed.contains(&format!(
+                "/.creating/pi-sessions/{}/pi-session-",
+                manifest.run_id
+            )),
+            "attempt owns a private exact Pi session: {observed:?}"
+        );
+        assert!(observed.ends_with("\n--\nretry prompt\n"));
         assert!(paths
             .root
             .join("agent-launch-n-0001-attempt-3.sh")

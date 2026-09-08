@@ -137,6 +137,7 @@ mod tests {
             base_sha: None,
             tmux_window: Some("seed-win".to_string()),
             tmux_identity: None,
+            evidence: None,
             agent_pid: Some(4242),
             agent_pid_start_time: None,
             supervisor_pid: None,

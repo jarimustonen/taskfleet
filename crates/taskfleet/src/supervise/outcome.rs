@@ -323,6 +323,7 @@ mod tests {
             base_sha: None,
             tmux_window: None,
             tmux_identity: None,
+            evidence: None,
             agent_pid: None,
             agent_pid_start_time: None,
             supervisor_pid: None,

@@ -41,6 +41,9 @@ jobs:
       # v0.1.8 release, can slip onto `main` after a tag is cut. This is a
       # dependency-free grep check, so it flags the mismatch in seconds.
       - run: ./scripts/check-version-snapshots.sh
+      # Keep product identity and canonical-root references on the same cheap,
+      # dependency-free path so Rust-only CI cannot miss a rename regression.
+      - run: ./scripts/check-canonical-identity.sh
       # Exercises the changed-snapshot success path and every hook file guard
       # against a real temporary git fixture with a deterministic cargo stub.
       - run: ./scripts/test-shipshape-bump-hook.sh

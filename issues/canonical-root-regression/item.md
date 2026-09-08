@@ -38,3 +38,9 @@ The earlier dual-root issue described a real visibility problem. Retain its trut
 ### 2026-09-08T10:19:42Z · @ai-agent
 
 Restored unconditional HOME/.taskfleet default selection in 2c2bec6; explicit TASKFLEET_HOME, internal worker binding, validation, process freezing, and read-only noncreation remain covered. Full five-command green gate, canonical identity inventory, disposable-HOME release checks, stripped-PATH focused test, and conductor independent review passed.
+
+## Comments
+
+### 2026-09-08T11:33:57Z · @codex
+
+Added scripts/check-canonical-identity.sh to the existing cheap version-snapshots CI job so the demonstrated canonical-root regression is now guarded in CI; local script passes.

@@ -1,13 +1,10 @@
 //! Canonical Taskfleet public-input and state-home resolution.
 //!
 //! This is the only module that reads Taskfleet's branded environment variables
-//! or selects the repository configuration file. Without an explicit home it
-//! retains a meaningful adopted `.orchestratectl` root while canonical
-//! `.taskfleet` contains no meaningful state; two meaningful roots fail closed.
-//! Resolution is frozen for the process so a command cannot switch state roots
-//! midway through execution.
+//! or selects the repository configuration file. Without an explicit home the
+//! state root is always `$HOME/.taskfleet`. Resolution is frozen for the process
+//! so a command cannot switch state roots midway through execution.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -18,9 +15,7 @@ pub const PROFILE_ENV: &str = "TASKFLEET_PROFILE";
 pub const HARNESS_ENV: &str = "TASKFLEET_HARNESS";
 pub const LOG_ENV: &str = "TASKFLEET_LOG";
 
-/// Runtime-only paths whose presence does not establish meaningful run/config
-/// ownership. The producers use these same constants so a rename cannot make
-/// their own artifacts unexpectedly change default-root selection.
+/// Shared filenames for artifacts stored below the selected state home.
 pub(crate) const LOG_FILE_NAME: &str = "taskfleet.log.jsonl";
 pub(crate) const PI_PROVENANCE_FILE_NAME: &str = "pi-installed-skills.json";
 
@@ -28,7 +23,6 @@ pub(crate) const PI_PROVENANCE_FILE_NAME: &str = "pi-installed-skills.json";
 pub enum HomeSource {
     CanonicalExplicit,
     CanonicalDefault,
-    AdoptedLegacyDefault,
     InternalWorker,
 }
 
@@ -139,147 +133,17 @@ pub fn home_source() -> Result<HomeSource, CliError> {
 }
 
 fn resolve_default_root() -> Result<(PathBuf, HomeSource), CliError> {
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        CliError::system(
-            "home_not_set",
-            format!("neither {HOME_ENV} nor HOME is set"),
-        )
-    })?;
-    if home.is_empty() {
-        return Err(CliError::system(
-            "home_not_set",
-            "HOME is set to an empty string",
-        ));
-    }
-    let account_home = absolute_path(Path::new(&home))?;
-    let canonical = account_home.join(".taskfleet");
-    let legacy = account_home.join(".orchestratectl");
-
-    if roots_are_same(&canonical, &legacy) {
-        return Ok((canonical, HomeSource::CanonicalDefault));
-    }
-
-    let canonical_kind = default_root_kind(&canonical)?;
-    let legacy_kind = default_root_kind(&legacy)?;
-    match (canonical_kind, legacy_kind) {
-        (RootKind::Meaningful, RootKind::Meaningful) => Err(CliError::user(
-            "conflicting_state_homes",
-            format!(
-                "both canonical home {} and adopted legacy home {} contain meaningful state; set {HOME_ENV} to the authoritative root",
-                canonical.display(),
-                legacy.display()
-            ),
-        )),
-        (RootKind::Meaningful, _) | (_, RootKind::Empty | RootKind::Incidental) => {
-            Ok((canonical, HomeSource::CanonicalDefault))
-        }
-        (RootKind::Empty | RootKind::Incidental, RootKind::Meaningful) => {
-            Ok((legacy, HomeSource::AdoptedLegacyDefault))
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RootKind {
-    Empty,
-    Incidental,
-    Meaningful,
-}
-
-/// Classify a default root without changing it. Only the two runtime-only
-/// trees Taskfleet itself creates are incidental. Unknown top-level entries,
-/// symlinks, and unknown files inside those trees are meaningful so a newer
-/// state format always fails closed instead of being guessed away.
-fn default_root_kind(path: &Path) -> Result<RootKind, CliError> {
-    validate_selected_home(path)?;
-    let entries = match std::fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(RootKind::Empty),
-        Err(e) => {
-            return Err(CliError::system(
-                "home_unreadable",
-                format!("could not inspect state home {}: {e}", path.display()),
-            ))
-        }
-    };
-
-    let mut saw_incidental = false;
-    for entry in entries {
-        let entry = entry.map_err(|e| {
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
             CliError::system(
-                "home_unreadable",
-                format!("could not inspect state home {}: {e}", path.display()),
+                "home_not_set",
+                format!("neither {HOME_ENV} nor HOME is set"),
             )
         })?;
-        let name = entry.file_name();
-        if name == OsStr::new("logs") {
-            if !incidental_tree(&entry.path(), &[LOG_FILE_NAME])? {
-                return Ok(RootKind::Meaningful);
-            }
-            saw_incidental = true;
-        } else if name == OsStr::new("state") {
-            if !incidental_tree(&entry.path(), &[PI_PROVENANCE_FILE_NAME])? {
-                return Ok(RootKind::Meaningful);
-            }
-            saw_incidental = true;
-        } else {
-            return Ok(RootKind::Meaningful);
-        }
-    }
-    Ok(if saw_incidental {
-        RootKind::Incidental
-    } else {
-        RootKind::Empty
-    })
-}
-
-fn incidental_tree(path: &Path, allowed_files: &[&str]) -> Result<bool, CliError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|e| {
-        CliError::system(
-            "home_unreadable",
-            format!("could not inspect state path {}: {e}", path.display()),
-        )
-    })?;
-    if !metadata.file_type().is_dir() {
-        return Ok(false);
-    }
-    for entry in std::fs::read_dir(path).map_err(|e| {
-        CliError::system(
-            "home_unreadable",
-            format!("could not inspect state path {}: {e}", path.display()),
-        )
-    })? {
-        let entry = entry.map_err(|e| {
-            CliError::system(
-                "home_unreadable",
-                format!("could not inspect state path {}: {e}", path.display()),
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|e| {
-            CliError::system(
-                "home_unreadable",
-                format!(
-                    "could not inspect state path {}: {e}",
-                    entry.path().display()
-                ),
-            )
-        })?;
-        if !file_type.is_file()
-            || !allowed_files
-                .iter()
-                .any(|allowed| entry.file_name() == OsStr::new(allowed))
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn roots_are_same(left: &Path, right: &Path) -> bool {
-    match (left.canonicalize(), right.canonicalize()) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    let root = absolute_path(Path::new(&home))?.join(".taskfleet");
+    validate_selected_home(&root)?;
+    Ok((root, HomeSource::CanonicalDefault))
 }
 
 fn env_path(name: &str) -> Result<Option<PathBuf>, CliError> {

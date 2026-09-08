@@ -43,8 +43,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use taskfleet_core::{
-    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Node,
-    NodeId, RunLock, RunPaths, Status, WorkerExit,
+    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt,
+    replay_unapplied_unlocked, Node, NodeId, RunLock, RunPaths, Status, WorkerExit,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -1207,36 +1207,79 @@ pub fn dispatch(
         // the `run.status`, here under a deterministic idempotency key so the
         // per-tick re-evaluation appends at most once and a racing cancel is a
         // clean no-op (its terminal manifest makes `rollup_status` return None).
-        let children_all_terminal = child_tails.values().all(|t| t.terminal);
-        if let Some(status) = cleanup::rollup_status(&paths, children_all_terminal) {
-            let status_str = match status {
+        // Revalidate topology and append under the parent run lock. The tail
+        // cache is a consumption cursor, not child-membership authority: a
+        // `child.spawned` may land after this tick's own-tail scan. Holding the
+        // parent lock while discovering links closes that race. Child manifests
+        // are read-only cross-run evidence; a missing/live/failed child fails
+        // recovery closed, while a child that later recovers to Done is observed
+        // fresh on the next tick.
+        let rollup = RunLock::acquire(&paths.lock()).and_then(|guard| {
+            let lock = guard.witness();
+            replay_unapplied_unlocked(&lock, &paths)?;
+            let linked_children = discover_children_unlocked(&paths)?;
+            let child_statuses: Option<Vec<Status>> = linked_children
+                .keys()
+                .map(|child_run_id| {
+                    parse_run_id(child_run_id)
+                        .ok()
+                        .and_then(|id| run_paths_exact(&root, &id).ok())
+                        .and_then(|child_paths| read_manifest_opt(&child_paths).ok().flatten())
+                        .map(|manifest| manifest.status)
+                })
+                .collect();
+            // Preserve ordinary report-consumption ordering: a terminal child
+            // manifest is not enough until its report cursor has been consumed.
+            // Also require every freshly discovered link to be represented, so
+            // a child appended after the prior own-tail scan blocks this tick.
+            let (children_all_terminal, children_all_successful) = child_completion_evidence(
+                linked_children.keys().map(String::as_str),
+                &child_tails,
+                child_statuses.as_deref(),
+            );
+            let Some(decision) =
+                cleanup::rollup_decision(&paths, children_all_terminal, children_all_successful)
+            else {
+                return Ok(None);
+            };
+            let status_str = match decision.status {
                 Status::Done => "done",
                 Status::Cancelled => "cancelled",
-                // Done/Cancelled/Failed are the only values `rollup_status`
+                // Done/Cancelled/Failed are the only values `rollup_decision`
                 // returns; anything else falls back to failed.
                 _ => "failed",
             };
-            let key = format!("supervisor-rollup:{run_id}:run-status");
-            if let Err(e) = append_and_apply_event(
-                &paths,
-                "run.status",
-                None,
-                Some(&key),
-                json!({ "status": status_str }),
-            ) {
-                warn!(
-                    target: "taskfleet::supervise",
-                    error = %e,
-                    "failed to record terminal run.status; will retry next tick"
-                );
+            let (key, data) = if let Some(seq) = decision.recovery_merge_seq {
+                (
+                    format!("supervisor-recovery-rollup:{run_id}:merge-report:{seq}"),
+                    json!({
+                        "status": status_str,
+                        "recovery_merge_report_seq": seq,
+                        "children_successful": true
+                    }),
+                )
             } else {
-                info!(
-                    target: "taskfleet::supervise",
-                    run_id = %run_id,
-                    status = status_str,
-                    "rolled run up to terminal status from terminal node(s)"
-                );
-            }
+                (
+                    format!("supervisor-rollup:{run_id}:run-status"),
+                    json!({ "status": status_str }),
+                )
+            };
+            append_and_apply_unlocked(&lock, &paths, "run.status", None, Some(&key), data)?;
+            Ok(Some(status_str))
+        });
+        match rollup {
+            Ok(Some(status)) => info!(
+                target: "taskfleet::supervise",
+                run_id = %run_id,
+                status,
+                "rolled run up to terminal status from terminal node(s)"
+            ),
+            Ok(None) => {}
+            Err(e) => warn!(
+                target: "taskfleet::supervise",
+                error = %e,
+                "failed to record terminal run.status; will retry next tick"
+            ),
         }
 
         // Terminal-transition cleanup: once the run is terminal, close each
@@ -1986,41 +2029,46 @@ fn record_child_attached(root: &Path, child_run_id: &str, parent_paths: &RunPath
 /// that lists a given child wins (a child is registered under exactly
 /// one node).
 fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, String> {
-    // Scan every node under the run's shared lock so a concurrent reducer
-    // mutating the `nodes/` set cannot hand us a half-updated child map
-    // (design.md §4). A lock-acquire failure degrades to an empty map, the same
-    // way an unreadable `nodes/` already does.
-    RunLock::with_shared_lock(&paths.lock(), || {
-        let mut out = std::collections::BTreeMap::new();
-        let Ok(entries) = std::fs::read_dir(paths.nodes_dir()) else {
-            return Ok(out);
+    // Boot/reseed is best-effort and retains its historical empty-on-read-error
+    // behavior. Authorization paths call the fallible in-lock helper directly.
+    RunLock::with_shared_lock(&paths.lock(), || discover_children_unlocked(paths))
+        .unwrap_or_default()
+}
+
+/// Fallible child-membership scan for callers already holding the parent run
+/// lock. Keeping lock acquisition out of this helper avoids recursive-flock
+/// deadlocks and lets recovery fail closed on every projection read error.
+fn discover_children_unlocked(
+    paths: &RunPaths,
+) -> taskfleet_core::Result<std::collections::BTreeMap<String, String>> {
+    let mut out = std::collections::BTreeMap::new();
+    let entries = match std::fs::read_dir(paths.nodes_dir()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let p = entry?.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            continue;
         };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
-                continue;
-            };
-            // A stem that is not a well-formed node id can't be one of our
-            // projection files; skip it.
-            let Ok(nid) = NodeId::parse_str(&node_id) else {
-                continue;
-            };
-            if let Ok(Some(n)) = read_node_opt(paths, &nid) {
-                for c in &n.children {
-                    // `c.run_id` is a validated `RunId` — the projection would have
-                    // failed to deserialize otherwise — so it is already safe to
-                    // use as a path component when reseeding child tails.
-                    out.entry(c.run_id.to_string())
-                        .or_insert_with(|| node_id.clone());
-                }
+        // A stem that is not a well-formed node id can't be one of our
+        // projection files; skip it.
+        let Ok(nid) = NodeId::parse_str(&node_id) else {
+            continue;
+        };
+        if let Some(n) = read_node_opt(paths, &nid)? {
+            for c in &n.children {
+                // `c.run_id` is validated during projection deserialization.
+                out.entry(c.run_id.to_string())
+                    .or_insert_with(|| node_id.clone());
             }
         }
-        Ok(out)
-    })
-    .unwrap_or_default()
+    }
+    Ok(out)
 }
 
 /// If `tail`'s last [`poll`](tail::EventTail::poll) parked at a corrupt line,
@@ -2188,6 +2236,30 @@ fn maybe_warn_dropped(
     *last_count = current;
     *last_at = Some(now);
     true
+}
+
+/// Combine fresh linked-child membership/current manifests with the existing
+/// report-consumption cursors. A newly linked child absent from the cache blocks
+/// ordinary and recovery roll-up; a previously failed child may authorize
+/// recovery once its current manifest is durably Done.
+fn child_completion_evidence<'a>(
+    mut linked_child_ids: impl Iterator<Item = &'a str>,
+    child_tails: &std::collections::BTreeMap<String, ChildTracking>,
+    child_statuses: Option<&[Status]>,
+) -> (bool, bool) {
+    let linked_consumed = linked_child_ids.all(|child_run_id| {
+        child_tails
+            .get(child_run_id)
+            .is_some_and(|tracking| tracking.terminal)
+    });
+    let all_terminal = child_statuses.is_some_and(|statuses| {
+        statuses.iter().all(|status| status.is_terminal())
+            && child_tails.values().all(|tracking| tracking.terminal)
+            && linked_consumed
+    });
+    let all_successful =
+        child_statuses.is_some_and(|statuses| statuses.iter().all(|s| *s == Status::Done));
+    (all_terminal, all_successful)
 }
 
 fn all_work_done(
@@ -3377,6 +3449,40 @@ fn watchdog_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_linked_child_and_recovered_child_gate_rollup_evidence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tails = std::collections::BTreeMap::new();
+        let linked = "01jxsnap000000000000000009";
+
+        let evidence =
+            child_completion_evidence(std::iter::once(linked), &tails, Some(&[Status::Pending]));
+        assert_eq!(
+            evidence,
+            (false, false),
+            "a newly linked live child absent from cached tails blocks recovery"
+        );
+
+        tails.insert(
+            linked.to_owned(),
+            ChildTracking {
+                parent_node_id: "n-0001".into(),
+                tail: tail::EventTail::new(tmp.path().join("events.jsonl"), 0),
+                terminal: true,
+            },
+        );
+        assert_eq!(
+            child_completion_evidence(std::iter::once(linked), &tails, Some(&[Status::Failed])),
+            (true, false),
+            "terminal failure is not successful topology"
+        );
+        assert_eq!(
+            child_completion_evidence(std::iter::once(linked), &tails, Some(&[Status::Done])),
+            (true, true),
+            "the current durable Done manifest supersedes the old terminal observation"
+        );
+    }
 
     /// `maybe_warn_dropped` warns on the first new drop, then suppresses
     /// further warnings inside `DROPPED_WARN_INTERVAL`, then warns again once

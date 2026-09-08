@@ -512,3 +512,227 @@ fn corrupt_report_against_terminal_node_is_noop() {
     assert_eq!(n.status, Status::Done);
     assert_eq!(n.last_report, Some(report), "last_report must be untouched");
 }
+
+/// Failed -> Done is the one run-level recovery: it needs a merge report that
+/// the shared node fold actually adopted before the recovery event.
+#[test]
+fn failed_run_recovers_only_from_adopted_confirmed_merge() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+    h.append("node.report", Some("n-0001"), json!({ "success": false }));
+    h.append("run.status", None, json!({ "status": "failed" }));
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({
+            "success": true,
+            "origin": { "kind": "run-merge", "op_id": "op-1", "worker_oid": "abc" },
+            "via": 17
+        }),
+    );
+    let facts = taskfleet_core::read_node_status_facts(&h.paths, None).unwrap();
+    let merge_seq = facts[0].confirmed_merge_seq.expect("merge adopted");
+    assert_eq!(facts[0].status, Status::Done, "fold and projection agree");
+    assert_eq!(h.node("n-0001").status, Status::Done);
+
+    h.append(
+        "run.status",
+        None,
+        json!({
+            "status": "done",
+            "recovery_merge_report_seq": merge_seq,
+            "children_successful": true
+        }),
+    );
+    assert_eq!(read_manifest(&h.paths).unwrap().status, Status::Done);
+}
+
+/// The real race is legal: a supervisor may compute Failed, lose the append
+/// race to merge adoption, and append that stale Failed before the next tick
+/// emits the coherent recovery.
+#[test]
+fn stale_failed_rollup_after_merge_does_not_block_recovery() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+    h.append("node.report", Some("n-0001"), json!({ "success": false }));
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": true, "origin": { "kind": "run-merge" } }),
+    );
+    // The first run-status append carries a stale decision computed while the
+    // node was Failed, but arrives only after merge adoption made it Done.
+    h.append("run.status", None, json!({ "status": "failed" }));
+    let merge_seq = taskfleet_core::read_node_status_facts(&h.paths, None).unwrap()[0]
+        .confirmed_merge_seq
+        .unwrap();
+    h.append(
+        "run.status",
+        None,
+        json!({
+            "status": "done",
+            "recovery_merge_report_seq": merge_seq,
+            "children_successful": true
+        }),
+    );
+    assert_eq!(read_manifest(&h.paths).unwrap().status, Status::Done);
+}
+
+/// False/malformed/forged authority, incomplete topology, and cancellation do
+/// not gain a generic terminal reopen path.
+#[test]
+fn recovery_refuses_forged_failed_and_cancelled_topologies() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+    h.append("node.report", Some("n-0001"), json!({ "success": false }));
+    h.append("run.status", None, json!({ "status": "failed" }));
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({
+            "success": true,
+            "via": "explicit-merge",
+            "origin": { "kind": "agent" }
+        }),
+    );
+    h.append(
+        "run.status",
+        None,
+        json!({
+            "status": "done",
+            "recovery_merge_report_seq": 999,
+            "children_successful": true
+        }),
+    );
+    assert_eq!(read_manifest(&h.paths).unwrap().status, Status::Failed);
+    assert_eq!(h.node("n-0001").status, Status::Failed);
+
+    let mut cancelled = Harness::new();
+    cancelled.bootstrap_node();
+    cancelled.append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": false, "cancelled": true, "reason": "operator" }),
+    );
+    cancelled.append("run.status", None, json!({ "status": "cancelled" }));
+    cancelled.append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": true, "origin": { "kind": "run-merge" } }),
+    );
+    cancelled.append(
+        "run.status",
+        None,
+        json!({
+            "status": "done",
+            "recovery_merge_report_seq": cancelled.events_len() as u64 - 1,
+            "children_successful": true
+        }),
+    );
+    assert_eq!(
+        read_manifest(&cancelled.paths).unwrap().status,
+        Status::Cancelled
+    );
+    assert_eq!(cancelled.node("n-0001").status, Status::Cancelled);
+}
+
+/// One recovered node cannot erase an independent failed or live sibling.
+#[test]
+fn recovery_requires_every_own_node_done() {
+    for sibling_report in [Some(json!({ "success": false })), None] {
+        let mut h = Harness::new();
+        h.bootstrap_node();
+        h.append(
+            "node.created",
+            Some("n-0002"),
+            json!({ "kind": "spinoff", "task": "sibling" }),
+        );
+        h.append("node.report", Some("n-0001"), json!({ "success": false }));
+        if let Some(report) = sibling_report.clone() {
+            h.append("node.report", Some("n-0002"), report);
+        }
+        h.append("run.status", None, json!({ "status": "failed" }));
+        h.append(
+            "node.report",
+            Some("n-0001"),
+            json!({ "success": true, "origin": { "kind": "run-merge" } }),
+        );
+        let merge_seq = taskfleet_core::read_node_status_facts(&h.paths, None)
+            .unwrap()
+            .into_iter()
+            .find_map(|fact| fact.confirmed_merge_seq)
+            .unwrap();
+        h.append(
+            "run.status",
+            None,
+            json!({
+                "status": "done",
+                "recovery_merge_report_seq": merge_seq,
+                "children_successful": true
+            }),
+        );
+        assert_eq!(read_manifest(&h.paths).unwrap().status, Status::Failed);
+    }
+}
+
+/// Replaying an earlier recovery event cannot look ahead to a later merge, and
+/// malformed report fields after the bound are not interpreted by that fold.
+#[test]
+fn recovery_replay_is_bounded_before_current_event() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+    h.append("node.report", Some("n-0001"), json!({ "success": false }));
+    h.append("run.status", None, json!({ "status": "failed" }));
+    let before_recovery = h.events_len() as u64;
+    h.append(
+        "run.status",
+        None,
+        json!({
+            "status": "done",
+            "recovery_merge_report_seq": before_recovery + 2,
+            "children_successful": true
+        }),
+    );
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({
+            "success": true,
+            "origin": { "kind": "run-merge" },
+            "via": 17
+        }),
+    );
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": "true", "origin": { "kind": "run-merge" } }),
+    );
+
+    // The bounded skim never decodes future report fields into typed booleans.
+    let facts = taskfleet_core::read_node_status_facts(&h.paths, Some(before_recovery + 1))
+        .expect("future malformed fields are outside the fold");
+    assert_eq!(facts[0].status, Status::Failed);
+    assert_eq!(facts[0].confirmed_merge_seq, None);
+
+    // Rewind only the manifest watermark/status and trigger normal catch-up.
+    // The node projection intentionally remains Done from the future merge: the
+    // run-status reducer must still decide from the bounded log fold, not it.
+    let mut manifest = read_manifest(&h.paths).unwrap();
+    manifest.applied_seq = before_recovery;
+    manifest.status = Status::Failed;
+    std::fs::write(
+        h.paths.manifest(),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    h.append(
+        "orchestrator.decision",
+        None,
+        json!({ "summary": "replay" }),
+    );
+    assert_eq!(
+        read_manifest(&h.paths).unwrap().status,
+        Status::Failed,
+        "future merge authority must not authorize the earlier recovery event"
+    );
+}

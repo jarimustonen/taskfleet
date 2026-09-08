@@ -2,7 +2,7 @@
 //!
 //! Two cooperating responsibilities the per-run supervisor runs each tick:
 //!
-//!   1. **Run-status roll-up** ([`rollup_status`]). The reducer terminalizes
+//!   1. **Run-status roll-up** ([`rollup_decision`]). The reducer terminalizes
 //!      *nodes* from `node.report` events but never the *run* — only `run
 //!      cancel` ever produced a `run.status` event before this. So an agent
 //!      that submits a successful terminal `node.report` left its run `pending`
@@ -118,9 +118,33 @@ pub(crate) fn git_bin() -> String {
 /// than roll the run up from an unreadable log. The teardown loop
 /// ([`cleanup_terminal_nodes`]) may still scan projections for cleanup work; only
 /// this run-status decision must be log-derived.
+#[cfg(test)]
 pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<Status> {
+    // This compatibility helper is ordinary-rollup-only. A terminal child is
+    // not proof of successful child completion, so it must never manufacture
+    // the stronger evidence required for Failed -> Done recovery.
+    rollup_decision(paths, children_all_terminal, false).map(|d| d.status)
+}
+
+/// A supervisor roll-up decision. Recovery carries the exact durable merge
+/// report sequence used both in the event payload and its deterministic key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RollupDecision {
+    pub status: Status,
+    pub recovery_merge_seq: Option<u64>,
+}
+
+/// Derive ordinary terminal roll-up or the sole supported terminal recovery.
+/// A failed run can become Done only when every own node is log-derived Done,
+/// at least one of those nodes adopted confirmed merge authority, and every
+/// linked child is known Done (not merely terminal).
+pub fn rollup_decision(
+    paths: &RunPaths,
+    children_all_terminal: bool,
+    children_all_successful: bool,
+) -> Option<RollupDecision> {
     let manifest = read_manifest_opt(paths).ok().flatten()?;
-    if manifest.status.is_terminal() {
+    if matches!(manifest.status, Status::Done | Status::Cancelled) {
         return None;
     }
     if !children_all_terminal {
@@ -135,7 +159,7 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
     // supervisor roll-up and `cancel_node`'s in-lock last-node roll-up can never
     // diverge. `None` on an empty set (a freshly-created run must not vacuously
     // complete) or any live node.
-    let node_statuses = match taskfleet_core::read_node_statuses(paths) {
+    let node_facts = match taskfleet_core::read_node_status_facts(paths, None) {
         Ok(s) => s,
         Err(e) => {
             // Fail closed: never terminalize a run from an unreadable / corrupt
@@ -154,7 +178,25 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
             return None;
         }
     };
-    taskfleet_core::aggregate_terminal_status(node_statuses.into_iter().map(|(_, s)| s))
+    let status =
+        taskfleet_core::aggregate_terminal_status(node_facts.iter().map(|fact| fact.status))?;
+    if manifest.status == Status::Failed {
+        if status != Status::Done || !children_all_successful {
+            return None;
+        }
+        let recovery_merge_seq = node_facts
+            .iter()
+            .filter_map(|fact| fact.confirmed_merge_seq)
+            .max()?;
+        return Some(RollupDecision {
+            status: Status::Done,
+            recovery_merge_seq: Some(recovery_merge_seq),
+        });
+    }
+    Some(RollupDecision {
+        status,
+        recovery_merge_seq: None,
+    })
 }
 
 /// True when any node's terminal `node.report` was submitted by an explicit
@@ -3200,6 +3242,36 @@ mod tests {
             json!({ "success": true, "via": "watchdog" }),
         );
         assert!(!any_node_merged_explicitly(&paths));
+    }
+
+    #[test]
+    fn failed_recovery_requires_successful_child_topology() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        report(&paths, "n-0001", json!({ "success": false }));
+        append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            Some("supervisor-rollup:test:run-status"),
+            json!({ "status": "failed" }),
+        )
+        .unwrap();
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": true, "origin": { "kind": "run-merge" } }),
+        );
+
+        assert_eq!(
+            rollup_decision(&paths, true, false),
+            None,
+            "a failed/live linked child must block recovery"
+        );
+        let decision = rollup_decision(&paths, true, true).expect("recovered child now Done");
+        assert_eq!(decision.status, Status::Done);
+        assert!(decision.recovery_merge_seq.is_some());
     }
 
     #[test]

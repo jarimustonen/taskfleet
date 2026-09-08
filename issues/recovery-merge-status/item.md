@@ -2,7 +2,7 @@
 created: 2026-09-08
 updated: 2026-09-08
 type: bug
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: homebase:2026-09-07/taskfleet-recovery-status

@@ -160,6 +160,19 @@ impl ReportOrigin {
         is_run_merge_origin || legacy_via_merge
     }
 
+    /// Whether a confirmed merge report may replace a node's settled outcome.
+    ///
+    /// This is the single transition predicate shared by projection reduction
+    /// and log-derived status replay. A confirmed `run merge` may repair a
+    /// failed node (or refresh an already-done node's authoritative report),
+    /// but it never overrides cancellation or any future deliberate terminal
+    /// outcome.
+    #[must_use]
+    pub fn permits_terminal_merge_recovery(status: crate::Status, report: &Value) -> bool {
+        matches!(status, crate::Status::Failed | crate::Status::Done)
+            && Self::report_is_confirmed_merge(report)
+    }
+
     /// Stamp this origin into a report payload under [`REPORT_ORIGIN_KEY`],
     /// overwriting any existing value. A no-op if `report` is not a JSON object
     /// (callers always pass an object — the §7.3 validator rejects non-objects

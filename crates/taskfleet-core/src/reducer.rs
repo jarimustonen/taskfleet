@@ -541,11 +541,38 @@ fn reduce_run_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
         None => return Ok(vec![]),
     };
     let new_status = require_status(ev, paths.events())?;
-    // Terminal-state guard: a settled run never transitions again (e.g. a
-    // late `run.status running` after a cancel). See run-cli-read/handoff.md D5.
+    // Terminal-state guard with one narrow recovery: Failed -> Done is allowed
+    // only when this event names an authoritative merge report that was already
+    // adopted by the log-derived node fold before this event, every own node is
+    // now Done, and the supervisor attests that every linked child is Done.
+    // Cancelled (and every other terminal transition) remains immutable.
     if m.status.is_terminal() {
-        trace_terminal_noop(ev, m.status, new_status);
-        return Ok(vec![]);
+        let recovery_seq = ev
+            .data
+            .get("recovery_merge_report_seq")
+            .and_then(Value::as_u64);
+        let children_successful =
+            ev.data.get("children_successful").and_then(Value::as_bool) == Some(true);
+        let recovery_allowed = m.status == Status::Failed
+            && new_status == Status::Done
+            && children_successful
+            && recovery_seq.is_some_and(|wanted| {
+                crate::cancel::read_node_status_facts(paths, Some(ev.seq))
+                    .ok()
+                    .filter(|facts| {
+                        crate::aggregate_terminal_status(facts.iter().map(|fact| fact.status))
+                            == Some(Status::Done)
+                    })
+                    .is_some_and(|facts| {
+                        facts
+                            .iter()
+                            .any(|fact| fact.confirmed_merge_seq == Some(wanted))
+                    })
+            });
+        if !recovery_allowed {
+            trace_terminal_noop(ev, m.status, new_status);
+            return Ok(vec![]);
+        }
     }
     if m.status == new_status {
         return Ok(vec![]);
@@ -835,19 +862,11 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         // Idempotent: if this exact report is already the node's `last_report`,
         // re-folding it on replay is a clean no-op (never churns `updated_at`).
         //
-        // NOTE — the RUN manifest is intentionally NOT reconciled here (it may stay
-        // `Failed` if a supervisor already rolled it up from the watchdog terminal).
-        // That is the pre-existing `false-failed-after-merge` symptom, NOT introduced
-        // by this change (the prior inline reclaim left the manifest `Failed` too):
-        // a run whose manifest was still non-terminal at adoption time DOES roll up
-        // to `Done` (the reattached supervisor's rollup sees the node `Done`); only
-        // an ALREADY-rolled-up terminal manifest stays put, because reconciling a
-        // settled run status is a distinct change to the run-status terminal guard,
-        // deliberately out of scope. Teardown fires either way (gated on
-        // `manifest.status.is_terminal()` + the merge marker), so no resource leaks.
-        if matches!(n.status, Status::Failed | Status::Done)
-            && report_is_confirmed_explicit_merge(&ev.data)
-        {
+        // The node reducer does not directly project run status: the supervisor
+        // owns cross-node/child topology. Once that topology is wholly successful,
+        // it emits the narrowly-authorized Failed -> Done recovery `run.status`,
+        // whose reducer independently verifies this adopted merge evidence.
+        if ReportOrigin::permits_terminal_merge_recovery(n.status, &ev.data) {
             if n.last_report.as_ref() == Some(&ev.data) && n.status == Status::Done {
                 return Ok(vec![]);
             }
@@ -1250,26 +1269,6 @@ fn trace_terminal_noop(ev: &Event, current: Status, incoming: Status) {
             "no-op: ignored conflicting transition from terminal target"
         );
     }
-}
-
-/// True when a `node.report` payload is a CONFIRMED, SUCCESSFUL explicit merge —
-/// the sole payload shape the terminal-node guard in [`reduce_node_report`]
-/// adopts. Delegates to [`ReportOrigin::report_is_confirmed_merge`] so the
-/// reducer's adoption gate reads the SAME merge truth as the supervisor's
-/// teardown gate, the `landed` fallback, and `run wait`'s `merged` flag.
-///
-/// That truth prefers the typed [`ReportOrigin::RunMerge`] (issue
-/// `retire-via-string`): the legacy `via: "explicit-merge"` string is honored
-/// only as a fallback for a legacy report carrying NO `origin` field, so an
-/// agent-authored report (normalized to an [`ReportOrigin::Agent`] origin by
-/// `node report`) can never be adopted against a settled node on a forged `via`
-/// string alone. It still requires `success == true` with `cancelled`
-/// absent/`false` and strict boolean typing (a malformed payload a live node
-/// would reject as `CorruptEventLog` cannot sneak an adoption in through this
-/// terminal-only exception), and returns `false` rather than erroring so a
-/// replay of such a dead event stays a clean no-op.
-fn report_is_confirmed_explicit_merge(data: &Value) -> bool {
-    ReportOrigin::report_is_confirmed_merge(data)
 }
 
 /// Derive the terminal status a `node.report` event asserts, enforcing the

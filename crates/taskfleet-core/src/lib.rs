@@ -35,8 +35,8 @@ pub mod telemetry;
 mod stress_tests;
 
 pub use cancel::{
-    cancel_node, cancel_node_unlocked, cancel_run, cancel_run_unlocked, read_node_statuses,
-    CancelOutcome, NodeCancelOutcome,
+    cancel_node, cancel_node_unlocked, cancel_run, cancel_run_unlocked, read_node_status_facts,
+    read_node_statuses, CancelOutcome, NodeCancelOutcome, NodeStatusFact,
 };
 pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};

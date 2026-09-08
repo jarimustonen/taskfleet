@@ -79,6 +79,7 @@ use crate::lock::{LockedRun, RunLock};
 use crate::paths::RunPaths;
 use crate::projections::{read_manifest, read_node_opt};
 use crate::reducer::apply_event;
+use crate::report::ReportOrigin;
 use crate::schema::{Event, NodeId, RunId, Status};
 
 /// Outcome of a [`cancel_run`] transaction. Lets a thin CLI wrapper report
@@ -547,7 +548,13 @@ struct CancelLedger {
 /// (potentially multi-KB) full `data` payload. serde ignores every other field,
 /// so a rich `node.report` is scanned but never allocated.
 #[derive(Deserialize)]
+struct EventSeqProbe {
+    seq: u64,
+}
+
+#[derive(Deserialize)]
 struct CancelProbe {
+    seq: u64,
     kind: String,
     #[serde(default)]
     node_id: Option<NodeId>,
@@ -561,12 +568,58 @@ struct CancelProbe {
 /// optional: any other event kind simply leaves them `None`.
 #[derive(Deserialize, Default)]
 struct CancelProbeData {
+    // Keep these as raw JSON values. Besides matching the reducer's strict
+    // interpretation exactly (for example, an advisory non-string `via` does
+    // not invalidate a typed RunMerge origin), this lets a bounded replay skip
+    // future malformed report fields without deserializing them into a typed
+    // shape that could reject an earlier recovery event.
     #[serde(default)]
-    status: Option<String>,
+    status: Option<Value>,
     #[serde(default)]
-    success: Option<bool>,
+    success: Option<Value>,
     #[serde(default)]
-    cancelled: Option<bool>,
+    cancelled: Option<Value>,
+    #[serde(default)]
+    via: Option<Value>,
+    #[serde(default)]
+    origin: OriginProbe,
+}
+
+#[derive(Default)]
+struct OriginProbe {
+    present: bool,
+    value: Value,
+}
+
+impl<'de> Deserialize<'de> for OriginProbe {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self {
+            present: true,
+            value: Value::deserialize(deserializer)?,
+        })
+    }
+}
+
+impl CancelProbeData {
+    fn report_value(&self) -> Value {
+        let mut report = serde_json::Map::new();
+        if let Some(success) = &self.success {
+            report.insert("success".into(), success.clone());
+        }
+        if let Some(cancelled) = &self.cancelled {
+            report.insert("cancelled".into(), cancelled.clone());
+        }
+        if let Some(via) = &self.via {
+            report.insert("via".into(), via.clone());
+        }
+        if self.origin.present {
+            report.insert("origin".into(), self.origin.value.clone());
+        }
+        Value::Object(report)
+    }
 }
 
 /// Replay `events.jsonl` once, streaming, to build the [`CancelLedger`].
@@ -668,13 +721,50 @@ fn read_cancel_ledger(paths: &RunPaths) -> Result<CancelLedger> {
 /// I/O errors reading the log, a rejected symlinked path, or an interior corrupt
 /// event line.
 pub fn read_node_statuses(paths: &RunPaths) -> Result<Vec<(NodeId, Status)>> {
+    Ok(read_node_status_facts(paths, None)?
+        .into_iter()
+        .map(|fact| (fact.node_id, fact.status))
+        .collect())
+}
+
+/// One node's log-derived terminal facts. `confirmed_merge_seq` is present only
+/// when the shared terminal-recovery predicate actually adopted that report;
+/// seeing an authoritative-looking report elsewhere in the log is insufficient.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeStatusFact {
+    /// Node whose facts were folded.
+    pub node_id: NodeId,
+    /// Current status after applying the reducer-equivalent transition rules.
+    pub status: Status,
+    /// Sequence of the authoritative merge report adopted for this node.
+    pub confirmed_merge_seq: Option<u64>,
+}
+
+/// Replay node statuses and adopted merge authority, optionally considering
+/// only events strictly before `before_seq`. The bound is load-bearing for
+/// reducer replay: a future merge report must never authorize an earlier
+/// `run.status` event.
+pub fn read_node_status_facts(
+    paths: &RunPaths,
+    before_seq: Option<u64>,
+) -> Result<Vec<NodeStatusFact>> {
     let events_path = paths.checked_events()?;
     let mut acc = NodeStatusAcc::default();
-    for_each_event_probe::<CancelProbe, _>(&events_path, |probe, _raw| {
-        acc.observe(&probe);
+    for_each_event_probe::<EventSeqProbe, _>(&events_path, |seq_probe, raw| {
+        if before_seq.is_none_or(|bound| seq_probe.seq < bound) {
+            let probe: CancelProbe =
+                serde_json::from_slice(raw).map_err(|e| Error::CorruptEventLog {
+                    path: events_path.clone(),
+                    reason: format!(
+                        "node-status fold: event before bound is malformed: {} [{e}]",
+                        excerpt(raw)
+                    ),
+                })?;
+            acc.observe(&probe);
+        }
         Ok(())
     })?;
-    Ok(acc.finish())
+    Ok(acc.finish_facts())
 }
 
 /// Streaming accumulator for log-derived per-node status: the shared state
@@ -710,6 +800,9 @@ struct NodeStatusAcc {
     order: Vec<NodeId>,
     /// Each node's current log-derived status.
     status: HashMap<NodeId, Status>,
+    /// Sequence of the confirmed merge report that the shared recovery
+    /// predicate adopted for this node.
+    confirmed_merge_seq: HashMap<NodeId, u64>,
 }
 
 impl NodeStatusAcc {
@@ -728,7 +821,13 @@ impl NodeStatusAcc {
                 if let Some(nid) = &probe.node_id {
                     if let Some(cur) = self.status.get_mut(nid) {
                         if !cur.is_terminal() {
-                            if let Some(ns) = probe.data.status.as_deref().and_then(parse_status) {
+                            if let Some(ns) = probe
+                                .data
+                                .status
+                                .as_ref()
+                                .and_then(Value::as_str)
+                                .and_then(parse_status)
+                            {
                                 *cur = ns;
                             }
                         }
@@ -738,14 +837,24 @@ impl NodeStatusAcc {
             "node.report" => {
                 if let Some(nid) = &probe.node_id {
                     if let Some(cur) = self.status.get_mut(nid) {
-                        // Terminal guard *before* deriving the outcome, mirroring
-                        // the reducer: a report against an already-terminal node
-                        // is a dead event (its payload may even be a bare `{}`).
-                        if !cur.is_terminal() {
-                            if let Some(ns) =
-                                report_terminal_status(probe.data.success, probe.data.cancelled)
+                        let report = probe.data.report_value();
+                        if cur.is_terminal() {
+                            // Keep this exactly aligned with `reduce_node_report`:
+                            // only an authoritative successful merge may repair
+                            // Failed/Done, and cancellation is immutable.
+                            if ReportOrigin::permits_terminal_merge_recovery(*cur, &report) {
+                                *cur = Status::Done;
+                                self.confirmed_merge_seq.insert(nid.clone(), probe.seq);
+                            }
+                        } else if let Some(ns) = report_terminal_status(
+                            probe.data.success.as_ref().and_then(Value::as_bool),
+                            probe.data.cancelled.as_ref().and_then(Value::as_bool),
+                        ) {
+                            *cur = ns;
+                            if ns == Status::Done
+                                && ReportOrigin::report_is_confirmed_merge(&report)
                             {
-                                *cur = ns;
+                                self.confirmed_merge_seq.insert(nid.clone(), probe.seq);
                             }
                         }
                     }
@@ -761,7 +870,14 @@ impl NodeStatusAcc {
     /// [`NodeId`]). A validated `NodeId` is `n-` + ASCII digits (≤10, so it fits
     /// in u64); the `unwrap_or` keeps the sort total for a hypothetical
     /// unparseable body.
-    fn finish(mut self) -> Vec<(NodeId, Status)> {
+    fn finish(self) -> Vec<(NodeId, Status)> {
+        self.finish_facts()
+            .into_iter()
+            .map(|fact| (fact.node_id, fact.status))
+            .collect()
+    }
+
+    fn finish_facts(mut self) -> Vec<NodeStatusFact> {
         self.order.sort_by_key(|id| {
             id.as_str()
                 .strip_prefix("n-")
@@ -770,9 +886,10 @@ impl NodeStatusAcc {
         });
         self.order
             .into_iter()
-            .map(|id| {
-                let s = self.status[&id];
-                (id, s)
+            .map(|id| NodeStatusFact {
+                status: self.status[&id],
+                confirmed_merge_seq: self.confirmed_merge_seq.get(&id).copied(),
+                node_id: id,
             })
             .collect()
     }

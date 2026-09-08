@@ -75,9 +75,9 @@ required failure uses direct `node report` without merging. Include:
    - Classify: **real bug** / **expected behaviour** / **cannot tell**. Estimate
      rough severity and who it hits. Sketch what a fix would touch (files/areas)
      — a sketch, not an implementation.
-   - Write findings into `issues/<slug>/item.md` under `## Triage analysis` (or
-     `## Suspected Root Cause`): verdict, severity, affected area, repro status,
-     fix sketch. Keep it tight; for a long trace add `issues/<slug>/analysis.md`
+   - Write findings into `issues/<slug>/item.md` under the exact heading
+     `## Triage analysis`: verdict, severity, affected area, repro status, fix
+     sketch. Keep it tight; for a long trace add `issues/<slug>/analysis.md`
      and link it.
    - Commit with plain `git` and a `Refs-Issue: @<slug>` trailer. This is read-only
      analysis: never use `Fixes-Issue`, `issuectl close --stamp`, or close the issue.

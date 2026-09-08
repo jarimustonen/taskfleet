@@ -1067,6 +1067,27 @@ fn bundled_stint_guidance_distinguishes_untriaged_from_explicit_deferral() {
 }
 
 #[test]
+fn rendered_bug_analysis_skill_requires_the_canonical_triage_heading() {
+    let home = mk_home();
+    let out = bin(&home)
+        .args(["skill", "print", "worktree-bug-analysis"])
+        .output()
+        .expect("print bundled bug-analysis skill");
+    assert!(out.status.success(), "skill print failed: {out:?}");
+    let rendered = String::from_utf8(out.stdout).expect("skill is utf-8");
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        normalized.contains("under the exact heading `## Triage analysis`"),
+        "rendered worker brief contract must require issuectl's canonical heading"
+    );
+    assert!(
+        !rendered.contains("## Suspected Root Cause"),
+        "rendered worker brief contract must not offer an alternative heading"
+    );
+}
+
+#[test]
 fn bundled_workflow_skills_render_the_bounded_stint_contract() {
     fn print_skill(home: &tempfile::TempDir, name: &str) -> String {
         let out = bin(home)

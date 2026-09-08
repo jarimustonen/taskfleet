@@ -2,7 +2,7 @@
 created: 2026-09-08
 updated: 2026-09-08
 type: improvement
-status: open
+status: in-progress
 priority: normal
 provenance: other
 provenance_detail: transferred from issuectl review finding
@@ -10,10 +10,6 @@ source_ref: issuectl:tolerably-wet-summer
 lane: workflow-skills
 lane_seq: 60
 ---
-
-# Taskfleet bug analysis should emit canonical triage heading
-
-## Description
 
 # Taskfleet bug analysis should emit canonical triage heading
 

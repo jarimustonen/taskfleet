@@ -45,6 +45,10 @@ version="$(awk -F'"' '
   in_package && /^version[[:space:]]*=/ { print $2; exit }
 ' "$repo_root/Cargo.toml")"
 tag="v$version"
+# The fixture models a bump commit whose changelog has already been finalized.
+# Seed that state explicitly instead of depending on the source checkout having
+# a historical section for the current version (an abandoned bump does not).
+printf '\n## [%s] - 2000-01-01\n' "$version" >>"$tmp/work/CHANGELOG.md"
 bump_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 tag_oid=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 run_id=01M0JA657EJJJYC7J7230JF42N

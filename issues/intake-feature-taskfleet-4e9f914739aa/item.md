@@ -3,10 +3,13 @@ created: 2026-09-08
 updated: 2026-09-08
 type: feature
 reporter: jari
-status: untriaged
+status: duplicate
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:reitti-cli-wrapup-run-list-repo-filter-20260908
+duplicate_of: phenomenally-noisy-behavior
+closed: 2026-09-08
+closed_by: ai-agent
 ---
 
 # Filter run list by source repository
@@ -63,3 +66,9 @@ feature is live in the repository HEAD and available in the installed binary
 ## Reporter
 
 Jari (via reitti-cli wrap-up)
+
+## Resolution
+
+### 2026-09-08T13:33:12Z · @ai-agent
+
+Duplicate of @phenomenally-noisy-behavior, implemented in main by 9e44dce and verified in the preceding regression round. Distribution clarification superseding the intake recommendation: installed Taskfleet 0.7.1 at b9e15ae does NOT expose --repo; the repository-local release binary does. The canonical Homebrew formula and latest published release are still 0.7.1, so the implementation is not yet available through the published channel. No new code work is needed for this duplicate; publication is separate from the completed source fix.

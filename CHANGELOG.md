@@ -14,6 +14,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.9.0] - 2026-09-08
+
+### Added
+
+- Archive exact Pi session and terminal worker evidence (`durable-worker-evidence`).
+
+### Changed
+
+- Validate explicit source binding for archived historical run retirement (`historical-source-binding`).
+
 ## [0.8.2] - 2026-09-08
 
 ### Added

@@ -103,7 +103,7 @@ main for these units:
   to workmux-owned naming. All five gates passed (1,077 nextest tests), rendered
   contracts and catalog snapshots were reviewed, and local release skill output
   was inspected. All five assigned workflow issues are closed.
-- Retained-work visibility and discard (`aca8b46`, closure `ec7ec51`): both
+- Retained-work visibility and discard (`a38d9f5`, closure `3d669f6`): both
   assigned issues are closed. All five final gates, the identity inventory, and
   the local release build passed. Thirteen disposable real-Git command tests
   also passed with PATH containing only an explicit Git link. Final help/show
@@ -111,7 +111,7 @@ main for these units:
   findings and expected snapshot mismatches were corrected before the final gate;
   no required validation failure remained. The conductor verified the canonical
   merge report and resulting source on main.
-- Canonical triage producer (`cdbe84b`, closure `89ed081`): the analysis skill
+- Canonical triage producer (`192b346`, closure `398f224`): the analysis skill
   requires the exact heading consumed by issuectl. Its rendered-contract test
   ignores line wrapping while rejecting the former alternative. All five gates,
   the identity inventory, local release build, rendered output inspection, and
@@ -164,3 +164,21 @@ assigned work rather than filed as speculative residual issues:
 
 The implementation gates and final integrated validation remain the completion
 criterion; review findings alone are not a success claim.
+
+The recovery review found the same ownership problem at a different boundary:
+the child-tail terminal flag means its report was consumed, not that the child
+succeeded. Recovery now uses fresh child membership and manifest evidence while
+retaining the existing report-consumption order. Catch-up, membership discovery,
+decision, and append share the parent lock; discovery propagates errors without
+reacquiring that lock. The event reducer checks only bounded local log facts, so
+replay never reads another run or borrows authority from a future report. A
+deterministic key identifies the exact authorizing merge report independently of
+the earlier failed roll-up. Independent bounded re-review found the reported
+missing-child race resolved and no new locking/read-failure blocker.
+
+Source synchronization also brought in `@intake-bug-taskfleet-8db39a4f7cdb`
+(`42fec0a`). It describes the exact same observed recovery run as
+`@recovery-merge-status` and was closed as a linked duplicate, without launching
+another worker or adding a second status owner. This is intake deduplication,
+not an additional independently fixed bug. Current landing identifiers above
+reflect the clean source rebase onto that intake commit.

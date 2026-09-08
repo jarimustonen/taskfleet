@@ -113,8 +113,9 @@ Useful surfaces:
 
 ```bash
 taskfleet run list                      # all runs
-taskfleet run show <run-id> --json      # one run, with the landed flag
+taskfleet run show <run-id> --json      # landed + current preserved_work inventory
 taskfleet run wait <run-id> [...]       # block until runs settle
+taskfleet run discard <run-id> --reason "superseded" --dry-run # preview audited terminal cleanup
 taskfleet event tail <run-id> --follow  # stream the event log
 taskfleet config show                   # effective config with per-key source
 ```

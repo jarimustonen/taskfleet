@@ -352,9 +352,7 @@ pub fn append_and_apply_event(
         // only once the prior event's projection is durably committed
         // (`applied_seq >= prior.seq`) — never a stale "found, but not applied"
         // result. A clean run with no tail makes this a cheap no-op.
-        let events_path = paths.checked_events()?;
-        truncate_torn_tail(&events_path)?;
-        replay_unapplied(paths, &events_path)?;
+        replay_unapplied_unlocked(lock, paths)?;
         // Idempotency lookup + append share this one lock window so a
         // concurrent retry can't see "no prior event" and double-append.
         if let Some(key) = idempotency_key {
@@ -378,6 +376,15 @@ pub fn append_and_apply_event(
             prior: None,
         })
     })
+}
+
+/// Catch projections up to the durable event log under an already-held
+/// exclusive lock, without appending an event. Mutation commands that must
+/// decide from current projections use this before their read/authorize step.
+pub fn replay_unapplied_unlocked(_witness: &LockedRun<'_>, paths: &RunPaths) -> Result<()> {
+    let events_path = paths.checked_events()?;
+    truncate_torn_tail(&events_path)?;
+    replay_unapplied(paths, &events_path)
 }
 
 /// Append one event and fold it into projections. The `_witness: &LockedRun`
@@ -425,28 +432,17 @@ pub fn append_and_apply_unlocked(
 /// [`append_and_apply_event`] threads it out. See [`AppendResult::applied`] for
 /// why callers want it (issue `reducer-adopt-explicit-merge`).
 fn append_and_apply_reporting(
-    _witness: &LockedRun<'_>,
+    witness: &LockedRun<'_>,
     paths: &RunPaths,
     kind: &str,
     node_id: Option<&NodeId>,
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<(u64, bool)> {
-    // Symlink containment runs once here, before truncate/recover/open all
-    // reuse this path — guarding the run root and the event log itself so a
-    // swapped `events.jsonl` can't redirect the run's source-of-truth write
-    // outside the run tree.
+    // Direct lock-held callers get the same catch-up guarantee as the ordinary
+    // append wrapper before computing this event against projections.
+    replay_unapplied_unlocked(witness, paths)?;
     let events_path = paths.checked_events()?;
-    // Remove any crash-torn final line BEFORE recovering the seq or
-    // appending, so the new record is never concatenated onto a partial one
-    // and `seq` is recovered from a clean, `\n`-terminated file.
-    truncate_torn_tail(&events_path)?;
-    // Replay any unapplied tail (`seq > applied_seq`) before appending, so this
-    // append never stacks onto a projection that is behind the log. When called
-    // from `append_and_apply_event` the tail was already drained a moment ago,
-    // so this is a no-op; direct lock-held callers (supervisor batch, cancel,
-    // discussion/spinoff resolution) get the same recovery for free.
-    replay_unapplied(paths, &events_path)?;
     let last = recover_last_seq(&events_path)?;
     let seq = last + 1;
     let ev = Event {

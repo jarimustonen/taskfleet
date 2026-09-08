@@ -125,6 +125,14 @@ expression: value
         "has_subcommands": false
       },
       {
+        "command": "taskfleet run discard",
+        "about": "Remove one failed/cancelled node's retained worktree and branch after recording explicit durable authorization. This never changes run status or marks work landed",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
         "command": "taskfleet run list",
         "about": "List runs on disk",
         "aliases": [],

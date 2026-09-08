@@ -99,8 +99,8 @@ same way across both verbs. `data.manifest` then extends that row with
 full detail (`lifecycle`, `updated_at`, `source_*`, `parent_*`,
 `open_discussions`, `pending_spinoffs`); `data.counts` carries
 denormalised counters; `data.supervisor` is the probed supervisor
-liveness; `landed`/`landed_method`/`recoverable_work`/`false_failed` are
-`run show`-only computed detail. `report` is the default worker's terminal
+liveness; `landed`/`landed_method`/`recoverable_work`/`preserved_work`/
+`false_failed` are `run show`-only computed detail. `report` is the default worker's terminal
 report for a **single-worker** run and is `null` before that worker reports or
 when the run has multiple nodes. Some kinds add kind-specific fields.
 
@@ -116,6 +116,27 @@ already-integrated content) and terminalizes the run to `done` honestly.
 Do NOT treat a `false_failed` run as done — run salvage first. Never
 finish a run with a raw `git merge`; always use `run merge`/`run
 salvage`.
+
+`data.preserved_work` is always an array. It inventories current retained
+worktrees and branches for failed/cancelled nodes, including cleanliness,
+unmerged commit count, and whether Git verification succeeded. An empty array
+means no retained resources were observed. A non-empty row is not a success or
+salvage signal: inspect it, choose `run salvage` only for an eligible failed run
+whose work should land, manually copy anything needed from a cancelled run, or
+explicitly dispose of reviewed remnants with:
+
+```bash
+taskfleet run discard <run-id> --reason "superseded" --dry-run
+# For a selected dirty row:
+taskfleet run discard <run-id> --node n-0002 --reason "superseded" --force
+```
+
+Use `--dry-run --output json` first. More than one retained node requires
+`--node`. Dirty work requires `--force`; unverifiable ownership or Git state is
+always refused. Discard records authorization before deletion, leaves the run
+history/status/`landed` truth unchanged. An interrupted/incomplete authorization
+is safely retryable only with the same reason and force inputs; a completed
+retry is a no-op. Never reinterpret repeated `run cancel` as discard.
 
 `data.supervisor.state` is the field to branch on — it distinguishes the
 conditions the legacy `alive` boolean collapses: `alive` (running),
@@ -221,6 +242,10 @@ folds in a summary; use `run show` or `node show` to read the full
    (`done | failed | cancelled`) only once every node has settled. Both
    forms are idempotent — a duplicate cancel of an already-terminal
    node/run reports it settled rather than erroring.
+7. **Terminal retained work** — inspect `data.preserved_work` even after
+   `status` is terminal. If non-empty, review the exact node/path before choosing
+   salvage, manual harvest, or explicit `run discard --reason ...`; never clean
+   it with raw Git or infer that cancellation made it disposable.
 
 ## Errors
 

@@ -83,7 +83,8 @@ expression: value
     ],
     "landed": false,
     "landed_method": "unverified",
-    "report": null
+    "report": null,
+    "preserved_work": []
   },
   "warnings": []
 }

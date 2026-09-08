@@ -15,6 +15,47 @@ use std::process::{Command, Stdio};
 
 use tracing::{info, warn};
 
+/// One registered worktree row from `git worktree list --porcelain`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeRegistration {
+    pub path: String,
+    /// Short local branch name, or `None` for a detached worktree.
+    pub branch: Option<String>,
+}
+
+fn parse_worktree_registrations(bytes: &[u8]) -> Option<Vec<WorktreeRegistration>> {
+    let mut rows = Vec::new();
+    let mut current: Option<WorktreeRegistration> = None;
+    for field in bytes.split(|b| *b == 0) {
+        if field.is_empty() {
+            if let Some(row) = current.take() {
+                rows.push(row);
+            }
+            continue;
+        }
+        let field = std::str::from_utf8(field).ok()?;
+        if let Some(path) = field.strip_prefix("worktree ") {
+            if current.is_some() || path.is_empty() {
+                return None;
+            }
+            current = Some(WorktreeRegistration {
+                path: path.to_string(),
+                branch: None,
+            });
+        } else if let Some(branch) = field.strip_prefix("branch refs/heads/") {
+            let row = current.as_mut()?;
+            if branch.is_empty() {
+                return None;
+            }
+            row.branch = Some(branch.to_string());
+        }
+    }
+    if let Some(row) = current {
+        rows.push(row);
+    }
+    (!rows.is_empty()).then_some(rows)
+}
+
 /// Typed git backend, pinned to a specific binary. Construct with
 /// [`Git::with_bin`], threading the caller's already-resolved binary name (the
 /// supervisor resolves it once via [`crate::supervise::cleanup::git_bin`], which
@@ -179,34 +220,60 @@ impl Git {
         }
     }
 
-    /// The main worktree path for a linked worktree, read from the FIRST
-    /// `worktree <path>` line of `git -C <dir> worktree list --porcelain` (git
-    /// always lists the main worktree first). `None` if git is unavailable, the
-    /// path is no longer a worktree, or the output is unparseable.
-    pub fn main_worktree(&self, dir: &str) -> Option<String> {
+    /// Every registered worktree, including its checked-out local branch.
+    /// `None` means Git could not provide a trustworthy registration list.
+    pub fn worktree_registrations(&self, repo: &str) -> Option<Vec<WorktreeRegistration>> {
         let out = self
-            .at(dir)
-            .args(["worktree", "list", "--porcelain"])
+            .at(repo)
+            .args(["worktree", "list", "--porcelain", "-z"])
             .stderr(Stdio::null())
             .output()
             .ok()?;
         if !out.status.success() {
             return None;
         }
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .find_map(|l| l.strip_prefix("worktree ").map(|s| s.trim().to_string()))
-            .filter(|s| !s.is_empty())
+        parse_worktree_registrations(&out.stdout)
+    }
+
+    /// Whether an exact local branch ref exists. `None` on any Git error.
+    pub fn branch_exists(&self, repo: &str, branch: &str) -> Option<bool> {
+        if branch.is_empty() {
+            return None;
+        }
+        let status = self
+            .at(repo)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
+        match status.code() {
+            Some(0) => Some(true),
+            Some(1) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The main worktree path for a linked worktree. Kept as the small legacy
+    /// convenience over the exact registration observer above.
+    pub fn main_worktree(&self, dir: &str) -> Option<String> {
+        self.worktree_registrations(dir)
+            .and_then(|rows| rows.into_iter().next().map(|row| row.path))
     }
 
     /// `git -C <repo> worktree remove [--force] <worktree_path>` — lenient. The
     /// `force` flag is a data-loss boundary (issue
     /// `non-merge-teardown-dirty-worktree`):
     ///
-    /// - `force == true` — reserved for a CONFIRMED explicit `run merge`
-    ///   (`Teardown::Full`). `--force` bulldozes any untracked/modified scratch;
-    ///   the merge already confirmed the work landed in source, so the tree is
-    ///   disposable.
+    /// - `force == true` — used only after an explicit durable authorization:
+    ///   either a confirmed `run merge` (`Teardown::Full`) or `run discard
+    ///   --force` after exact ownership and dirty-state verification. It
+    ///   bulldozes untracked/modified scratch, so callers own that boundary.
     /// - `force == false` — every non-explicit-merge (`SourceRelative`) teardown.
     ///   `cleanup_node` has already preserved a dirty tree upstream, so the tree
     ///   reaching here is expected clean and non-force removal succeeds. But
@@ -308,6 +375,18 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn nul_worktree_parser_preserves_path_whitespace_exactly() {
+        let bytes = b"worktree /tmp/trailing \0HEAD abc\0branch refs/heads/wt/test\0\0";
+        assert_eq!(
+            parse_worktree_registrations(bytes),
+            Some(vec![WorktreeRegistration {
+                path: "/tmp/trailing ".to_string(),
+                branch: Some("wt/test".to_string()),
+            }])
+        );
+    }
     use tempfile::TempDir;
 
     /// Run real `git <args>` in `cwd`, asserting success. Sets up fixture repos

@@ -1,9 +1,9 @@
 ---
 created: 2026-09-02
-updated: 2026-09-07
+updated: 2026-09-08
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:3dbear-stint-handoff
 source_ref: agent:3dbear-stint-handoff/reporter:jari/id:failed-run-preserved-worktree-teardown-20260902
@@ -48,3 +48,9 @@ This is needed by terminal handoff workflows so superseded failures can be close
 ### 2026-09-07T18:15:48Z · @jari
 
 Accepted the joint recommendation in `analysis.md`: expose retained terminal resources through `run show.data.preserved_work`, then add an explicit, audited, idempotent `run discard` operation. Keep `run salvage` as the merge path, keep statuses/history unchanged, require explicit force for verified dirty work, and fail closed for unverifiable state. Implement visibility before disposition.
+
+## Agent Runs
+
+### 2026-09-08T10:45:09Z · @codex
+
+Cohesive disposition implementation keeps salvage, cancel, status, landed, and TerminalOutcome semantics unchanged. run discard is a projection-neutral pre-delete authorization plus convergent resource removal; normal clean removal remains non-force, while verified dirty removal alone requires explicit --force. Real-Git tests use disposable repositories and cover failed/cancelled, dirty/untracked, detached HEAD, branch-only retry, exact path/repository binding, live worker refusal, stale projection replay, dry-run byte preservation, and multi-node selection.

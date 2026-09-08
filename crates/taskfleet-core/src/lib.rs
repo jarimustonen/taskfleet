@@ -43,7 +43,8 @@ pub use error::{Error, Result};
 pub use events::{
     append_and_apply_event, append_and_apply_idempotent, append_and_apply_unlocked,
     find_prior_with_key, quarantine_corrupt_lines, quarantine_corrupt_lines_unlocked,
-    read_all_events, recover_last_seq, AppendOutcome, AppendResult, PriorEvent, Quarantine,
+    read_all_events, recover_last_seq, replay_unapplied_unlocked, AppendOutcome, AppendResult,
+    PriorEvent, Quarantine,
 };
 pub use ids::{format_node_id, new_op_id, new_run_id};
 pub use lock::{Exclusive, LockedRun, RunLock, Shared};

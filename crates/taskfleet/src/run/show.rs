@@ -55,6 +55,9 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
+    /// Current retained worktree/branch inventory for failed or cancelled nodes.
+    /// Always present and never inferred from historical cleanup events.
+    preserved_work: Vec<crate::run::retained::PreservedWork>,
     /// Suspected *false-failed* run (issue `raw-git-selfmerge-false-failed`):
     /// present only when the run is `failed` yet git confirms the worker's
     /// content is already in source and no `run merge` recorded it — the raw-git
@@ -96,8 +99,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         let Some(manifest) = read_manifest_opt(&paths)? else {
             return Ok(None);
         };
+        let nodes =
+            crate::run::retained::read_nodes(&paths, crate::run::retained::MissingNodesDir::Empty)?;
         let counts = Counts {
-            nodes: count_jsons(&paths.nodes_dir()),
+            nodes: nodes.len() as u64,
         };
         // Probe supervisor liveness INSIDE the shared-lock window so it is read
         // in the same critical section as `manifest.status`, letting a caller
@@ -221,6 +226,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             attention,
             awaiting_input,
             landing,
+            nodes,
         )))
     })
     .map_err(from_core)?;
@@ -235,6 +241,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         attention,
         awaiting_input,
         landing,
+        nodes,
     ) = match scanned {
         Some(v) => v,
         None => {
@@ -244,6 +251,14 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
         }
     };
+    let git = crate::git::repo::Git::with_bin(crate::supervise::cleanup::git_bin());
+    let mut preserved_work: Vec<_> = nodes
+        .iter()
+        .filter_map(|node| crate::run::retained::observe(&manifest, node, &git))
+        .map(|observation| observation.view)
+        .collect();
+    preserved_work.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+
     // Telemetry gets its own complete shared-lock scan. It is deliberately
     // outside the canonical status/attention/outcome tuple above: this module
     // can enrich output but cannot become an input to those decisions.
@@ -317,6 +332,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             .then(|| landing.report.clone())
             .flatten(),
         recoverable_work,
+        preserved_work,
         false_failed,
     };
     match spec.format {
@@ -459,24 +475,21 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             {
                 println!("recoverable:   {line}");
             }
+            for preserved in &payload.preserved_work {
+                println!(
+                    "preserved:     {} worktree={} ({}) branch={} ({}) cleanliness={} unmerged={} verification={}",
+                    preserved.node_id,
+                    preserved.worktree_path.as_deref().unwrap_or("(none)"),
+                    if preserved.worktree_present { "present" } else { "absent" },
+                    preserved.branch.as_deref().unwrap_or("(none)"),
+                    if preserved.branch_present { "present" } else { "absent" },
+                    preserved.cleanliness,
+                    preserved.unmerged_commits.map_or_else(|| "?".to_string(), |n| n.to_string()),
+                    preserved.verification,
+                );
+            }
             output::emit_text_warnings(&output_warnings);
         }
     }
     Ok(())
-}
-
-fn count_jsons(dir: &std::path::Path) -> u64 {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.eq_ignore_ascii_case("json"))
-        })
-        .count() as u64
 }

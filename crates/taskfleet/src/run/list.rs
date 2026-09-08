@@ -300,7 +300,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// repository nested under a checkout compares different. A caller-supplied
 /// selector is an actionable error when invalid. A stale recorded manifest
 /// source is instead unknown (`None`) and does not match the filter.
-fn repository_identity(repo: &Path, selector: bool) -> Result<Option<PathBuf>, CliError> {
+pub(crate) fn repository_identity(
+    repo: &Path,
+    selector: bool,
+) -> Result<Option<PathBuf>, CliError> {
     if repo.as_os_str().is_empty() {
         return if selector {
             Err(CliError::user("invalid_value", "--repo must not be empty"))

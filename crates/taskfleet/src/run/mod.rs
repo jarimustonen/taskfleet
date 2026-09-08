@@ -8,6 +8,7 @@ pub mod attention;
 pub mod awaiting_input;
 pub mod cancel;
 pub mod create;
+pub mod discard;
 pub mod dto;
 pub mod false_failed;
 pub mod landed;
@@ -16,6 +17,7 @@ pub mod merge;
 pub mod merge_recovery;
 pub mod ownership;
 pub mod reattach;
+pub mod retained;
 pub mod salvage;
 pub mod show;
 pub mod spawn;
@@ -24,6 +26,7 @@ pub mod supervisor_readiness;
 pub mod supervisor_spawn;
 pub mod telemetry;
 pub mod wait;
+pub mod worker;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -259,6 +262,26 @@ pub enum RunAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove one failed/cancelled node's retained worktree and branch after
+    /// recording explicit durable authorization. This never changes run status
+    /// or marks work landed.
+    Discard {
+        run_id: String,
+        /// Select one retained node. Required when more than one is present.
+        #[arg(long)]
+        node: Option<String>,
+        /// Non-empty audit reason for permanently deleting the retained work.
+        #[arg(long)]
+        reason: String,
+        /// Acknowledge deletion of verified staged, modified, and untracked
+        /// work. Never bypasses identity or Git-verification failures.
+        #[arg(long)]
+        force: bool,
+        /// Perform all read-only eligibility checks and report the plan without
+        /// recording authorization or deleting resources.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Block until one or more runs reach a terminal state
     /// (`done | failed | cancelled`) and emit a structured summary, so
     /// callers stop hand-rolling `run show` poll loops. Read-only: never
@@ -402,6 +425,21 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             source,
             report_file,
             fence,
+            dry_run,
+            spec,
+            warnings,
+        }),
+        RunAction::Discard {
+            run_id,
+            node,
+            reason,
+            force,
+            dry_run,
+        } => discard::run(discard::Args {
+            run_id,
+            node,
+            reason,
+            force,
             dry_run,
             spec,
             warnings,

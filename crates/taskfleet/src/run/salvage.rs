@@ -74,11 +74,12 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use taskfleet_core::{read_manifest_opt, read_node_opt, Node, NodeId, RunLock, Status};
+use taskfleet_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, Status};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::merge::{self, ConsumerOutcome};
+use crate::run::worker::{classify_worker, WorkerState};
 use crate::run::{from_core, run_paths_from_cli_arg};
 use crate::supervise::{pid_file, watchdog};
 
@@ -111,120 +112,6 @@ pub struct Args<'a> {
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
-}
-
-/// The classified state of the run's prior worker, from durable told facts. The
-/// fence decision is a total function of this (see [`run`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkerState {
-    /// The launcher shim recorded a `worker.exited` — the process is gone (this
-    /// is the attention-required / told-failure shape). No fence needed.
-    Exited,
-    /// No `agent_pid` was ever recorded — nothing to fence.
-    NoPid,
-    /// The recorded pid is dead, or alive-but-recycled (its start-time no longer
-    /// matches) — the original worker is gone. No fence needed, no risk.
-    Gone,
-    /// The recorded pid is alive AND its start-time identity positively matches —
-    /// the original worker is genuinely still running. Safe to `SIGTERM` (behind
-    /// `--fence`). `start_time` is the verified identity, re-checked immediately
-    /// before the signal so a pid recycled between classify and fence is not hit.
-    Live { pid: u32, start_time: u64 },
-    /// The recorded pid is alive but its identity cannot be confirmed (no recorded
-    /// start-time, or the platform declined to read it) — it *might* be a recycled
-    /// pid now owned by an unrelated process. Never fenced: a refusal.
-    Unverifiable { pid: u32 },
-}
-
-impl WorkerState {
-    /// The stable machine string surfaced in the payload / refusals.
-    fn wire(self) -> &'static str {
-        match self {
-            WorkerState::Exited => "exited",
-            WorkerState::NoPid => "no-pid",
-            WorkerState::Gone => "gone",
-            WorkerState::Live { .. } => "live",
-            WorkerState::Unverifiable { .. } => "unverifiable",
-        }
-    }
-}
-
-/// Classify the worker from the node's durable facts, with OS ground truth
-/// beating a stale told fact for the DESTRUCTIVE fence decision.
-///
-/// Ordering (deliberate — the reverse of a pure "told beats guessed"): a
-/// **positive OS proof that the original worker is still alive** (the recorded
-/// pid is alive AND its recorded start-time identity matches) overrides a
-/// recorded `worker.exited`. A told exit can be stale or wrong (a shim bug, a
-/// premature append, a restored/copied projection); merging over a process the
-/// OS proves is our still-running worker would be silent corruption, so a
-/// confirmed-live identity fails *safe* to [`WorkerState::Live`] and forces the
-/// `--fence` gate (multi-model review consensus).
-///
-/// Only when the OS does NOT positively prove the original is alive do we trust
-/// the told exit ([`WorkerState::Exited`]). Absent a told exit, pid liveness +
-/// the §7.6 start-time identity defense govern, and identity is *required* to
-/// reach `Live` so a fence can never signal a recycled pid owned by someone else.
-fn classify_worker(node: &Node) -> WorkerState {
-    // 1. Positive OS proof the ORIGINAL worker is still alive overrides everything,
-    //    including a (possibly stale/buggy) told `worker.exited`.
-    if let Some(live) = positive_live_identity(node) {
-        return live;
-    }
-    // 2. The OS cannot prove the original is alive. A durable told exit is now
-    //    authoritative — the recorded process exited and cannot come back (a live
-    //    pid at this point is either dead-and-recycled or unverifiable, i.e. NOT
-    //    provably our worker, so trusting the told exit is safe).
-    if node.worker_exit.is_some() {
-        return WorkerState::Exited;
-    }
-    // 3. No told exit: classify from pid state alone.
-    let Some(pid_i) = node.agent_pid else {
-        return WorkerState::NoPid;
-    };
-    if pid_i <= 0 {
-        return WorkerState::NoPid;
-    }
-    let pid = pid_i as u32;
-    if !pid_file::pid_alive(pid) {
-        return WorkerState::Gone;
-    }
-    // Alive but not positively identified (step 1 already handled the match case):
-    // either a recycled pid, or the platform won't read the start-time. Both are
-    // unverifiable — never fence them.
-    match node
-        .agent_pid_start_time
-        .map(|t| t.timestamp().max(0) as u64)
-    {
-        // Recorded identity present but did NOT match in step 1 → recycled → gone.
-        Some(_) => WorkerState::Gone,
-        // No recorded identity → cannot prove this pid is our worker.
-        None => WorkerState::Unverifiable { pid },
-    }
-}
-
-/// `Some(Live { .. })` iff the OS positively proves the node's recorded worker is
-/// still running: the recorded pid is alive AND its start-time matches the
-/// recorded identity (mirrors the watchdog's recycle check: seconds, 1s
-/// tolerance). `None` for any weaker state (no pid, dead, recycled, or an alive
-/// pid whose identity cannot be read/confirmed).
-fn positive_live_identity(node: &Node) -> Option<WorkerState> {
-    let pid_i = node.agent_pid?;
-    if pid_i <= 0 {
-        return None;
-    }
-    let pid = pid_i as u32;
-    if !pid_file::pid_alive(pid) {
-        return None;
-    }
-    let expected = node
-        .agent_pid_start_time
-        .map(|t| t.timestamp().max(0) as u64)?;
-    let actual = watchdog::pid_start_time(pid)?;
-    (expected.abs_diff(actual) <= 1).then_some(WorkerState::Live {
-        pid,
-        start_time: expected,
-    })
 }
 
 /// `SIGTERM` a verified-live worker and wait (bounded) for it to exit. Returns
@@ -651,7 +538,7 @@ mod tests {
     use std::process::Command;
 
     use chrono::{DateTime, Utc};
-    use taskfleet_core::{Kind, RunId, WorkerExit};
+    use taskfleet_core::{Kind, Node, RunId, WorkerExit};
 
     /// A minimal `n-0001` node with the pid/exit fields under test set.
     fn node(

@@ -1,9 +1,9 @@
 ---
 created: 2026-09-06
-updated: 2026-09-07
+updated: 2026-09-08
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: other
 provenance_detail: Recovered from a pre-convergence Haapa intake checkout during the final Taskfleet filesystem inventory
@@ -64,3 +64,9 @@ If cancellation intentionally preserves dirty work, document and expose that as 
 ### 2026-09-07T18:15:48Z · @jari
 
 Accepted the joint recommendation in `analysis.md`: expose retained terminal resources through `run show.data.preserved_work`, then add an explicit, audited, idempotent `run discard` operation. Keep `run salvage` as the merge path, keep statuses/history unchanged, require explicit force for verified dirty work, and fail closed for unverifiable state. Implement visibility before disposition.
+
+## Agent Runs
+
+### 2026-09-08T10:45:09Z · @codex
+
+Implementation uses one live retained-resource observer for both run show and discard; no persisted Git observation or lifecycle state. Destructive review depth: focused independent review because discard crosses process-identity and irreversible Git boundaries. Review findings were incorporated: NUL-safe exact worktree registration, common-dir binding including stale-path replacement refusal, detached-HEAD commit observation, projection catch-up/read-only dry-run, authorization payload conflict checks, and current-vs-historical multi-node selection.

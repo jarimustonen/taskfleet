@@ -393,7 +393,8 @@ fn command_writes_state(command: &Command) -> bool {
         Command::Run { action } => match action {
             crate::run::RunAction::Create { dry_run, .. }
             | crate::run::RunAction::Merge { dry_run, .. }
-            | crate::run::RunAction::Salvage { dry_run, .. } => !dry_run,
+            | crate::run::RunAction::Salvage { dry_run, .. }
+            | crate::run::RunAction::Discard { dry_run, .. } => !dry_run,
             crate::run::RunAction::Cancel { .. } | crate::run::RunAction::Reattach { .. } => true,
             crate::run::RunAction::List { .. }
             | crate::run::RunAction::Show { .. }

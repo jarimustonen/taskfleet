@@ -348,6 +348,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         | "cleanup.worktree_missing"
         | "cleanup.branch_remove_failed"
         | "cleanup.branch_preserved"
+        | "cleanup.discard_authorized"
         | "cleanup.session_killed"
         | "cleanup.session_retained" => Ok(vec![]),
         // Data-integrity audit record: the supervisor found a persisted child

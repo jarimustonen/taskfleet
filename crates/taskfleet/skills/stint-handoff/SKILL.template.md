@@ -83,9 +83,15 @@ an unmigrated or incompatible project rather than falling back to prose.
    <full-run-id> --output json`. If this skill was invoked standalone and no such IDs are
    present in the conversation, treat session worker ownership as clear; do not infer it
    from a global list or repository membership. Every session-owned live, awaiting-input,
-   recoverable, or otherwise resumable worker must have landed or relinquished ownership
-   through a terminal cancel/abandon path that confirms no preserved worktree, branch, or
-   resumable work remains. If ownership stays unresolved, mark handoff blocked and skip
+   recoverable, or otherwise resumable worker must have landed or relinquished ownership.
+   For every session-owned failed/cancelled run, read the always-present
+   `.data.preserved_work` array from `run show`. A
+   terminal status or a repeated cancel alone is not relinquishment. An empty array confirms
+   no retained worktree/branch. A non-empty array blocks handoff until the operator chooses
+   salvage/manual harvest or explicitly authorizes `taskfleet run discard <id> --reason
+   <text>` (use `--dry-run --output json` first, `--node` for multiple rows, and `--force`
+   only for reviewed verified-dirty content). Never raw-Git-delete or auto-discard it. If
+   ownership stays unresolved, mark handoff blocked and skip
    schedule verification, but continue through steps 2–3 so current-turn answers and that
    owned run ID, slug, and preserved-work fact are recorded. Then stop before `/wrap-up`
    with one exact ownership-recovery action. A known foreign run, including one in this
@@ -95,8 +101,11 @@ an unmigrated or incompatible project rather than falling back to prose.
 1. **Read the live schedule without adopting foreign work.** After preflight proves there
    are no session-owned holds, inspect the global Taskfleet list for same-repository runs
    that may still own resources: live, awaiting-input, attention-required, recoverable, or
-   terminal with preserved work. Convert every mappable run to the exact issuectl hold
-   array shape, one object per run: `[{"lane":"backend","collision":["hot-token"]}]`.
+   terminal candidates. `preserved_work` is show-only: run `taskfleet run show <id>
+   --output json` for relevant terminal candidates and treat only a non-empty
+   `.data.preserved_work` as a retained-resource hold. Never read that field from `run list`
+   or adopt/manage a foreign run merely to inspect it. Convert every mappable run to the
+   exact issuectl hold array shape, one object per run: `[{"lane":"backend","collision":["hot-token"]}]`.
    Values are copied from issue metadata; never infer them. Do not wait for, adopt, or
    manage those runs. Run `issuectl dag --json --reservations '<foreign-holds-json>'`
    (`[]` when none) and read `.data.lanes[]`, `.data.unscheduled`, and

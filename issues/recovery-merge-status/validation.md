@@ -40,5 +40,21 @@ failed/live siblings and linked children, restart/rebuild/idempotency, and repla
 ordering. Preserve watermark fault coverage. No new lifecycle state, generic
 terminal reopen, or inferred Git success is needed.
 
+## Ordering and fixture clarification
+
+The supervisor currently computes rollup outside the later append lock. A
+concrete ordering is therefore: compute Failed, adopt a confirmed merge as node
+Done, append the already-computed Failed run status. Recovery must accept that
+still-authoritative merge even though its sequence precedes the failure append.
+Bound authorization evidence before the proposed recovery event, not after the
+failure event. Cover this interleaving directly rather than adding temporal state.
+
+The existing `terminal_but_unmerged_run_still_merges` fixture is an unsupervised
+skeleton with a fake merge script. Production `run merge` already reattaches a
+previously supervised run, while deliberately leaving never-supervised skeletons
+alone. Final run-status evidence needs a truthful supervised fixture; do not
+introduce a second rollup owner or change skeleton policy merely to extend that
+test's assertions.
+
 This is source-grounded implementation guidance, not completed implementation
 or test evidence; the worker must validate it against its final source.

@@ -73,8 +73,8 @@ Those repositories and installed artifacts are outside this repository's mutatio
 scope. The existing clean preserved rename worktree also contains two unlanded
 documentation commits; it is left intact rather than mistaken for an empty orphan.
 
-This document records the initial findings and implementation boundaries, not a
-claim that the fixes or final validation have completed.
+The initial findings above distinguish reproduction evidence from the verified
+landings and final validation recorded below.
 
 ## Verified landings
 
@@ -117,9 +117,19 @@ main for these units:
   the identity inventory, local release build, rendered output inspection, and
   issue doctor passed. The focused suite produced no new snapshots. The conductor
   verified the durable merge report and actual main diff; the worktree was removed.
+- Recovery status (`4461872`, closure `27b3565`): one shared authority predicate
+  and the existing streaming fold now support narrowly authorized Failed-to-Done
+  recovery. All five final gates passed (1,099 nextest tests), as did the identity
+  inventory and local release build. The supervised disposable-tool integration
+  exercises failure, successful recovery, matching public status/landing/report,
+  teardown, and one deterministic recovery event. Initial Clippy and fixture
+  environment/timing findings were corrected before the successful full gate.
+  The conductor verified the durable report, actual main code, and removal of
+  the session worktree. `dfa70e7` separately connects the existing identity check
+  to CI's existing version-snapshots job.
 
-These per-unit results do not replace the final integrated gate. Recovery status
-is still in progress.
+All seven implementation units have landed. These per-unit results do not replace
+the final integrated gate.
 
 ## Additional observed producer mismatch
 
@@ -158,9 +168,9 @@ assigned work rather than filed as speculative residual issues:
 - Display and deletion share the resource observation, verification result, and
   node-file reader. For a present worktree, commit counts use its actual HEAD;
   branch-only resources use the recorded branch.
-- The canonical identity inventory was absent from CI. The final worker will
-  connect that existing check to the existing cheap CI job, closing the observed
-  gap without another validation framework.
+- The canonical identity inventory was absent from CI. The final worker connected
+  that existing check to the existing cheap CI job, closing the observed gap
+  without another validation framework.
 
 The implementation gates and final integrated validation remain the completion
 criterion; review findings alone are not a success claim.
@@ -182,3 +192,33 @@ Source synchronization also brought in `@intake-bug-taskfleet-8db39a4f7cdb`
 another worker or adding a second status owner. This is intake deduplication,
 not an additional independently fixed bug. Current landing identifiers above
 reflect the clean source rebase onto that intake commit.
+
+## Completed repository round
+
+The integrated code at `27b3565` passed all five gates: rustfmt, warning-denying
+Clippy, 1,100 release nextest tests, two release doctests, and warning-denying
+rustdoc. The suite's one skipped test is the pre-existing explicitly ignored
+expensive core stress test. `cargo build --locked --release` also passed.
+
+The conductor then executed the two native lifecycle tests and all 13 discard
+tests directly with PATH containing only an explicit Git link: all 15 passed.
+These use disposable state, repositories, and private tmux/workmux fixtures;
+they do not depend on installed agent tools. The locally built CLI also returned
+the expected repository provenance, Done/landed state, empty preserved-resource
+list, and `condition-met` wait outcome for the completed session run. Rendered
+triage output required the exact heading, and discard help exposed dry-run.
+
+The identity and version-snapshot inventories passed, no `.snap.new` remained,
+and issuectl doctor reported no findings. All seven session-owned runs have a
+durable successful merge report and verified main changes; their worktrees were
+removed by their supervisors. The unrelated preserved rename worktree remains
+intact.
+
+Final inventory: 398 issues, with 138 fixed, 192 done, 13 duplicate, 30 obsolete,
+20 wontfix, four cannot-reproduce, and one open epic. This round resolved 13
+executable issues and one duplicate intake. The remaining rename epic requires
+separate external convergence/live-host evidence; no repository-local coding
+task remains queued. Main is published only after the local integrated gate,
+and its exact push CI result is checked and reported in the session's final
+response. No release, installed-binary/skill change, user-state migration,
+automatic retained-work deletion, or other-repository mutation was performed.

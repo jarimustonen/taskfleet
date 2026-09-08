@@ -9,12 +9,32 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.8.2] - 2026-09-08
+
+### Added
+
 - Add `run discard` as an audited, idempotent cleanup path for preserved work
   from terminal failed or cancelled runs, with explicit force required for a
   verified dirty worktree.
 - Expose preserved work and recorded source-repository identity in run output;
   add exact repository filtering to `run list` and an explicit
   `condition-met`/`timed-out` outcome to `run wait`.
+
+- Add configurable agent profiles (`add-configurable-agent`).
+- Add teardown for terminal failed runs with preserved worktrees (`intake-feature-taskfleet-41343c4dd3e4`).
+- Archive exact Pi session and terminal worker evidence (`durable-worker-evidence`).
+- Bound completed windows in persistent agent sessions (`agent-session-retention`).
+- Capture autonomous agent pane output to durable `<run-dir>/agent.log` (`capture-agent-output-to-run-dir`).
+- Remove end-to-end stint friction without durable lifecycle state (`end-end-stint`).
+- Spinoff blocked on user input at a genuine fork must propagate to the parent agent, not silently block (`uncommonly-fuzzy-swing`).
+- Stamp issue trailers in issue-driven worktree skills (`run-merge-stamp`).
+- run list has no repo filter, so sibling-repo runs are indistinguishable by title (`phenomenally-noisy-behavior`).
+- stint-start should safely rebase a clean diverged main (`intake-feature-taskfleet-5565259bd11f`).
 
 ### Changed
 
@@ -27,6 +47,46 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Replace GitHub test CI with one fail-closed local release-validation script on
   the exact clean bump commit; retain ordered crates.io publication and
   cargo-dist GitHub binary/Homebrew workflows.
+
+- Adopt ossctl for cutting this project's releases (`adopt-ossctl-release-cut`).
+- Align green gate with CI (`align-green-gate`).
+- Audit: no user-specific facts in a public artifact (`audit-no-user-specifics`).
+- Bundled skills still claim publishing channels are TBD (`skills-stale-tbd-channels`).
+- Cargo scaffolding for taskfleet workspace (`cargo-scaffolding`).
+- Conform skill installer to canon section 15 (`overly-knowing-family`).
+- Converge canonical Taskfleet filesystem paths (`taskfleet-filesystem-path-convergence`).
+- Cut the dead plan module from taskfleet-core's public API (`cut-plan-module`).
+- DECISION (ADR): harden the current model vs re-architect the lifecycle core (`arch-decision-rearchitect-vs-harden`).
+- Define external pi telemetry adapter contract (`worker-telemetry-pi-adapter`).
+- Deterministic floor: baseline snapshot + supervisor-enforced gates (tests/clippy vs baseline, file-scope, test-gaming) as standalone module (`deterministic-floor`).
+- Distinguish untriaged work from explicit deferral (`distinguish-untriaged-work`).
+- Establish Taskfleet as the sole product identity (`rename-taskfleet`).
+- Implement configurable agent profile resolver (`worker-profile-config-resolver`).
+- Implement worker telemetry control and bounded sample (`worker-telemetry-core-control`).
+- Integrate selected agent launch and telemetry visibility (`worker-telemetry-harness-enforcement`).
+- Keep only the Taskfleet identity (`taskfleet-zero-legacy-identity`).
+- Let workers choose proportionate review depth (`worker-review-scope-discretion`).
+- MVP polish wave 2 (B4 + B5 + B6 + B7) (`mvp-polish-wave-2`).
+- Make pi the built-in default harness per ADR 0001 D4 (`harness-pi-default`).
+- Migrate stint skills from TODO markdown DAG to issuectl dag (`stint-skills-issuectl-dag`).
+- Recover interrupted run-create reservations and child publication (`create-idempotency-lease-recovery`).
+- Redesign spin-off issuectl materialization to avoid duplicate external issues (`spinoff-issuectl-materialization-arch`).
+- Remove project-specific intake concepts leaked into stint-handoff + execution-DAG (keep these skills generic/open-source) (`stint-skills-drop-intake-specifics`).
+- Remove stint local source installation (`remove-stint-local-install`).
+- Replace unmaintained fs2 with fs4 (or rustix) (`replace-fs2-with-fs4`).
+- Reshape worker control plane implementation DAG (`reshape-worker-control-plane-dag`).
+- Review worker telemetry and agent profiles as one control plane (`worker-control-plane-review`).
+- Structured --help --json output across all subcommands (`help-json-structured`).
+- Taskfleet bug analysis should emit canonical triage heading (`canonical-triage-heading`).
+- Use current Shipshape release protocol (`shipshape-current-protocol`).
+- Use local validation instead of GitHub test CI (`local-release-validation`).
+- Validate and roll out worker telemetry end to end (`worker-telemetry-e2e-rollout`).
+- Worktree-filed issues must not be laned and must record AI-review provenance (`worktree-issue-provenance`).
+- plan.json v2 schema + validator (checks/assertions, immutable plan_rev, intent_rev, DAG validity) (`plan-json-v2-schema`).
+- supervise_gates: replace fixed sleeps with readiness polling (V8 flake under load) (`supervise-gate-test-flake`).
+- supervisor: qualify tmux liveness by session:window_id + socket (`supervisor-tmux-window-identity`).
+- taskfleet-core: verify projection id key matches file body (`projection-key-body-consistency`).
+- tracing_appender::non_blocking for JSONL log throughput (`nonblocking-log-appender`).
 
 ### Fixed
 
@@ -42,7 +102,37 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   heading.
 - Seed the real-protocol release fixture with its own unpublished note so it
   remains valid when the production changelog has just been finalized.
-<!-- oss-changelog:unreleased-end -->
+
+-  (`agent-skips-run-merge-idle-pending`).
+-  (`stint-handoff-nonexistent`).
+- Autonomous-merge SKILLs do not tell agent to submit terminal node.report (`spinoff-must-submit-node-report`).
+- Blocked terminal report (success:false) deletes the worktree branch instead of preserving it for the human (`blocked-report-deletes-branch`).
+- Bundled SKILLs document flag forms, terminology, and envelope shapes that don't match the binary (`skill-binary-doc-sync`).
+- Cancelled run hides preserved dirty worktree (`cancelled-run-hides-preserved-worktree`).
+- Clippy format push warnings break CI (`clippy-format-push-ci`).
+- Doctor skill test depends on host tools (`doctor-test-host-tools`).
+- Interactive 'code' run self-merged to done without user's /worktree-merge (`interactive-code-run-self-merged`).
+- Isolate protocol fixture from finalized release notes (`protocol-fixture-release-notes`).
+- Read build paths from the current Cargo invocation (`build-script-worktree-path`).
+- Recovery merge leaves landed run failed (`recovery-merge-status`).
+- Release gate fails on CI jq and workflow token (`taskfleet-release-gate-ci-portability`).
+- Release wrapper rejects ossctl 0.10.1 (`release-wrapper-rejects-3`).
+- Release wrapper uses unsupported gh repo shorthand (`release-wrapper-uses`).
+- Restore bare-CI portability before Taskfleet R8 (`pre-r8-ci-portability`).
+- Restore the single canonical default state root (`canonical-root-regression`).
+- Restore the workmux project prefix emoji on Taskfleet worktree windows (`workmux-project-prefix-emoji`).
+- Spawning session gets no completion notification when an async run finishes/merges (`no-completion-notification-to-parent`).
+- Taskfleet selected incidental default state over runs in a nondefault root (`taskfleet-dual-state-root`).
+- Use ULID entropy in run-create branch names (`run-branch-name-ulid-entropy`).
+- Worker Claude process can hang mid-run; run reports failed though work is committed-unmerged (`worker-process-hang`).
+- contract under-declares the release surface: no homebrew target, and cargo-publish contradicts the documented CI publish (`contract-declare-ci-publish-surface`).
+- notify test fires_hook_with_completion_env is order-dependent (TOCTOU on async hook file) (`notify-test-toctou-flake`).
+- publish-crates fixture chmods symlinked system tools on Linux CI (`publish-crates-fixture-symlink-chmod`).
+- run create with a long --title spawns stillborn (tmux window-name truncation mismatch) (`run-create-long-title-stillborn`).
+- run show reports null worktree_path/source_branch for a live pending run (`run-show-null-worktree-path`).
+- run wait JSON cannot distinguish a timeout from a settled result (`run-wait-json`).
+- stint-handoff blocks on unrelated global runs (`intake-bug-taskfleet-6edf517c691a`).
+- version_envelopes snapshot stale after bump to 0.1.5 (`version-envelopes-snapshot`).
 
 ## [0.7.1] - 2026-09-07
 

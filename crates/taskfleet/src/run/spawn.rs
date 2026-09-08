@@ -41,6 +41,9 @@ impl SpawnOutcome {
 }
 
 pub struct SpawnRequest<'a> {
+    // Retained for the unit-only legacy materializer fixture, which still
+    // receives the run kind as `--type`; production workmux naming does not.
+    #[allow(dead_code)]
     pub kind: &'a str,
     /// Absolute generated launcher passed as one opaque workmux agent command.
     pub agent: Option<&'a str>,
@@ -527,13 +530,10 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         &handshake.start_identity,
     )?;
     let pane = handshake.tmux_pane_id.clone();
-    let identity = query_tmux_identity(&pane, &session, cwd)?;
-    let window_name = format!("{} {}", kind_emoji(req.kind)?, req.branch.replace('/', "-"));
-    tmux_ok(
-        &["rename-window", "-t", &identity.window_id, &window_name],
-        cwd,
-        "tmux_window_rename_failed",
-    )?;
+    // Workmux is the sole owner of display naming, including its layered
+    // `window_prefix` configuration. Record what it actually created; the
+    // stable ids below, not a Taskfleet-generated name, own later operations.
+    let window = query_tmux_window(&pane, &session, cwd)?;
 
     let dest = Path::new(&worktree)
         .join("history/.worktree")
@@ -550,13 +550,13 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     Ok(SpawnOutcome {
         branch: req.branch.into(),
         worktree_path: worktree,
-        tmux_window: window_name,
+        tmux_window: window.name,
         agent_pid_hint: i64::from(handshake.pid),
         agent_start_time: handshake.start_time,
         agent_start_identity: handshake.start_identity,
-        tmux_socket: identity.socket,
+        tmux_socket: window.identity.socket,
         tmux_session: Some(session),
-        tmux_window_id: Some(identity.window_id),
+        tmux_window_id: Some(window.identity.window_id),
         tmux_pane_id: Some(pane),
         rollback: Some(rollback),
     })
@@ -569,7 +569,6 @@ fn validate_request(req: &SpawnRequest<'_>) -> Result<(), CliError> {
             format!("prompt file is not readable: {}", req.prompt_file.display()),
         ));
     }
-    kind_emoji(req.kind)?;
     let cwd = req.cwd.unwrap_or_else(|| Path::new("."));
     command_ok(
         "git",
@@ -680,11 +679,16 @@ fn ensure_session(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> 
     }
 }
 
-fn query_tmux_identity(
+struct TmuxWindow {
+    identity: TmuxIdentity,
+    name: String,
+}
+
+fn query_tmux_window(
     pane: &str,
     expected_session: &str,
     cwd: &Path,
-) -> Result<TmuxIdentity, CliError> {
+) -> Result<TmuxWindow, CliError> {
     let out = command_output(
         "tmux",
         &[
@@ -692,45 +696,32 @@ fn query_tmux_identity(
             "-p".into(),
             "-t".into(),
             pane.into(),
-            "#{socket_path}\t#{session_name}\t#{window_id}".into(),
+            "#{socket_path}\t#{session_name}\t#{window_id}\t#{window_name}".into(),
         ],
         cwd,
         "tmux_identity_unavailable",
     )?;
-    let text = text_stdout(&out, "tmux_identity_unavailable")?;
-    let mut fields = text.trim_end().split('\t');
+    let text = text_stdout(&out, "tmux_identity_unavailable")?.trim_end_matches(['\r', '\n']);
+    let mut fields = text.splitn(4, '\t');
     let socket = fields.next().unwrap_or("");
     let session = fields.next().unwrap_or("");
-    let window = fields.next().unwrap_or("");
-    if session != expected_session || !window.starts_with('@') {
+    let window_id = fields.next().unwrap_or("");
+    let name = fields.next().unwrap_or("");
+    if session != expected_session || !window_id.starts_with('@') || name.is_empty() {
         return Err(CliError::system(
             "tmux_identity_unavailable",
-            "tmux returned a wrong-session or malformed worker identity",
+            "tmux returned a wrong-session or malformed worker identity/name",
         ));
     }
-    Ok(TmuxIdentity {
-        socket: (!socket.is_empty()).then(|| socket.into()),
-        session: session.into(),
-        window_id: window.into(),
-        pane_id: Some(pane.into()),
+    Ok(TmuxWindow {
+        identity: TmuxIdentity {
+            socket: (!socket.is_empty()).then(|| socket.into()),
+            session: session.into(),
+            window_id: window_id.into(),
+            pane_id: Some(pane.into()),
+        },
+        name: name.into(),
     })
-}
-
-fn kind_emoji(kind: &str) -> Result<&'static str, CliError> {
-    match kind {
-        "code" => Ok("💻"),
-        "spinoff" => Ok("🚀"),
-        "orchestrated" => Ok("🎼"),
-        "research" => Ok("🔬"),
-        "technical-decision" => Ok("📐"),
-        "make-skill" => Ok("🔧"),
-        "fan-out" => Ok("🪭"),
-        "bugfix" => Ok("🐛"),
-        _ => Err(CliError::user(
-            "invalid_kind",
-            format!("unknown worktree kind {kind}"),
-        )),
-    }
 }
 
 #[derive(Debug)]
@@ -857,14 +848,6 @@ fn command_ok(bin: &str, args: &[String], cwd: &Path, code: &'static str) -> Res
             ),
         ))
     }
-}
-fn tmux_ok(args: &[&str], cwd: &Path, code: &'static str) -> Result<(), CliError> {
-    command_ok(
-        "tmux",
-        &args.iter().map(|s| (*s).into()).collect::<Vec<_>>(),
-        cwd,
-        code,
-    )
 }
 fn text_stdout<'a>(out: &'a Output, code: &'static str) -> Result<&'a str, CliError> {
     std::str::from_utf8(&out.stdout)

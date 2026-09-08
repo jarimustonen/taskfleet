@@ -145,7 +145,7 @@ fn each_kind_native_spawn_publishes_a_live_handshaken_node() {
 }
 
 #[test]
-fn headless_native_spawn_records_qualified_session_and_emoji() {
+fn headless_native_spawn_preserves_and_records_workmux_window_name() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
@@ -178,7 +178,15 @@ fn headless_native_spawn_records_qualified_session_and_emoji() {
     .unwrap();
     assert_eq!(node["tmux_identity"]["session"], "isolated");
     assert_eq!(node["tmux_identity"]["window_id"], "@77");
-    assert!(node["tmux_window"].as_str().unwrap().starts_with("🚀 "));
+    assert_eq!(node["tmux_window"], "🧪 wm-owned-window");
+    assert_eq!(created["data"]["tmux_window"], "🧪 wm-owned-window");
+    assert_eq!(
+        std::fs::read_to_string(tools.workmux_cwd_path())
+            .unwrap()
+            .trim(),
+        tools.repo_path().canonicalize().unwrap().to_str().unwrap(),
+        "workmux must execute from the source repository chosen by run create"
+    );
 }
 
 #[test]

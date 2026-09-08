@@ -83,11 +83,12 @@ exit 1
 # This is a complete private fake server: its socket and inventory live only
 # under NativeSpawnTools' cryptographically unique TempDir.
 case "$1" in
-  new-session|has-session|rename-window) : > "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
+  new-session|has-session) : > "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
+  rename-window) exit 97 ;; # workmux, not Taskfleet, owns display naming
   kill-window|kill-session) /bin/rm -f "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
   display-message)
     case " $* " in
-      *" -t "*) printf '%s\t%s\t@77\n' "$NATIVE_TEST_TMUX_SOCKET" "${NATIVE_TEST_SESSION:-headless}" ;;
+      *" -t "*) printf '%s\t%s\t@77\t%s\n' "$NATIVE_TEST_TMUX_SOCKET" "${NATIVE_TEST_SESSION:-headless}" "$(/bin/cat "$NATIVE_TEST_WINDOW_NAME_STATE")" ;;
       *) printf '%s\n' "${NATIVE_TEST_SESSION:-fixture}" ;;
     esac
     exit 0 ;;
@@ -101,6 +102,8 @@ exit 1
             r#"#!/bin/sh
 case "$1" in
   add)
+    /bin/pwd -P > "$NATIVE_TEST_WORKMUX_CWD"
+    printf '%s' "$NATIVE_TEST_WORKMUX_CONFIGURED_WINDOW_NAME" > "$NATIVE_TEST_WINDOW_NAME_STATE"
     shift; branch=$1; shift; agent=; prompt=
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -142,6 +145,14 @@ exit 1
         self.dir.path().join("worktrees").join(name)
     }
 
+    pub fn repo_path(&self) -> &Path {
+        self.repo.path()
+    }
+
+    pub fn workmux_cwd_path(&self) -> PathBuf {
+        self.dir.path().join("workmux.cwd")
+    }
+
     pub fn configure(&self, command: &mut std::process::Command, worktree: &Path, session: &str) {
         let owned_root = self.dir.path().join("worktrees");
         assert!(
@@ -175,6 +186,18 @@ exit 1
                 self.dir.path().join("agent.start"),
             )
             .env("NATIVE_TEST_TMUX_SOCKET", self.dir.path().join("tmux.sock"))
+            .env("NATIVE_TEST_WORKMUX_CWD", self.workmux_cwd_path())
+            // The fake workmux resolves this configured name and publishes it
+            // through the fake tmux server. It is intentionally not a real
+            // project's configured prefix.
+            .env(
+                "NATIVE_TEST_WORKMUX_CONFIGURED_WINDOW_NAME",
+                "🧪 wm-owned-window",
+            )
+            .env(
+                "NATIVE_TEST_WINDOW_NAME_STATE",
+                self.dir.path().join("window-name.state"),
+            )
             .env("NATIVE_TEST_TMUX_STATE", self.dir.path().join("tmux.state"))
             .env(
                 "NATIVE_TEST_AGENT_STDOUT",

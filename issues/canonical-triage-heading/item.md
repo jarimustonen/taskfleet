@@ -2,11 +2,13 @@
 created: 2026-09-08
 updated: 2026-09-08
 type: improvement
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: transferred from issuectl review finding
 source_ref: issuectl:tolerably-wet-summer
+lane: workflow-skills
+lane_seq: 60
 ---
 
 # Taskfleet bug analysis should emit canonical triage heading
@@ -30,3 +32,9 @@ A Taskfleet worker that chooses the alternative heading leaves issuectl's canoni
 ## Scope
 
 Update Taskfleet's bundled `/worktree-bug-analysis` contract and its generated copies/tests so completed issue enrichment uses the exact `## Triage analysis` heading. Coordinate the released contract before removing issuectl's caller-side compatibility handling. Do not change issuectl as part of this follow-up.
+
+## Comments
+
+### 2026-09-08T11:28:36Z · @ai-agent
+
+Accepted within the user-requested broad regression/simplification round after source verification: taskfleet current template still permits Suspected Root Cause while issuectl intake.rs derives analysis from exact Triage analysis. This observed producer/consumer mismatch directly matches the requested removal of duplicated consumer inference. Scope is taskfleet template, focused rendered contract test, and this issue; no issuectl edits or installation.

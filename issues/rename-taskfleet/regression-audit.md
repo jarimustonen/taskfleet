@@ -75,3 +75,28 @@ documentation commits; it is left intact rather than mistaken for an empty orpha
 
 This document records the initial findings and implementation boundaries, not a
 claim that the fixes or final validation have completed.
+
+## Verified landings
+
+The conductor verified both the durable merge report and the resulting source on
+main for these units:
+
+- Window naming (`fde47ad`, closure `2017893`): workmux owns the display name;
+  Taskfleet retains stable tmux identities. The regression rejects any rename and
+  checks the actual workmux cwd against the disposable source repository. All five
+  gates passed (1,076 nextest tests). A bounded cold release build timed out; its
+  managed retry completed successfully. Independent final review found no blocker.
+- Read contracts (`9e44dce`, closure `a6b3d55`): direct serialization of the existing
+  wait stop decision, recorded repository provenance, and exact Git common-dir
+  filtering. Real-Git coverage includes linked worktrees, subdirectories,
+  independent nested repositories, sibling repositories, and missing provenance.
+  All five gates passed (1,077 nextest tests), relevant snapshots were reviewed,
+  and the local release build passed.
+- Canonical default root (`54f8e31`, closure `c696495`): the default derives only
+  from HOME plus the canonical directory; explicit location and internal worker
+  binding remain validated. All five gates passed (1,072 nextest tests), as did
+  disposable-home and stripped-PATH checks and the local release build. The
+  conductor reran the identity inventory on main: zero retired-identity references.
+
+These per-unit results do not replace the final integrated gate. Workflow,
+retained-work disposition, and recovery-status work are still in progress.

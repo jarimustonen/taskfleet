@@ -114,7 +114,7 @@ Same flag rules as `worktree-spinoff`. Output defaults to
     "supervisor": 12345,
     "kind": "technical-decision",
     "lifecycle": "autonomous",
-    "tmux_window": "⚖️ wt/<adr-slug>",
+    "tmux_window": "<workmux-reported-window-name>",
     "branch": "wt/<adr-slug>"
   }
 }
@@ -277,11 +277,14 @@ supervisor state.
 
 ## Issue Management
 
-If issue-driven (decision issue tagged `architecture`), the agent
-links the merged ADR back to the issue and closes it on completion:
+If issue-driven, make and validate the final ADR commit, then before `run merge`:
 
-- `issuectl --json update <slug> --add-commit "<sha>:ADR <NNNN>"`
-- `issuectl --json close <slug> --status done`
+1. Run `issuectl close <slug> --status done --stamp --as <agent> --json`.
+2. Require `.data.stamp.status` to be `stamped` or `already_present`; otherwise do not
+   merge. The ADR commit now carries `Fixes-Issue: @<slug>`.
+3. Commit the exact issue closure metadata path separately and require a clean tree.
+
+A freeform decision has no issue trailer or issue mutation.
 
 ## Errors
 

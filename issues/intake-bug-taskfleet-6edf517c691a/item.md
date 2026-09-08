@@ -3,7 +3,7 @@ created: 2026-09-02
 updated: 2026-09-08
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:stint-handoff-unrelated-global-runs-2026-09-02

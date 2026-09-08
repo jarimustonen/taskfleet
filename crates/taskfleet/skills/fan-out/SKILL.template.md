@@ -1,6 +1,6 @@
 ---
 name: fan-out
-description: Fan out N≥5 similar, fully independent units of work as parallel autonomous worktrees via `taskfleet run create --kind fan-out` (top-level driver) plus one `--kind fan-out` child per unit (parent-pointed). Each child commits a disjoint output file inside the current git repo and merges itself back. Manages enumeration, concurrency (default 10), manifest-tracked state, and resume. Requires a git repo with a clean source branch. NOT for generic parallel commands, dependent workflows, shared-file edits, or tasks needing per-unit human review. For heterogeneous dependency-ordered features (a DAG rather than identical units), use `/orchestrate` instead.
+description: Fan out N≥5 similar, fully independent units as parallel autonomous worktrees via one top-level `--kind fan-out` run plus one parent-pointed child per unit. Each child commits one disjoint output and self-merges. Manages enumeration, concurrency (default 10), manifest state, and resume. Requires a clean git source branch. NOT for generic parallel commands, dependencies, shared-file edits, or per-unit human review; use issuectl-scheduled `/stint-start` waves instead.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -28,11 +28,11 @@ DAG-ordered).
 - ✅ Each unit's output is a disjoint file or path (siblings cannot
   race).
 - ❌ Fewer than 5 units → just spawn `/worktree-spinoff` N times.
-- ❌ Units share output (edit the same file) → serialize via
-  `/worktree-code` or restructure to disjoint outputs.
-- ❌ Units have dependencies (B needs A's output) → that is a DAG,
-  use `/orchestrate`.
-- ❌ Per-unit human review required → use `/worktree-code` per unit.
+- ❌ Units share output (edit the same file) → serialize focused
+  `/worktree-spinoff` runs or restructure to disjoint outputs.
+- ❌ Units have dependencies (B needs A's output) → let issuectl own the DAG and run
+  bounded waves through `/stint-start`.
+- ❌ Per-unit human review required → create each spinoff with explicit `--interactive`.
 
 ## Workflow
 
@@ -137,10 +137,9 @@ Per-unit notes:
 - The `child.spawned` event lands on the driver's log; the driver's
   supervisor spawns each child's supervisor (single-arbiter
   invariant).
-- Children inherit the same `--kind fan-out` so their tmux windows
-  carry the fan-out emoji (🪭) and the supervisor applies the
-  fan-out merge policy (merge to integration branch, no review by
-  default).
+- Children inherit the same `--kind fan-out` so the supervisor applies the fan-out merge
+  policy (merge to the integration branch). Taskfleet reports the tmux display name
+  unchanged from workmux; never infer a kind-specific prefix or emoji.
 
 ### 4. Drive concurrency + resume
 
@@ -175,7 +174,7 @@ The driver tails its own event log and the manifest:
     "supervisor": 12345,
     "kind": "fan-out",
     "lifecycle": "autonomous",
-    "tmux_window": "🪭 wt/<batch-slug>",
+    "tmux_window": "<workmux-reported-window-name>",
     "branch": "wt/<batch-slug>"
   }
 }

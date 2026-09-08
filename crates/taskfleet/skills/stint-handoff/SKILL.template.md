@@ -1,6 +1,6 @@
 ---
 name: stint-handoff
-description: "Terminal wrap of a work-session (työrupeama, 'stint'): update the repo's TODO.md `## 🔄 Continue here` handoff narrative, verify the live issuectl scheduling DAG, then hand off via `/wrap-up` and, if the project declares one, do the test-account reset. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects: reads all specifics from the repo's own AGENTS.md/TODO.md and issue metadata. NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md and verifies scheduling, then calls it); NOT a worktree itself."
+description: "Explicitly finish a work-session (työrupeama, 'stint'): record current-turn answers, check only runs this session launched or adopted, update TODO.md, verify the issuectl DAG with foreign-run reservations, then `/wrap-up` and any declared reset. Run on the user's explicit go, either directly or after `/stint-start` names it as the next action. Generic and reconstructable from existing facts; adds no durable stint state. NOT the round engine, a global-run drain, bare `/wrap-up`, or a worktree."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -13,9 +13,11 @@ You are the **orchestrator** closing out a stint (työrupeama). This skill is th
 **not** spawn worktrees, deploy, or run a round — that is the round engine
 **`/stint-start`**. Run this at session end, on the user's go.
 
-A stint typically fills a session's context after ~one round. When you notice that (or
-the user asks), **propose** the handoff; run the steps below only on the user's go — do
-not auto-run them.
+`/stint-start` normally ends its bounded round by naming `/stint-handoff` as the exact next
+action. That is guidance, not a token or prerequisite: the user's explicit request to
+finish is sufficient, including a direct standalone invocation or one made after supplying
+answers. Record any current-turn answers before wrapping; a green round or silence alone
+is not authorization.
 
 This skill is **generic**: project specifics (the test-account reset preference and where
 the `TODO.md` handoff block lives) are read from the repo's own `AGENTS.md` / `TODO.md`.
@@ -72,33 +74,48 @@ an unmigrated or incompatible project rather than falling back to prose.
 
 ## Steps (propose; run only on the user's go)
 
-0. **Preflight (read-only).** This is the terminal wrap, not a re-orient — but because it
-   can be invoked standalone, confirm the ground truth you're about to record is real
-   before writing it. Verify a clean-ish worktree (`git status --short`). Inspect
-   `taskfleet run list --output json` and relevant `run show` records, not just runs
-   remembered in this conversation. Every live, awaiting-input, recoverable, or otherwise
-   resumable worker must have landed or relinquished ownership through a terminal
-   cancel/abandon path that confirms no preserved worktree, branch, or resumable work
-   remains. If ownership stays unresolved, skip schedule verification, record the run id,
-   slug, and preserved-work fact in the narrative, commit that narrative, and stop before
-   `/wrap-up`; never end the session with no durable record. Otherwise read the current
-   `TODO.md` handoff block and, if the block will state deployment state, the
-   project's live-version check — write "unverified" rather than guessing if you can't
-   confirm it.
-1. **Read the live schedule.** After preflight proves there are no ownership holds, run
-   `issuectl dag --json --reservations '[]'` and read `.data.lanes[]`,
-   `.data.unscheduled`, and `.data.spawnable_heads`. If the command fails, its JSON is
-   malformed, the graph has a missing blocker, self-dependency, or cycle, or an
+0. **Preflight (read-only, session-owned IDs only).** Inspect `git status --short` and
+   require a clean index (`git diff --cached --quiet`) before editing. Pre-existing staged
+   changes, or unstaged changes to TODO/an answer file this finish would edit, are a hard
+   stop: do not absorb or overwrite them. Start from the full run IDs retained by
+   `/stint-start`: runs
+   this session launched or explicitly adopted. Inspect each with `taskfleet run show
+   <full-run-id> --output json`. If this skill was invoked standalone and no such IDs are
+   present in the conversation, treat session worker ownership as clear; do not infer it
+   from a global list or repository membership. Every session-owned live, awaiting-input,
+   recoverable, or otherwise resumable worker must have landed or relinquished ownership
+   through a terminal cancel/abandon path that confirms no preserved worktree, branch, or
+   resumable work remains. If ownership stays unresolved, mark handoff blocked and skip
+   schedule verification, but continue through steps 2–3 so current-turn answers and that
+   owned run ID, slug, and preserved-work fact are recorded. Then stop before `/wrap-up`
+   with one exact ownership-recovery action. A known foreign run, including one in this
+   repository, never blocks as session-owned work and never enters the ownership narrative.
+   Otherwise read the current TODO handoff block and any live-version evidence it will
+   claim; write "unverified" rather than guessing.
+1. **Read the live schedule without adopting foreign work.** After preflight proves there
+   are no session-owned holds, inspect the global Taskfleet list for same-repository runs
+   that may still own resources: live, awaiting-input, attention-required, recoverable, or
+   terminal with preserved work. Convert every mappable run to the exact issuectl hold
+   array shape, one object per run: `[{"lane":"backend","collision":["hot-token"]}]`.
+   Values are copied from issue metadata; never infer them. Do not wait for, adopt, or
+   manage those runs. Run `issuectl dag --json --reservations '<foreign-holds-json>'`
+   (`[]` when none) and read `.data.lanes[]`, `.data.unscheduled`, and
+   `.data.spawnable_heads`. An unmappable foreign run does not block terminal handoff—this
+   skill spawns nothing—but state in the terminal report (not the handoff narrative) that
+   a future `/stint-start` must resolve that reservation before spawning. If the command
+   fails, its JSON is malformed, the graph has a missing blocker, self-dependency, or cycle, or an
    `untriaged`, `deferred`, or equivalent non-executable disposition appears in
    `.data.lanes[]`, record the verification failure and affected slug for the narrative and
    continue only through the narrative commit; lane presence and mechanical
    `spawnable: true` never make that row executable. Do not call `/wrap-up` or declare the
    handoff complete. Do not mutate issue scheduling during terminal wrap or encode a
    workaround in `TODO.md`.
-2. **Update only the `TODO.md` handoff narrative** (`## 🔄 Continue here` / `ALOITA
-   TÄSTÄ`) so a fresh agent can resume from `jatketaan @TODO.md`: where the round left
-   off, what landed, what is live, the intended product direction, and unresolved
-   decisions. Issue slugs may provide context, including a concise “awaiting human
+2. **Record current-turn answers, then update the `TODO.md` handoff narrative.** Put a
+   supplied product/technical answer in its canonical issue or documentation when one
+   already owns that decision; put only the resumable summary in `TODO.md`. Do not invent
+   a checkpoint file or duplicate a canonical answer. Update `## 🔄 Continue here` /
+   `ALOITA TÄSTÄ` so a fresh agent can resume from `jatketaan @TODO.md`: where the round
+   left off, what landed, the intended product direction, and unresolved decisions. Issue slugs may provide context, including a concise “awaiting human
    lane-or-close triage” note for unscheduled `untriaged` candidates, an explicit
    human/product “not now” note for unscheduled `deferred` work, or a run-ownership fact
    from preflight. Mark triage mentions as context only: they are not accepted, scheduled,
@@ -112,10 +129,11 @@ an unmigrated or incompatible project rather than falling back to prose.
    row's mechanical `spawnable: true` does not make it executable; it must pass human
    triage, move to an accepted active status, and gain a lane before a future round may
    launch it.
-3. **Commit the handoff update immediately, on its own**: `git add TODO.md` (that exact
-   path, not `git add -A`) and commit before the next step, so it is not folded into
-   `/wrap-up`'s mixed commit or left dangling. If the narrative did not change, do not
-   manufacture an empty commit.
+3. **Commit the finish records immediately, on their own.** Stage `TODO.md` and any
+   canonical answer file by exact path (never `git add -A`). Inspect
+   `git diff --cached --name-only` and require it to equal exactly that intended path set
+   before committing, so unrelated work cannot be folded into `/wrap-up` or the handoff
+   commit. If no answer or narrative changed, do not manufacture an empty commit.
 4. **`/wrap-up`**: if schedule verification failed in step 1, stop here and report the
    committed narrative plus the failure. Otherwise `/wrap-up` will present proposed
    `AGENTS.md` / issue / preference changes and ask before writing; do not assume it
@@ -133,7 +151,9 @@ an unmigrated or incompatible project rather than falling back to prose.
 - **Not a bare `/wrap-up`** — this first updates the `TODO.md` handoff narrative and
   verifies the issuectl schedule, then calls `/wrap-up`.
 - **Not a worktree**, and does not create one.
-- **Does not write product code** — its only direct edit is the `TODO.md` handoff
-  narrative; `/wrap-up` may separately propose other changes.
+- **No durable stint/checkpoint or global-run ownership.** It records answers only in
+  existing canonical issue/docs/TODO owners and checks only explicit session run IDs.
+- **Does not write product code** — its direct edits are current-turn answer records and
+  the `TODO.md` handoff narrative; `/wrap-up` may separately propose other changes.
 - **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md and issue
   metadata.

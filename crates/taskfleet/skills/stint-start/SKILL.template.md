@@ -1,6 +1,6 @@
 ---
 name: stint-start
-description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, read the issuectl scheduling DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous: resume from the handoff narrative and the live issuectl DAG. Generic across projects: reads all specifics from the repo's own AGENTS.md/TODO.md and issue metadata. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
+description: "Run one bounded round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to: orient → plan → spawn worktrees → deploy when permitted → give a product-owner report and one exact next action. It may absorb one user-feedback follow-up, then stops for explicit `/stint-handoff`. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Maximally autonomous and generic: reads repository policy, TODO narrative, issuectl DAG, and session-owned run IDs. NOT a worktree, one-off coding task, durable stint/checkpoint, background loop, or terminal handoff."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -14,11 +14,13 @@ report to the user → absorb feedback.* You conduct; **you do not write feature
 this session.** The actual implementation happens in worktrees you spawn, so this
 conversation's context stays free for orchestration and for talking to the user.
 
-Run this skill **every round**. A feedback mini-round (Phase 5) is just a fresh re-run of
-this same skill — a full pass from Phase 0 — on the smaller work-list; there is no
-separate mini-round logic. When the session is done and the user asks to hand off, that
-terminal wrap is a **different** skill: **`/stint-handoff`** (update the `TODO.md` handoff
-narrative, verify the live issue schedule, then `/wrap-up`).
+One invocation runs **one bounded round** through the product-owner report. It then emits
+**one exact next action** based on the observed stop reason. The user's immediate feedback
+may trigger at most one smaller follow-up, executed as the same full Phase 0–4 pass; after
+that second report, stop and direct the user to the explicit terminal
+**`/stint-handoff`**. Never turn acknowledgement, an empty frontier, or user silence into
+another round. There is no persisted stint/checkpoint state, new lifecycle noun, umbrella
+skill, or background agent loop.
 
 This skill is **generic**. Every project-specific fact — the deploy command, whether
 you may deploy without asking, the green-gate commands, hot files, the test-account
@@ -79,11 +81,16 @@ fall back to a prose schedule.
   (`/worktree-spinoff`) passes `--headless`, so the round's workers land in the detached
   `headless` tmux session instead of cluttering the user's window list; attach with
   `tmux attach -t headless` only when curious. Auto-cleanup still closes each window on
-  terminal. Only interactive `/worktree-code` — which the user actively drives and
-  reviews — stays foreground.
-- **Sync with `run wait`; trust the CLI's `landed` flag for the landing.** A spinoff runs
-  **asynchronously** — its spawn call returns immediately. Record every returned run id and
-  block on `taskfleet run wait <run-id> …` to know the workers have *settled* before
+  terminal. An explicitly interactive `taskfleet run create --kind spinoff --interactive`
+  stays foreground and waits for deliberate `run merge` or `run cancel`.
+- **Own explicit run IDs; sync them with `run wait`; trust `landed`.** A spinoff runs
+  **asynchronously** — its spawn call returns immediately. Keep the full ID of every run
+  this session launches or explicitly adopts; that set, not repository membership or the
+  global run list, defines this stint's ownership and is handed to `/stint-handoff`.
+  Adoption means the user or calling workflow names a full run ID and explicitly tells this
+  session to take responsibility, and the conductor states that adoption before acting.
+  Listing, showing, reserving, mentioning, or discovering a run never adopts it. Block on
+  `taskfleet run wait <run-id> …` for owned runs to know they have *settled* before
   you sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof
   the work landed: `taskfleet run show` can report a false `failed` / `pending` even
   when the worker committed **and** merged. **To confirm a landing, read the CLI's
@@ -164,8 +171,13 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
 
 ### Phase 0 — Orient (bootstrap)
 
-1. **Pull.** `git pull --ff-only` in the repo. If it can't fast-forward, stop and
-   report; do not force.
+1. **Synchronize the clean source branch.** Verify the current branch is the repository's
+   normal source branch and both index and worktree are clean. Run `git fetch`, then try
+   `git merge --ff-only @{upstream}`. If local and remote have ordinary ahead/behind
+   divergence, run `git rebase @{upstream}` on the clean source branch. Resolve only clearly mechanical, narrow
+   conflicts and verify the result with the repository green gate; abort the rebase and
+   surface semantically ambiguous or broad conflicts. Never force-push. A dirty tree,
+   incompatible branch policy, missing upstream, or failed verification is a hard stop.
 2. **Read the operating policy** from the repo's root `AGENTS.md` and `CLAUDE.md`, and
    the `TODO.md` handoff block (`## 🔄 Continue here` / `ALOITA TÄSTÄ`). Gather the deploy
    command and autonomy, deploy target, green-gate commands, live-version check, hot-file
@@ -195,22 +207,28 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
    incompatible rather than guessing. If an `untriaged`, `deferred`, or equivalent
    non-executable disposition appears in `.data.lanes[]`, report its slug as a scheduling
    inconsistency and stop before announcing heads, selecting, or spawning; lane presence
-   and `spawnable: true` do not prove human acceptance. Inspect `taskfleet run list
-   --output json` and
-   the relevant `run show` records for
-   every live or resumable run. Map each run's issue slug through the first DAG response,
-   then replace `reservations` with the exact issuectl hold-array shape, one object per
-   run: `[{"lane":"backend","collision":["path/to/hot-file"]}]`. Two live runs are
-   two array objects, even when their lanes match. Include the issue's lane and its
-   complete `.collision` array; collision tokens are exact opaque strings copied from
-   issue metadata, not inferred paths or lane names. Re-run the command with that payload;
-   only this reservation-aware response may drive spawning. If there are no holds, the
-   second read still uses `[]`. Validate assembled JSON before use. If a run cannot be
-   mapped to its issue and complete hold, inspect it with `run show` and resolve any open
-   awaiting-input request, retry-with-harvest case, cancellation, or other ownership state
-   first. A run relinquishes ownership only after it lands or a terminal cancel/abandon
-   path confirms that no preserved worktree, branch, or resumable work remains. Do not
-   spawn while ownership remains ambiguous. If the command fails, its JSON
+   and `spawnable: true` do not prove human acceptance. Reconcile the full IDs already
+   launched or explicitly adopted by this session with `run show`. Separately inspect
+   `taskfleet run list --output json` only to discover live runs whose recorded source or
+   worktree belongs to this repository. Such foreign runs are **reservations, not owned
+   work**: include their resources below so this session cannot collide with them, but do
+   not wait for, cancel, recover, report, or copy them into this stint's handoff. Map every
+   relevant live run's issue slug through the first DAG response, then replace
+   `reservations` with the exact issuectl hold-array shape, one object per run:
+   `[{"lane":"backend","collision":["path/to/hot-file"]}]`. Two live runs are two array
+   objects, even when their lanes match. Include the issue's lane and its complete
+   `.collision` array; collision tokens are exact opaque strings copied from issue
+   metadata, not inferred paths or lane names. Re-run with that payload; only this
+   reservation-aware response may drive spawning. If there are no holds, the second read
+   still uses `[]`. Validate assembled JSON before use. If a **session-owned** run cannot
+   be mapped to its complete hold, resolve its awaiting-input, retry-with-harvest,
+   cancellation, or other ownership state first. It relinquishes ownership only after it
+   lands or a terminal cancel/abandon path confirms no preserved or resumable work remains.
+   An unrelated run with an identifiable reservation remains foreign and does not block.
+   If a same-repository foreign run may still own resources (live, awaiting input,
+   attention-required, recoverable, or terminal with preserved work) but its complete
+   reservation cannot be identified, stop **spawning** as unverifiable; never omit the hold,
+   infer opaque collision tokens, or adopt/manage the run merely to make it mappable. If the command fails, its JSON
    is malformed, or the graph is invalid, stop; never retry without reservations or patch
    around the failure in `TODO.md`.
 5. **Orient the user** in one tight message: where things stand, what the pull brought
@@ -281,23 +299,27 @@ git** before counting it toward the deploy pile:
 |---|---|---|
 | Clear fix for an already-filed bug | `/worktree-spinoff --headless <slug>` (issue-driven; use the bare slug or `issuectl:<slug>`, **not** `#<slug>` because hyphenated slugs are not guaranteed to parse behind a `#`) | current branch (main) |
 | Well-scoped autonomous task | `/worktree-spinoff --headless <task>` | current branch (main) |
-| Design-first single feature | `/worktree-code <task>` (human-reviewed, foreground) or `/worktree-spinoff --headless <task>` (autonomous) | current branch (main) |
+| Architectural choice | `/worktree-technical-decision <task>` (ADR first; implementation is a later issue-driven spinoff) | current branch (main) |
+| Hands-on review required | `taskfleet run create --kind spinoff --interactive …` with the same complete worker brief | current branch after explicit `run merge` |
 
 - **Autonomous spinoffs are headless** (see Standing discipline) — pass `--headless`
-  on every `/worktree-spinoff`. Interactive `/worktree-code` stays foreground.
-- **Requesting a review is a brief instruction, not a `--review` flag.** The
-  taskfleet `worktree-spinoff` decides review via the spinoff's *quality bar*
-  (default: no review). When a unit touches **production code**, tell the spinoff in
-  its task to **run `/llm-review` (+ `/assess-findings`) before merging** — that
-  instruction rides in the brief; there is no `--review` passthrough flag.
-- **Do not use `/worktree-bugfix <slug>`** for an already-filed bug — it treats its
-  argument as a *new* free-text report and would file a duplicate. Use
-  `/worktree-spinoff --headless <slug>`.
-- **A multi-feature, dependency-ordered campaign is not a Phase-2 unit.** `/orchestrate`
-  lands on its own integration branch (main untouched) and runs in its own window. If
-  a unit is really such a campaign, **this stint becomes a hand-off**: launch
-  `/orchestrate`, tell the user, and stop before Phase 3 — do not try to deploy this
-  round.
+  on every `/worktree-spinoff`. Explicit `--interactive` runs stay foreground and do not
+  auto-terminalize.
+- **The worker chooses proportionate review after seeing the final diff.** Put this
+  quality bar in the brief (there is no `--review` passthrough flag): assess the final
+  diff's risk, complexity, test coverage, and existing review evidence; choose and explain
+  a proportionate review level in the terminal report. A small, local, well-covered change
+  may use focused self-review or one targeted reviewer. Use stronger independent review
+  (normally `/llm-review` plus `/assess-findings`) for security/privacy or authorization
+  boundaries, destructive changes, concurrency, broad refactors, unfamiliar or
+  architecturally significant work, difficult rollback, or weak test coverage. Explicit
+  mandates from the user, issue, repository policy, or calling workflow still win. Reuse
+  adequate existing evidence unless this run materially changes the reviewed risk surface.
+- **An already-filed bug uses `/worktree-spinoff --headless <slug>`.** There is no
+  separate bugfix kind or skill.
+- **A multi-feature dependency graph is not one Phase-2 unit.** Keep issuectl as the sole
+  DAG owner and execute dependency-ordered work as bounded stint waves. Do not create an
+  integration orchestrator or second campaign state.
 - **Launch disjoint units in parallel, then wait.** Record each spawn's run id; after a
   parallel batch, block on `taskfleet run wait <id> …` and confirm each landing via the
   CLI's `landed` flag before counting it (NOT `merge-base --is-ancestor` — see the landing
@@ -314,14 +336,17 @@ git** before counting it toward the deploy pile:
   run (`recoverable=<n> unmerged commit(s) merge cleanly on <branch>` when
   `recoverable: true`, `merges_cleanly: true`, `unmerged_commits > 0`). When you see that:
   - **Do NOT hand-merge the preserved branch from this session.** Those commits are
-    *unreviewed* — no green gate, no `/llm-review` — and merging them yourself both breaks
-    "never commit a worker's work for it" and lands unvetted code. Cherry-picking or
+    not yet accepted as complete — their green-gate and review evidence may be incomplete —
+    and merging them yourself both breaks "never commit a worker's work for it" and lands
+    unvetted code. Cherry-picking or
     `git merge`-ing it here is the wrong move.
   - **Re-spawn a fresh worktree pointed at the preserved branch** — a `/worktree-spinoff
     --headless` for the *same issue* whose brief names the preserved branch and instructs
-    it to: review the stranded commits, **adopt** them (cherry-pick / re-apply onto a fresh
-    branch off current main), complete the green gate, run `/llm-review` (+
-    `/assess-findings`) for production code, and merge. This is **retry-with-harvest**: a
+    it to: inspect and validate the stranded commits, **adopt** them (cherry-pick / re-apply
+    onto a fresh branch off current main), complete the green gate, and merge. Reuse recorded
+    review evidence; select and explain proportionate additional review after the final diff,
+    repeating stronger review only when evidence is inadequate or the risk surface changed.
+    This is **retry-with-harvest**: a
     fresh reviewing agent finishes the dead worker's work — **not** a hand-merge, and
     **not** a base-agent swap (the model/harness is fine; the process just died).
   - **Deaths are transient — the retry usually lands.** Don't infer a systemic problem from
@@ -373,16 +398,33 @@ Deploy is **conditional on project policy**, read from the repo's root `AGENTS.m
 If the project has no deploy step for a stint (e.g. changes land on main and a human
 promotes later), skip this phase and say so.
 
-### Phase 4 — Report to the user  → `/worktree-status`
+### Phase 4 — Product-owner report and one next action
 
-The coding happened in detached worktrees, so this conversation doesn't yet know what
-landed. **First gather the round's durable facts into the conversation:** the
-commits that landed on main (`git log --oneline`), the issues that closed and their
-analyses, and anything the workers wrote back (e.g. bug-analysis notes, worker
-reports). State those verified facts in chat. **Then** invoke **`/worktree-status`**,
-which formats what's now in context into the product-owner snapshot: Summary · Ready
-to test · Decisions needed · Discussion points · Spin-offs. Your reactions seed the
-*next* round.
+This next-action rule applies to **every** return from Phases 0–3, including hard stops.
+A stop may skip normal report formatting, but it still ends with one concrete command or
+one specific requested decision—never an “A or B” menu.
+
+The coding happened in detached worktrees, so first gather the durable facts: landed
+commits, closed issues and analyses, worker reports, green-gate/deploy evidence, and the
+full IDs of runs this session owns. Use `/worktree-status`'s presentation discipline to
+write the product-owner snapshot directly: Summary · Ready to test · Decisions needed ·
+Discussion points · Spin-offs. Do not create a second status pass merely to reformat facts.
+
+End with exactly one concrete next action:
+
+- unresolved test/decision feedback: ask for the specific answer(s); that reply may drive
+  the single bounded follow-up allowed below;
+- a session-owned unsettled run: print the exact `taskfleet run wait <full-run-id>` or
+  `run show` command needed next;
+- failed validation, ambiguous ownership, or preserved work: name one exact inspection,
+  repair, abort, retry-with-harvest, or decision action (including the concrete failing
+  command where relevant);
+- no unresolved feedback after the first report: `/stint-handoff`;
+- after the one feedback follow-up report: `/stint-handoff` regardless of new work ideas
+  (record larger work durably for the next stint).
+
+Do not promise automatic wake. A harness may wait on the public command, but lack of a
+wake facility leaves the copyable next action unchanged.
 
 ### Phase 5 — Absorb the user's feedback
 
@@ -390,12 +432,11 @@ The `/worktree-status` snapshot hands the user things to act on — items to tes
 discussion points, spin-off calls. This is where they react, and their reactions
 decide what happens next.
 
-- **Light feedback** (a handful of small asks) → **re-run this whole skill** on the
-  smaller work-list: a fresh `stint-start` pass from Phase 0 (pull, ground-truth,
-  issuectl schedule read, plan, spawn, deploy, report), just with fewer units. There is no separate
-  mini-round logic and no "phases in miniature" — a feedback round *is* an ordinary
-  `stint-start` round. Still no coding in this session — every change goes through a
-  worktree.
+- **Light feedback** (a handful of small asks) → if this invocation has not yet consumed
+  its feedback budget, run one fresh Phase 0–4 pass on the smaller work-list. This is the
+  same full round, not "phases in miniature", and every change still goes through a
+  worktree. After its product-owner report, the only next action is `/stint-handoff`.
+  If the budget was already consumed, record the asks durably for the next stint.
 - **Heavy feedback** (a lot comes back) → don't try to carry it in this session's
   context. **Land it durably first** — update the affected **issues**,
   **documentation**, and **`TODO.md`** so nothing is lost — *then* move to the handoff.
@@ -406,9 +447,9 @@ exact rewritten issue paths before a feedback re-run consults `issuectl dag --js
 If you capture feedback without a re-run, still record the metadata so the eventual
 handoff sees the accurate live graph.
 
-Once the feedback is absorbed (acted on via worktrees, or captured durably), the round is
-done. When the session's context is filling or the user asks to wrap up, **propose
-`/stint-handoff`** — the terminal wrap is a separate skill, not part of this one.
+Once feedback is acted on or captured durably, the bounded invocation is done. Emit the
+single next action required by Phase 4. Terminal finish remains explicit:
+`/stint-handoff` is a separate skill and never runs merely because this round went green.
 
 ## Non-goals
 
@@ -416,8 +457,7 @@ done. When the session's context is filling or the user asks to wrap up, **propo
   `/worktree-*` family.
 - **Does not write code** in this session — every change goes through a worktree.
 - **Not for a single one-off coding task** — that's `/worktree` (router).
-- **Not the terminal handoff/wrap-up** — that's `/stint-handoff` (update the `TODO.md`
-  handoff narrative, verify the issuectl schedule, then `/wrap-up`).
-- **Not for bare** status / deploy — those are `/worktree-status` and the project deploy
-  command.
+- **Not the terminal handoff/wrap-up** — that's explicit `/stint-handoff`.
+- **No durable stint/checkpoint state, new lifecycle noun, umbrella skill, or background
+  loop.** Existing run, issue, git, and TODO facts remain the only durable owners.
 - **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md.

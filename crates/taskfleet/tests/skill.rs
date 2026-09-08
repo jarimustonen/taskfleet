@@ -1067,6 +1067,155 @@ fn bundled_stint_guidance_distinguishes_untriaged_from_explicit_deferral() {
 }
 
 #[test]
+fn bundled_workflow_skills_render_the_bounded_stint_contract() {
+    fn print_skill(home: &tempfile::TempDir, name: &str) -> String {
+        let out = bin(home)
+            .args(["skill", "print", name])
+            .output()
+            .expect("print bundled skill");
+        assert!(out.status.success(), "print {name} failed: {out:?}");
+        String::from_utf8(out.stdout)
+            .expect("skill is utf-8")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    let home = mk_home();
+    let start = print_skill(&home, "stint-start");
+    for required in [
+        "one exact next action",
+        "at most one smaller follow-up",
+        "normal source branch and both index and worktree are clean",
+        "Resolve only clearly mechanical, narrow conflicts",
+        "Never force-push",
+        "this session launches or explicitly adopts",
+        "Listing, showing, reserving, mentioning, or discovering a run never adopts it",
+        "reservations, not owned work",
+        "stop **spawning** as unverifiable",
+        "The worker chooses proportionate review after seeing the final diff",
+        "Reuse adequate existing evidence",
+        "after the one feedback follow-up report: `/stint-handoff`",
+        "applies to **every** return from Phases 0–3",
+        "No durable stint/checkpoint state",
+    ] {
+        assert!(start.contains(required), "stint-start missing {required:?}");
+    }
+    for removed in [
+        "`git pull --ff-only`",
+        "/worktree-code",
+        "/worktree-bugfix",
+        "/orchestrate",
+    ] {
+        assert!(
+            !start.contains(removed),
+            "stint-start retains removed workflow {removed:?}"
+        );
+    }
+
+    let handoff = print_skill(&home, "stint-handoff");
+    for required in [
+        "session launched or explicitly adopted",
+        "treat session worker ownership as clear",
+        "exact issuectl hold array shape",
+        "An unmappable foreign run does not block terminal handoff",
+        "continue through steps 2–3",
+        "git diff --cached --quiet",
+        "git diff --cached --name-only",
+        "the user's explicit request to finish is sufficient",
+        "direct standalone invocation",
+        "No durable stint/checkpoint or global-run ownership",
+    ] {
+        assert!(
+            handoff.contains(required),
+            "stint-handoff missing {required:?}"
+        );
+    }
+    assert!(
+        !handoff.contains("Every live, awaiting-input, recoverable"),
+        "handoff must not block on every global run"
+    );
+
+    let generic_spinoff = print_skill(&home, "taskfleet-spawn-spinoff");
+    assert!(
+        generic_spinoff.contains("worker chooses and explains review depth after the final diff")
+    );
+
+    let spinoff = print_skill(&home, "worktree-spinoff");
+    for required in [
+        "a bug closes as `fixed`; a feature/task/improvement/chore closes as `done`",
+        "issuectl update <slug> --status in-progress --json",
+        "issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json",
+        "`stamped` or `already_present`",
+        "commit that metadata in a separate commit",
+        "Do not add a `Fixes-Issue` trailer or close an issue for a freeform run",
+    ] {
+        assert!(
+            spinoff.contains(required),
+            "worktree-spinoff missing {required:?}"
+        );
+    }
+
+    let analysis = print_skill(&home, "worktree-bug-analysis");
+    assert!(analysis.contains("`Refs-Issue: @<slug>` trailer"));
+    assert!(analysis.contains("never use `Fixes-Issue`, `issuectl close --stamp`"));
+
+    let research = print_skill(&home, "worktree-research");
+    assert!(research.contains("`Refs-Issue: @<slug>`"));
+    assert!(research.contains("issuectl close <slug> --status done --stamp --as <agent> --json"));
+    assert!(research.contains("Freeform research has no issue trailer"));
+
+    let decision = print_skill(&home, "worktree-technical-decision");
+    assert!(decision.contains("issuectl close <slug> --status done --stamp --as <agent> --json"));
+    assert!(decision.contains("A freeform decision has no issue trailer"));
+
+    let listed = bin(&home)
+        .args(["skill", "list", "--output", "json"])
+        .output()
+        .expect("list bundled skills");
+    assert!(listed.status.success(), "skill list failed: {listed:?}");
+    let listed: serde_json::Value =
+        serde_json::from_slice(&listed.stdout).expect("skill list json");
+    let names = listed["data"]["skills"]
+        .as_array()
+        .expect("skills array")
+        .iter()
+        .map(|row| row["name"].as_str().expect("skill name"))
+        .collect::<Vec<_>>();
+    for retired in ["worktree-code", "worktree-bugfix", "orchestrate"] {
+        assert!(
+            !names.contains(&retired),
+            "retired skill remains bundled: {retired}"
+        );
+    }
+    for skill in names {
+        let rendered = print_skill(&home, skill);
+        if [
+            "fan-out",
+            "worktree-research",
+            "worktree-spinoff",
+            "worktree-technical-decision",
+        ]
+        .contains(&skill)
+        {
+            assert!(rendered.contains("<workmux-reported-window-name>"));
+            for retired_emoji in ["🚀", "🔬", "⚖️", "🪭"] {
+                assert!(
+                    !rendered.contains(retired_emoji),
+                    "{skill} invents retired kind emoji {retired_emoji}"
+                );
+            }
+        }
+        for retired in ["/worktree-code", "/worktree-bugfix", "/orchestrate"] {
+            assert!(
+                !rendered.contains(retired),
+                "{skill} points to retired workflow {retired}"
+            );
+        }
+    }
+}
+
+#[test]
 fn skill_install_default_dual_homes_into_pi() {
     // A default `skill install` writes the claude copy AND mirrors the same
     // SKILL.md into pi.dev's per-skill dir (`~/.pi/agent/skills/<name>/`),

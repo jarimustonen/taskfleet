@@ -24,15 +24,15 @@ below assumes.
 - ✅ User said `/worktree-spinoff <task>`.
 - ✅ User asked to spawn a "background", "fire-and-forget", or
   "spinoff" worktree for a focused task.
-- ✅ A driver skill (`/fan-out`, `/orchestrate`) needs to spawn one
-  autonomous unit and pass `--parent-run-id` + `--parent-node-id`.
+- ✅ The `/fan-out` driver needs to spawn one autonomous unit and pass
+  `--parent-run-id` + `--parent-node-id`.
 - ❌ User wants a hands-on, human-driven worktree → spawn with `taskfleet run create --interactive` (the supervisor never auto-terminalizes; the human finalizes with `run merge`/`run cancel`). A default spinoff is always headless + autonomous.
 - ❌ N≥5 similar independent units → `/fan-out`.
-- ❌ Heterogeneous dependency-ordered features → `/orchestrate`.
-- ❌ Substantial research / ADR / bugfix → use the matching
-  `/worktree-research`, `/worktree-technical-decision`,
-  `/worktree-bugfix` skill instead — they ship purpose-built prompt
-  templates.
+- ❌ Heterogeneous dependency-ordered features → schedule bounded waves through
+  `/stint-start` and the issuectl DAG.
+- ❌ Substantial research / ADR → use `/worktree-research` or
+  `/worktree-technical-decision`. Bug fixes use this spinoff skill with the existing issue
+  slug.
 
 ## Workflow
 
@@ -94,9 +94,13 @@ self-contained. Include:
    replace, remove, or modify the user's installed taskfleet or bundled
    skills by any mechanism, including any `cargo install`, `cargo uninstall`,
    Homebrew, manual-copy, or `skill install` variant.
-5. **Quality bar** — does the spinoff need to run `/llm-review` before
-   merging? Default is no review for spinoffs. `run create` prepends generated
-   run context to every worker brief, including custom `--prompt-file` input.
+5. **Quality bar** — unless an explicit user, issue, repository, or caller mandate
+   selects a workflow, tell the worker to choose and explain proportionate review after
+   seeing the final diff. Focused review is enough for small, local, well-covered work;
+   security/privacy, destructive, concurrency-sensitive, architectural, broad,
+   hard-to-rollback, or weakly tested work needs stronger independent review. Reuse
+   adequate existing evidence unless the risk surface changed. `run create` prepends
+   generated run context to every worker brief, including custom `--prompt-file` input.
    That context carries the exact run id and the hard issue-filing boundary:
    worker-filed issues use `issuectl intake file`, are born unlaned, and review
    findings carry machine-visible AI-review provenance plus available metadata.
@@ -150,8 +154,8 @@ Flag rules:
   strings are rejected upstream — do not strip silently.
 - `--source-branch` defaults to the current branch captured in step 0.
 - `--parent-run-id` and `--parent-node-id` are mutually required; pass
-  both or neither. Drivers (`/fan-out`, `/orchestrate`) pass them; a
-  user-initiated `/worktree-spinoff` does not.
+  both or neither. The `/fan-out` driver passes them; a user-initiated
+  `/worktree-spinoff` does not.
 - `--idempotency-key` makes the call safe to retry on transient errors
   (network blip, disk full). Use the same key on retry and the CLI
   returns the original run without spawning twice.
@@ -191,7 +195,7 @@ Flag rules:
     "kind": "spinoff",
     "lifecycle": "autonomous",
     "node_id": "n-...",
-    "tmux_window": "🚀 wt/<title>",
+    "tmux_window": "<workmux-reported-window-name>",
     "worktree_path": "$HOME/repos/<repo>/worktrees/<title>",
     "branch": "wt/<title>"
   }
@@ -399,18 +403,25 @@ Existing prose fields suffice, so do not add a schema or terminal state.
 Skip this section in driver mode (`--parent-run-id` set). The driver
 owns issue interaction.
 
-When issue-driven and not in driver mode, instruct the spinoff (via its
-`--task` brief) to:
+When issue-driven and not in driver mode, resolve the issue type while building the brief:
+a bug closes as `fixed`; a feature/task/improvement/chore closes as `done`. If the
+repository customizes types or delivery statuses and no single valid status follows from
+its schema, stop before implementation rather than guess. Put the **concrete** slug,
+status, and agent identity—not the metavariables below—into this closing contract:
 
-- Add commits as they happen:
-  `issuectl --json update <NN> --add-commit "<sha>:<summary>"`
-- Update status to in-progress on first commit:
-  `issuectl --json update <NN> --status in-progress`
-- Close on full completion:
-  `issuectl --json close <NN> [--status fixed|done]`
+1. Mark work begun with `issuectl update <slug> --status in-progress --json`. Stage and
+   commit only that issue metadata path, then require a clean tree before implementation.
+2. Make and validate the final implementation commit. Before `run merge`, run
+   `issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json`.
+3. Require `.data.stamp.status` to be `stamped` or `already_present`; `skipped` or a
+   missing stamp blocks the merge. The stamp rewrites the implementation commit with
+   `Fixes-Issue: @<slug>` without changing its tree.
+4. Stage the exact closure metadata path returned by issuectl, commit that metadata in a
+   separate commit, and require a clean tree before `taskfleet run merge`.
 
-The spinoff agent handles these calls itself; do not call `issuectl`
-from this skill — it would race with the spinoff.
+Do not add a `Fixes-Issue` trailer or close an issue for a freeform run. Driver mode keeps
+issue interaction with the driver. The worker performs these calls itself; the spawning
+skill must not race it.
 
 ## Errors
 
@@ -575,7 +586,7 @@ first invocation in a session, run
 # Issue-driven (skill reads issue NN, builds task brief from it)
 /worktree-spinoff #142
 
-# Driver mode — only /fan-out and /orchestrate pass these
+# Driver mode — /fan-out passes these
 taskfleet run create --kind spinoff \
   --title "u-003-receipts" \
   --task "..." \

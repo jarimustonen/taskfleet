@@ -1,8 +1,8 @@
 ---
 created: 2026-08-15
-updated: 2026-09-07
+updated: 2026-09-08
 type: feature
-status: open
+status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
 lane: workflow-skills

@@ -66,8 +66,8 @@ progress (see the `taskfleet-run-overview` skill for the response shape).
 
 ## When to use a spinoff vs. other variants
 
-- **Spinoff** — one focused autonomous task, no review. "Update all
-  docstrings in module X." "Refactor helper Y into its own crate."
+- **Spinoff** — one focused autonomous task with proportionate review chosen after the
+  final diff. "Update all docstrings in module X." "Refactor helper Y into its own crate."
 - **Interactive worktree** — user wants a hands-on, human-driven session:
   add `--interactive` to `run create` so the supervisor waits for an
   explicit `run merge`/`run cancel` (a default spinoff is always headless +
@@ -85,7 +85,11 @@ follow-up questions. Include:
    paths.
 3. **Done criteria** — concrete, verifiable. "All tests pass" or "no
    `clippy::pedantic` warnings introduced."
-4. **Quality bar** — does the spinoff need to run `/llm-review`?
+4. **Quality bar** — unless explicitly mandated, the worker chooses and explains review
+   depth after the final diff. Focused review suits small, local, well-covered changes;
+   security/privacy, destructive, concurrency-sensitive, architectural, broad,
+   hard-to-rollback, or weakly tested changes need stronger independent review. Reuse
+   adequate existing evidence unless the risk surface changed.
 5. **Failure and closing contract** — copy the disclosure contract below into
    the brief. The brief ends with exactly one terminal path: completed work
    reports through `run merge`; work blocked by a required failure reports

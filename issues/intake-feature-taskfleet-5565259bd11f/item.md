@@ -1,9 +1,9 @@
 ---
 created: 2026-09-02
-updated: 2026-09-07
+updated: 2026-09-08
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:taskfleet-stint-start-safe-rebase-20260902

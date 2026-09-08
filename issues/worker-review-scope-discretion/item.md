@@ -1,9 +1,9 @@
 ---
 created: 2026-09-01
-updated: 2026-09-07
+updated: 2026-09-08
 type: improvement
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 labels: [skills, review-workflow]
 provenance: chat

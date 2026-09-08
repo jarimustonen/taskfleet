@@ -26,7 +26,7 @@ shared autonomous-merge contract.
   later.
 - ❌ One-shot fact lookup (just `WebSearch`).
 - ❌ Single-doc / single-file summary (read it inline).
-- ❌ Debugging or code changes → `/worktree-bugfix`, `/worktree-code`.
+- ❌ Debugging or code changes → `/worktree-bug-analysis` or `/worktree-spinoff`.
 - ❌ "Which option should we pick?" — that is a decision, use
   `/worktree-technical-decision` (it records an ADR).
 
@@ -123,7 +123,7 @@ a Claude worker.
     "kind": "research",
     "lifecycle": "autonomous",
     "node_id": "n-...",
-    "tmux_window": "🔬 wt/<title>",
+    "tmux_window": "<workmux-reported-window-name>",
     "worktree_path": "$HOME/repos/<repo>/worktrees/<title>",
     "branch": "wt/<title>"
   }
@@ -264,13 +264,17 @@ supervisor state.
 
 ## Issue Management
 
-Skip when driver-spawned. When issue-driven and standalone, instruct
-the research agent to record the produced report path on the issue:
+Skip when driver-spawned. For standalone issue-driven research, distinguish two cases:
 
-- `issuectl --json update <slug> --add-commit "<sha>:research report"`
-- `issuectl --json close <slug> --status done` only if the issue is
-  literally "produce this research", not if research is one step in a
-  larger feature.
+- If research is evidence for a larger issue, commit the report with
+  `Refs-Issue: @<slug>` and do not close or stamp the issue.
+- If the issue's whole deliverable is this report, make and validate the final report
+  commit, then run `issuectl close <slug> --status done --stamp --as <agent> --json`.
+  Require `.data.stamp.status` to be `stamped` or `already_present`; otherwise do not
+  merge. Commit the exact closure metadata path separately and require a clean tree before
+  `taskfleet run merge`. The stamped report commit carries `Fixes-Issue: @<slug>`.
+
+Freeform research has no issue trailer or issue mutation.
 
 ## Errors
 

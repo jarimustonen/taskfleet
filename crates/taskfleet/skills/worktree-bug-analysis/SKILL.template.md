@@ -1,6 +1,6 @@
 ---
 name: worktree-bug-analysis
-description: Spawn an autonomous READ-ONLY worktree via `taskfleet run create --kind spinoff` that analyses ONE already-filed bug and writes its findings back into the issue — reproduce or explain the symptom, locate the responsible code (Read/Grep only), classify it (real bug / expected behaviour / cannot tell), estimate severity, and sketch what a fix would touch. Never changes application code; the only write is the issue update, which it self-merges. Use when an existing bug issue needs understanding before a fix/defer/not-a-bug decision. For fixing a bug use `/worktree-bugfix`; for open-ended multi-source research use `/worktree-research`.
+description: Spawn an autonomous READ-ONLY spinoff that analyses ONE existing bug and writes findings back into its issue: reproduce/explain, locate the code path with Read/Grep, classify, estimate severity, and sketch fix scope. It self-merges only the issue update and never changes application code. Use before a fix/defer/not-a-bug decision. Fix with issue-driven `/worktree-spinoff`; use `/worktree-research` for open-ended multi-source research.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -26,7 +26,7 @@ autonomous-merge contract that this skill reuses verbatim.
 
 - ✅ You have an **existing** bug issue slug that needs understanding before a
   fix/defer/not-a-bug decision.
-- ❌ Fixing the bug → `/worktree-bugfix`.
+- ❌ Fixing the bug → `/worktree-spinoff <existing-bug-slug>`.
 - ❌ Filing a new bug / any issue that does not yet exist — this skill never
   creates issues.
 - ❌ Open-ended multi-source research → `/worktree-research`.
@@ -79,7 +79,8 @@ required failure uses direct `node report` without merging. Include:
      `## Suspected Root Cause`): verdict, severity, affected area, repro status,
      fix sketch. Keep it tight; for a long trace add `issues/<slug>/analysis.md`
      and link it.
-   - Commit with plain `git` and a `Refs-Issue: <slug>` trailer.
+   - Commit with plain `git` and a `Refs-Issue: @<slug>` trailer. This is read-only
+     analysis: never use `Fixes-Issue`, `issuectl close --stamp`, or close the issue.
    - If reproducing requires a local taskfleet build, use `cargo build
      --release` and invoke `./target/release/taskfleet …` explicitly.
      During repository work, neither workers nor the orchestrator may create,
@@ -216,7 +217,7 @@ supervisor state.
 
 ## Non-goals
 
-- Does NOT fix bugs or touch application code — that's `/worktree-bugfix`.
+- Does NOT fix bugs or touch application code — use `/worktree-spinoff` for the fix.
 - Does NOT create issues — it only updates an existing one.
 - Does NOT decide fix/defer/not-a-bug, close the issue, or change its status or
   disposition labels.

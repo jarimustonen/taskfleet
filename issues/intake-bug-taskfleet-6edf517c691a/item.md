@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02
-updated: 2026-09-07
+updated: 2026-09-08
 type: bug
 reporter: jari
 status: open
@@ -46,3 +46,9 @@ The taskfleet-owned `stint-handoff` skill installed at `~/.pi/agent/skills/stint
 ### 2026-09-07T18:15:48Z · @jari
 
 Accepted the minimal skill-owned correction: stint-start retains the run IDs it launched, and stint-handoff checks only those session-owned IDs. Unrelated global runs and known foreign changes must not block or enter this session's handoff. A durable session-ownership field is not required for this slice; that belongs to any later checkpoint design.
+
+## Comments
+
+### 2026-09-08T09:20:04Z · @codex
+
+2026-09-08 regression/simplification stint: implement together with intake-feature-taskfleet-5565259bd11f, worker-review-scope-discretion, run-merge-stamp, end-end-stint in one workflow-skills worktree. Existing accepted decisions define scope. Session run IDs remain conversational; no new lifecycle state. User explicitly requested broad correction plus simplification.

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-09-07
+updated: 2026-09-08
 type: bug
 status: open
 priority: normal
@@ -72,3 +72,9 @@ taskfleet 0.4.1 (commit c15d6af4e12e728ce102a933ce17f9f4c2f18dee), macOS.
 
 Close as fixed when a timed-out `run wait --output json` is distinguishable from a settled one
 by reading `data` alone, without consulting the process exit code.
+
+## Comments
+
+### 2026-09-08T09:20:05Z · @codex
+
+2026-09-08 regression/simplification stint: implement with phenomenally-noisy-behavior in one run-read-surfaces worktree. Serialize existing Stop decision; expose recorded source_repo rather than infer ownership. Runtime visibility/discard follows after this lands to avoid DTO collisions.

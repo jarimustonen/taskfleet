@@ -1,11 +1,12 @@
 ---
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 type: feature
-status: open
+status: done
 priority: high
 lane: supervisor
 collision: [taskfleet-supervisor]
+closed: 2026-09-09
 ---
 
 # Archive exact Pi session and terminal worker evidence
@@ -33,3 +34,9 @@ Record Pi session identity explicitly at launch using a supported Pi CLI/interfa
 ## Validation
 
 Required repository gate: scripts/validate-local-release.sh. Also exercise real isolated Pi/tmux lifecycle without touching default tmux or global installed tools. Required /llm-review and /assess-findings. Conductor owns release through the approved pinned held-tag protocol; worker must not publish/install/deploy or edit Homebase. Shared-session visible-window retention is a separate dependent issue.
+
+## Comments
+
+### 2026-09-08T21:50:04Z · @codex
+
+Accepted native evidence implementation c3a89eeb713d59c42e20ccf1d95258e623fb9fe8 and integrated source. Exact clean full release gate passed, actual authenticated Pi/tmux lifecycle proved byte-identical transcript digest, header-only resume cwd adaptation, prior conversation resume, immutable archive and cleanup. Mandated held-tag wrapper then passed exact0.9.0 bump02bd5a18e92b2aac95db274d49688efd16961174 gate and pushed v0.9.0; publication CI is being observed separately. Source release reservation explicitly released. Report /tmp/haapa-evidence-current.json and /tmp/taskfleet-evidence-release-cut.log. No installed binaries or skills changed during source work.

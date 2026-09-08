@@ -1,10 +1,11 @@
 ---
 created: 2026-08-15
-updated: 2026-08-21
+updated: 2026-09-08
 type: improvement
-status: untriaged
+status: wontfix
 priority: normal
 epic: lifecycle-architecture-review
+closed: 2026-09-08
 ---
 
 # Enforce run merge (prevent raw-git self-merge) instead of only detecting it
@@ -23,3 +24,9 @@ Surfaced by llm-review (anthropic #16) during the `raw-git-selfmerge-false-faile
 - Harness / bundled-SKILL prompt-level reinforcement.
 
 **Constraints:** must not reintroduce any auto-success heuristic (invariant 7); likely lands cleanly with the 0.2.1 pi.dev plugin + durable operation lease (design §2.7). New subsystem with its own security model and lifecycle — too large to bundle into the lifecycle fix.
+
+## Resolution
+
+### 2026-09-08T08:39:43Z · @issuectl
+
+Do not add a worktree Git-hook or enforcement subsystem. Taskfleet keeps run merge as the only success truth and reinforces that contract through its owned workflow skills; the proposed prevention machinery is disproportionate and adds a separate security/lifecycle surface.

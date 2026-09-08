@@ -1,12 +1,14 @@
 ---
 created: 2026-08-21
-updated: 2026-08-21
+updated: 2026-09-08
 type: feature
 reporter: jari
-status: untriaged
+status: duplicate
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:wrapup-2026-08-20-run-repo-identity
+related: ['@run-repository-identity']
+closed: 2026-09-08
 ---
 
 # run show cannot identify a run repository once its worktree is gone
@@ -64,3 +66,9 @@ The six perpetually-`pending` stalled runs are separately tracked as
 `intake-bug-taskfleet-169460ea27e7` ("stale pending runs clutter run list and look
 like live workers"). This request is only about repo identity being unavailable, which
 would still matter if that cleanup shipped.
+
+## Resolution
+
+### 2026-09-08T08:40:25Z · @issuectl
+
+Duplicate of @run-repository-identity: both request durable source_repo identity on run show after worktree teardown.

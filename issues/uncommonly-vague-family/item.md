@@ -1,14 +1,15 @@
 ---
 created: 2026-08-24
-updated: 2026-08-24
+updated: 2026-09-08
 type: task
-status: untriaged
+status: done
 priority: normal
 provenance: other
 provenance_detail: Observed missing external-package dependency during taskfleet worker control-plane E2E rollout
 source_ref: taskfleet:01m0sxn5pfrtybkgyqrkvzspsm/follow-up:external-pi-worker-telemetry-adapter
 originating_run: 01m0sxn5pfrtybkgyqrkvzspsm
 originating_run_kind: spinoff
+closed: 2026-09-08
 ---
 
 # Deliver the external pi worker-telemetry adapter package
@@ -29,3 +30,9 @@ Create and publish the external pi package that consumes `contracts/worker-telem
 - All adapter-owned conformance sequences pass in the package.
 - An isolated installation launches configured autonomous pi and emits accepted samples through the public endpoint.
 - Failure disclosure and rollback are demonstrated without changing global pi settings or installed taskfleet.
+
+## Resolution
+
+### 2026-09-08T08:40:25Z · @issuectl
+
+The external Pi telemetry adapter was delivered in private repository jarimustonen/taskfleet-pi-telemetry, passed its conformance and package gates, and was fleet-pinned and load-tested on reachable machines.

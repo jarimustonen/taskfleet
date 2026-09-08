@@ -31,10 +31,10 @@ Implementation children, all terminal: `thin-exit-status-launcher`,
 the review-residue and unreachable-precondition children closed
 obsolete/wontfix/duplicate in the stint-2 triage.
 
-Still open at close, deliberately — ordinary backlog items that outgrew the
-epic and live in the execution DAG on their own: `config-show-layered-view`
-(surface), `enforce-run-merge`, `run-merge-stamp`, `shell-quote-dedup`
-(lifecycle). Their `epic:` link stays as provenance.
+Still open at close, deliberately — ordinary follow-ups that outgrew the epic:
+`config-show-layered-view` (surface) and `run-merge-stamp` remain scheduled on
+their own. `enforce-run-merge` and `shell-quote-dedup` were subsequently closed
+`wontfix` after product triage; their `epic:` links stay as provenance.
 
 ## Close note (2026-08-17)
 

@@ -1,12 +1,13 @@
 ---
 created: 2026-08-20
-updated: 2026-08-20
+updated: 2026-09-08
 type: feature
 reporter: jari
-status: untriaged
+status: done
 priority: normal
 provenance: agent:homebase-triage
 source_ref: homebase:tg-bug-jari-1287848359-12920321-7d8c-4199-832b-0f120de9ab13
+closed: 2026-09-08
 ---
 
 # run show cannot identify a run repository once its worktree is gone
@@ -44,3 +45,9 @@ Blocks a documented wrap-up safety check from being answered programmatically. N
 ## Related, do not merge with this
 
 The six perpetually-pending stalled runs are separately tracked as intake-bug-taskfleet-169460ea27e7 (stale pending runs clutter run list and look like live workers). This request is only about repo identity being unavailable, which would still matter if that cleanup shipped.
+
+## Resolution
+
+### 2026-09-08T08:40:25Z · @issuectl
+
+Taskfleet now persists and exposes source_repo on run read surfaces; the accepted follow-up agenda separately covers canonical repository filtering.

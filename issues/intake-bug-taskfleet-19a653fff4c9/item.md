@@ -1,11 +1,12 @@
 ---
 created: 2026-08-19
-updated: 2026-08-20
+updated: 2026-09-08
 type: bug
 reporter: jari
-status: untriaged
+status: fixed
 priority: normal
 provenance: agent-homebase-wrapup
+closed: 2026-09-08
 ---
 
 # run create omits source_repo from fresh run manifest
@@ -33,3 +34,9 @@ Expected
 Version
 
 `taskfleet 0.4.1` (`8777b2e3c5b891abf396c6486c9e81e17ffcfe85`).
+
+## Resolution
+
+### 2026-09-08T08:39:43Z · @issuectl
+
+Current Taskfleet records the canonical source repository at run creation and retains it after teardown. The reported 0.4.1 omission was corrected by the shipped source_repo implementation.

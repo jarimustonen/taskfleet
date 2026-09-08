@@ -2,12 +2,16 @@
 created: 2026-09-08
 updated: 2026-09-08
 type: bug
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: homebase:2026-09-07/taskfleet-recovery-status
 originating_run: 01m1zhvsh452b1dphmpnwzdh0c
 originating_run_kind: spinoff
+lane: terminal-work-disposition
+lane_seq: 30
+blocked_by: ['@intake-feature-taskfleet-41343c4dd3e4']
+collision: [crates/taskfleet-core/src/reducer.rs, crates/taskfleet/src/supervise/cleanup.rs]
 ---
 
 # Recovery merge leaves landed run failed
@@ -22,3 +26,7 @@ A supported recovery merge that lands and records a successful terminal report s
 
 ## Impact
 Status consumers and handoff preflight can classify successfully recovered work as a failed run even though no recoverable worktree, branch, or ownership remains.
+
+## Triage analysis
+
+Manually reproduced and confirmed against production run `01m1xd8tvgqvvf0281btqn04gt`. The final public state is contradictory: run `failed`, node `done`, `landed:true`, and a confirmed successful `run-merge` report after cleanup. Source inspection confirms that late merge adoption intentionally repairs the node, while the terminal guard in run roll-up intentionally leaves an already failed manifest unchanged. The focused existing regression test permits this recovery merge but does not assert its final run status. See `analysis.md` for the event sequence, code-path distinction, test evidence, and recommended narrow `Failed` → `Done` recovery contract.

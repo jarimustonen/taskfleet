@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Safe wrapper around the validated Shipshape 0.10.1 resumable protocol.
+# Safe wrapper around the validated Shipshape 0.12.2 resumable protocol.
 # It pauses a bump cut at tag push, advances main to the bump commit, waits for
 # CI on that exact SHA, then resumes the journalled cut.
 set -euo pipefail
 
-readonly shipshape_0_10_1_commit="3e46568d6969701c5fea82fb134b62aa17121cbe"
+readonly shipshape_0_12_2_commit="d1d48d692707fee0d98697721e763a59e7ee3fb7"
 readonly topology_rel="release/taskfleet-release.json"
 expected_repo=""
 readonly -a never_resume_runs=(
@@ -52,7 +52,23 @@ validate_contract_targets() {
       "taskfleet:crates.io:cargo-publish-ci",
       "taskfleet:gh-releases:cargo-dist",
       "taskfleet:homebrew:cargo-dist"
-    ] and .data.release.bump_hook == "./scripts/shipshape-bump-hook.sh"
+    ] and
+    .data.schema_version == 2 and
+    .data.release.bump_hook == "./scripts/shipshape-bump-hook.sh" and
+    [.data.distributions[] | {
+      package, adapter, gh_releases, installers, homebrew_tap, platforms
+    }] == [{
+      package: "taskfleet",
+      adapter: "cargo-dist",
+      gh_releases: true,
+      installers: ["shell", "homebrew"],
+      homebrew_tap: "jarimustonen/homebrew-taskfleet",
+      platforms: [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ]
+    }]
   ' <<<"$contract_json" >/dev/null || {
     echo "approved Shipshape contract does not match the admitted Taskfleet topology" >&2
     exit 2
@@ -70,12 +86,12 @@ require_supported_shipshape() {
   ' <<<"$version_json")"
   commit="$(jq -er '.data.commit // ""' <<<"$version_json")"
   case "$shipshape_version:$commit" in
-    "0.10.1:$shipshape_0_10_1_commit") ;;
+    "0.12.2:$shipshape_0_12_2_commit") ;;
     *)
-      if [[ "$shipshape_version" == 0.10.1 ]]; then
+      if [[ "$shipshape_version" == 0.12.2 ]]; then
         echo "shipshape $shipshape_version is not the exact build validated for the held-tag protocol; found commit ${commit:-<missing>}" >&2
       else
-        echo "validated Shipshape 0.10.1 required; found $shipshape_version (revalidate the pre-tag protocol before accepting another version)" >&2
+        echo "validated Shipshape 0.12.2 required; found $shipshape_version (revalidate the pre-tag protocol before accepting another version)" >&2
       fi
       exit 1
       ;;
@@ -96,25 +112,11 @@ assert_run_may_resume() {
   done
 }
 
-release_plan_bump_level() {
-  local plan_id="$1" git_common plan_file level
-  [[ "$plan_id" =~ ^[0-9a-f]{64}$ ]] || {
-    echo "invalid release plan id: $plan_id" >&2
+validate_plan_id() {
+  [[ "$1" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "invalid release plan id: $1" >&2
     exit 2
   }
-  git_common="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
-  plan_file="$git_common/ossctl/plans/$plan_id.json"
-  level="$(jq -er --arg plan_id "$plan_id" '
-    if .plan.plan_id == $plan_id and
-       (.plan.bump.level == "major" or .plan.bump.level == "minor" or .plan.bump.level == "patch")
-    then .plan.bump.level
-    else error("plan coordinates mismatch")
-    end
-  ' "$plan_file" 2>/dev/null)" || {
-    echo "sealed Shipshape 0.10.1 plan $plan_id has no validated bump level" >&2
-    exit 2
-  }
-  printf '%s\n' "$level"
 }
 
 validate_level() {
@@ -532,15 +534,17 @@ case "$command" in
 
   resume)
     [[ $# -eq 2 ]] || usage
+    run_id="$2"
+    assert_run_may_resume "$run_id"
     require_command gh
     assert_repo_identity
-    run_id="$2"
     resume_after_gate
     ;;
 
   cut)
     [[ $# -eq 2 ]] || usage
     plan_id="$2"
+    validate_plan_id "$plan_id"
     require_command gh
     assert_repo_identity
 
@@ -603,13 +607,9 @@ HOOK
     git tag -d "$probe_tag" >/dev/null
     rm -rf "$hooks/probe.git"
 
-    cut_args=(release cut --plan "$plan_id")
-    # The admitted Shipshape 0.10.1 build revalidates the sealed bump input at cut time.
-    # Read it only from the engine's content-addressed plan and let shipshape
-    # independently verify the seal.
-    bump_level="$(release_plan_bump_level "$plan_id")"
-    cut_args+=(--bump "$bump_level")
-    cut_args+=(--json)
+    # Shipshape 0.12.2 reads the bump level from its authenticated stored plan.
+    # Do not duplicate or reinterpret that plan in this adapter.
+    cut_args=(release cut --plan "$plan_id" --json)
 
     if SHIPSHAPE_PRETAG_MARKER="$marker" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$hooks" \

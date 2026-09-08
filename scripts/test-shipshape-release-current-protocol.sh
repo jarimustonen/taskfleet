@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Manual real-engine protocol gate for the exact Shipshape 0.10.1 build admitted
-# by scripts/shipshape-release.sh. It is intentionally not ordinary CI: callers
-# must supply that exact binary without installing it globally. The
-# production-coordinate cut stops at the exact-SHA CI lookup; resume pushes only
-# to an asserted local bare origin.
+# Real-engine protocol gate for the exact Shipshape 0.12.2 build admitted by
+# scripts/shipshape-release.sh. The engine itself performs plan/cut/resume against
+# a disposable bare origin; only external build/publish/network tools are stubbed.
+# No public ref or registry is reachable.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly expected_commit="3e46568d6969701c5fea82fb134b62aa17121cbe"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-010-protocol.XXXXXX")"
+readonly expected_commit="d1d48d692707fee0d98697721e763a59e7ee3fb7"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-current-protocol.XXXXXX")"
 cleanup() {
   status=$?
   if [[ "$status" -ne 0 && "${KEEP_FAILED_FIXTURE:-0}" == 1 ]]; then
-    failed="${TMPDIR:-/tmp}/shipshape-010-protocol-failed"
+    failed="${TMPDIR:-/tmp}/shipshape-current-protocol-failed"
     rm -rf "$failed"
     mv "$tmp" "$failed"
     echo "failed protocol fixture preserved at $failed" >&2
@@ -28,9 +27,9 @@ real_shipshape="$(command -v shipshape)"
 version_json="$($real_shipshape version --json)"
 jq -e --arg commit "$expected_commit" '
   .schema_version == 1 and .data.schema_version == 1 and
-  .data.version == "0.10.1" and .data.commit == $commit
+  .data.version == "0.12.2" and .data.commit == $commit
 ' <<<"$version_json" >/dev/null || {
-  echo "test requires the validated shipshape 0.10.1 commit $expected_commit" >&2
+  echo "test requires the validated shipshape 0.12.2 commit $expected_commit" >&2
   exit 1
 }
 
@@ -58,10 +57,18 @@ printf '%s\n' "$*" >>"$SHIPSHAPE_ARGV_LOG"
 exec "$SHIPSHAPE_REAL_BIN" "$@"
 STUB
 chmod +x "$tmp/bin/shipshape"
-for tool in dist cargo-dist; do
-  tool_path="$(command -v "$tool")" || { echo "test prerequisite missing: $tool" >&2; exit 1; }
-  ln -s "$tool_path" "$tmp/bin/$tool"
-done
+cat >"$tmp/bin/dist" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$DIST_STUB_LOG"
+case "$*" in
+  --version) printf '%s\n' 'cargo-dist 0.28.2' ;;
+  'plan --output-format=json') printf '%s\n' '{"releases":[]}' ;;
+  build) mkdir -p target/distrib ;;
+  *) echo "dist fixture: unexpected arguments: $*" >&2; exit 96 ;;
+esac
+STUB
+chmod +x "$tmp/bin/dist"
 
 cat >"$tmp/bin/git" <<'STUB'
 #!/usr/bin/env bash
@@ -117,6 +124,10 @@ cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_STUB_LOG"
+if [[ "$*" == '--version' ]]; then
+  printf '%s\n' 'gh version 2.79.0 (fixture)'
+  exit 0
+fi
 if [[ "$*" == 'repo view jarimustonen/taskfleet --json nameWithOwner -q .nameWithOwner' ]]; then
   printf '%s\n' jarimustonen/taskfleet
   exit 0
@@ -169,12 +180,6 @@ mv "$tmp/distribution.json" "$tmp/repo/release/taskfleet-distribution.json"
 sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/dist-workspace.toml"
 rm "$tmp/repo/dist-workspace.toml.bak"
 grep -F 'https://github.com/jarimustonen/taskfleet' "$tmp/repo/Cargo.toml" >/dev/null
-# Regenerate rather than editing only the trigger: cargo-dist's generated plan
-# expressions also differ between dispatch-only and tag-push topology.
-(
-  cd "$tmp/repo"
-  dist generate
-)
 git -C "$tmp/repo" add release/taskfleet-release.json release/taskfleet-distribution.json \
   dist-workspace.toml Cargo.toml .github/workflows/release.yml
 git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
@@ -189,6 +194,7 @@ run_env=(
   REAL_GIT="$real_git"
   SHIPSHAPE_REAL_BIN="$real_shipshape"
   SHIPSHAPE_ARGV_LOG="$tmp/shipshape.log"
+  DIST_STUB_LOG="$tmp/dist.log"
   GIT_STUB_LOG="$tmp/git.log"
   TAG_PUSH_LOG="$tmp/tag-push.log"
   GH_STUB_LOG="$tmp/gh.log"
@@ -269,8 +275,8 @@ grep -Fx "$expected_gh" "$tmp/gh.log" >/dev/null || {
   cat "$tmp/gh.log" >&2
   exit 1
 }
-grep -Fx "release cut --plan $plan_id --bump minor --json" "$tmp/shipshape.log" >/dev/null || {
-  echo "wrapper did not pass the sealed minor bump input to shipshape 0.10.1" >&2
+grep -Fx "release cut --plan $plan_id --json" "$tmp/shipshape.log" >/dev/null || {
+  echo "wrapper duplicated Shipshape's stored bump input instead of delegating it" >&2
   cat "$tmp/shipshape.log" >&2
   exit 1
 }
@@ -301,7 +307,7 @@ jq -e --arg tag "$tag" '
 test -z "$(git -C "$tmp/repo" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
 test -s "$tmp/repo/.git/shipshape-held-tags/$run_id.json"
 
-# Exercise the actual 0.10.1 resume JSONL and verify envelope after the safe
+# Exercise the actual 0.12.2 resume JSONL and verify envelope after the safe
 # boundary. The release tag is pushed only to the local bare origin. Controlled
 # failed workflow observations stop verify immediately, without registry/network
 # observation, while proving resume's tag transition and verify's new delegated
@@ -354,26 +360,93 @@ jq -e --arg tag "$tag" '
   .data.state.current_phase == null
 ' "$tmp/show-resumed.json" >/dev/null
 jq -e '
-  .schema_version == 1 and .data.summary.delegated_failed == 2 and
+  .schema_version == 1 and .data.summary.delegated_failed == 4 and
   .data.summary.unknown == 4 and .data.summary.reconciled == 4 and
   ([.data.targets[].target] | sort) == [
     "rust:taskfleet-core:crates.io", "rust:taskfleet:crates.io",
     "rust:taskfleet:gh-releases",
     "rust:taskfleet:homebrew"
   ] and
-  (.data.targets | all(.outcome == "unknown")) and
-  ([.data.targets[] | select(.target | endswith(":crates.io"))] |
-    all(.delegated_run.status == "unknown" and (.delegated_run | has("run_id") | not))) and
-  ([.data.targets[] | select(.target | endswith(":gh-releases") or endswith(":homebrew"))] |
-    all(.delegated_run.status == "failed" and .delegated_run.run_id == 9001 and
-        .delegated_run.url == "https://example.invalid/actions/9001"))
+  (.data.targets | all(
+    .outcome == "unknown" and .delegated_run.status == "failed" and
+    .delegated_run.run_id == 9001 and
+    .delegated_run.url == "https://example.invalid/actions/9001"
+  ))
 ' "$tmp/verify.json" >/dev/null
 [[ "$(wc -l <"$tmp/tag-push.log" | tr -d ' ')" == 2 ]] || {
   echo "expected exactly one held and one fixture-local release-tag push attempt" >&2
   exit 1
 }
 
-# The wrapper must have supplied 0.10.1's matching --bump argument; the complete
-# fixture proves held-tag, resume, and read-only verify surfaces without a real
+# Exercise 0.12.2's final phase independently of external destinations. This
+# tag-only fixture starts with origin/main already at the release commit, exactly
+# the state Taskfleet's pre-tag adapter establishes. The engine must treat that
+# ordinary fast-forward as idempotent and journal advance_branch before completion.
+git init --bare -q "$tmp/advance-origin.git"
+git --git-dir="$tmp/advance-origin.git" symbolic-ref HEAD refs/heads/main
+git clone -q "$tmp/advance-origin.git" "$tmp/advance-repo"
+git -C "$tmp/advance-repo" config user.name protocol-test
+git -C "$tmp/advance-repo" config user.email protocol-test@example.invalid
+mkdir -p "$tmp/advance-repo/src"
+cat >"$tmp/advance-repo/Cargo.toml" <<'TOML'
+[package]
+name = "shipshape-advance-fixture"
+version = "1.0.0"
+edition = "2021"
+publish = false
+TOML
+printf '%s\n' 'fn main() {}' >"$tmp/advance-repo/src/main.rs"
+cat >"$tmp/advance-repo/OSS-RELEASE.md" <<'CONTRACT'
+---
+schema_version: 2
+status: approved
+maturity: mvp
+ecosystems: [rust]
+targets: []
+versioning: semver
+changelog: {mode: automated}
+release: {model: gated, layout: single}
+provenance_level: none
+dependency_bot: dependabot
+health_badges: []
+license: MIT
+docs_site: none
+---
+# Isolated advance-branch fixture
+CONTRACT
+git -C "$tmp/advance-repo" add Cargo.toml OSS-RELEASE.md src/main.rs
+git -C "$tmp/advance-repo" commit -qm 'fixture: sealed release commit'
+git -C "$tmp/advance-repo" push -qu origin HEAD:refs/heads/main
+(
+  cd "$tmp/advance-repo"
+  "$real_shipshape" release plan --json >"$tmp/advance-plan.json"
+  advance_plan="$(jq -er .data.plan_id "$tmp/advance-plan.json")"
+  "$real_shipshape" release cut --plan "$advance_plan" --json >"$tmp/advance-cut.jsonl"
+  "$real_shipshape" release list --json >"$tmp/advance-list.json"
+)
+advance_run="$(jq -er '.data.runs | if length == 1 then .[0].run_id else error("one run required") end' "$tmp/advance-list.json")"
+(
+  cd "$tmp/advance-repo"
+  "$real_shipshape" release show "$advance_run" --json >"$tmp/advance-show.json"
+)
+jq -s -e '
+  any(.[]; .kind == "default_branch_selected" and .branch == "main") and
+  any(.[]; .kind == "default_branch_advanced" and .branch == "main") and
+  any(.[]; .kind == "phase_completed" and .phase == "advance_branch" and .outcome == "ok")
+' "$tmp/advance-cut.jsonl" >/dev/null
+jq -e '
+  .data.state.status == "completed" and
+  .data.state.default_branch.branch == "main" and
+  ([.data.state.phases[] | select(.phase == "advance_branch") | .outcome] | last) == "ok"
+' "$tmp/advance-show.json" >/dev/null
+[[ "$(git --git-dir="$tmp/advance-origin.git" rev-parse refs/heads/main)" == \
+   "$(git -C "$tmp/advance-repo" rev-parse HEAD)" ]] || {
+  echo "Shipshape advance_branch moved the isolated default branch unexpectedly" >&2
+  exit 1
+}
+
+# Omission of --bump on cut is intentional and proven above: 0.12.2 authenticates
+# and restores the bump from its stored plan. The complete fixture proves held-tag,
+# resume, delegated verification, and default-branch behavior without a public
 # remote release or registry publish.
-echo "shipshape 0.10.1 real protocol test passed (held and locally resumed $run_id at $tag; production remote untouched)"
+echo "shipshape 0.12.2 real protocol test passed (held and locally resumed $run_id at $tag; public remotes untouched)"

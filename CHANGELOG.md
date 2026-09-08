@@ -9,9 +9,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add `run discard` as an audited, idempotent cleanup path for preserved work
+  from terminal failed or cancelled runs, with explicit force required for a
+  verified dirty worktree.
+- Expose preserved work and recorded source-repository identity in run output;
+  add exact repository filtering to `run list` and an explicit
+  `condition-met`/`timed-out` outcome to `run wait`.
+
 ### Changed
 
+- Carry a bounded stint from orientation through its product-owner report,
+  isolate handoff from unrelated global runs, and let workers choose
+  proportionate review depth.
+- Use Shipshape 0.12.2's authenticated stored bump plan, canonical schema-v2
+  distribution contract, resumable verification, and final default-branch
+  phase while retaining Taskfleet's exact-main-CI held-tag authorization gate.
+
 ### Fixed
+
+- Restore the single canonical default state root and enforce its identity in
+  routine CI.
+- Reconcile a confirmed late recovery merge from failed to done instead of
+  leaving a landed run reported as failed.
+- Preserve workmux-owned project prefixes on worker window names.
+- Require bug-analysis workers to emit the canonical `## Triage analysis`
+  heading.
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.7.1] - 2026-09-07

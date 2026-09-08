@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end regression for the validated shipshape 0.10.1 intentionally-held tag journal.
+# End-to-end regression for the validated shipshape 0.12.2 intentionally-held tag journal.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -83,7 +83,7 @@ cat >"$tmp/bin/shipshape" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$SHIPSHAPE_STUB_LOG"
 if [[ "$*" == 'version --json' ]]; then
-  printf '%s\n' '{"schema_version":1,"data":{"version":"0.10.1","commit":"3e46568d6969701c5fea82fb134b62aa17121cbe","schema_version":1}}'
+  printf '%s\n' '{"schema_version":1,"data":{"version":"0.12.2","commit":"d1d48d692707fee0d98697721e763a59e7ee3fb7","schema_version":1}}'
   exit 0
 fi
 if [[ "$*" == "release show $RUN_ID --json" ]]; then

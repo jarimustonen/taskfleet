@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-pinned_commit="$(sed -nE 's/^readonly shipshape_0_10_1_commit="([0-9a-f]{40})"$/\1/p' "$repo_root/scripts/shipshape-release.sh")"
+pinned_commit="$(sed -nE 's/^readonly shipshape_0_12_2_commit="([0-9a-f]{40})"$/\1/p' "$repo_root/scripts/shipshape-release.sh")"
 [[ "$pinned_commit" =~ ^[0-9a-f]{40}$ ]] || {
   echo "cannot read the admitted Shipshape commit from the release wrapper" >&2
   exit 1
@@ -12,7 +12,7 @@ grep -F "$pinned_commit" "$repo_root/OSS-RELEASE.md" >/dev/null || {
   echo "OSS-RELEASE.md does not document the admitted Shipshape commit" >&2
   exit 1
 }
-grep -F "readonly expected_commit=\"$pinned_commit\"" "$repo_root/scripts/test-shipshape-release-0.10-protocol.sh" >/dev/null || {
+grep -F "readonly expected_commit=\"$pinned_commit\"" "$repo_root/scripts/test-shipshape-release-current-protocol.sh" >/dev/null || {
   echo "real protocol test does not pin the admitted Shipshape commit" >&2
   exit 1
 }
@@ -88,10 +88,10 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$SHIPSHAPE_STUB_LOG"
 if [[ "$*" == "version --json" ]]; then
   if [[ "${SHIPSHAPE_STUB_OMIT_COMMIT:-0}" == 1 ]]; then
-    jq -n --arg version "${SHIPSHAPE_STUB_VERSION:-0.10.1}" \
+    jq -n --arg version "${SHIPSHAPE_STUB_VERSION:-0.12.2}" \
       '{schema_version:1,data:{version:$version,schema_version:1}}'
   else
-    jq -n --arg version "${SHIPSHAPE_STUB_VERSION:-0.10.1}" --arg commit "${SHIPSHAPE_STUB_COMMIT:-3e46568d6969701c5fea82fb134b62aa17121cbe}" \
+    jq -n --arg version "${SHIPSHAPE_STUB_VERSION:-0.12.2}" --arg commit "${SHIPSHAPE_STUB_COMMIT:-d1d48d692707fee0d98697721e763a59e7ee3fb7}" \
       '{schema_version:1,data:{version:$version,commit:$commit,schema_version:1}}'
   fi
   exit 0
@@ -112,6 +112,7 @@ run_wrapper() {
   local gh_repo="${1:-jarimustonen/taskfleet}"
   local origin="${2:-git@github.com:jarimustonen/taskfleet.git}"
   local view_expected="${3:-jarimustonen/taskfleet}"
+  local candidate_run="${4:-$test_run_id}"
   env -i \
     HOME="$tmp/home" \
     PATH="$tmp/bin" \
@@ -120,12 +121,12 @@ run_wrapper() {
     GIT_STUB_ROOT="$tmp/work" \
     GIT_STUB_ORIGIN="$origin" \
     SHIPSHAPE_STUB_LOG="$tmp/shipshape.log" \
-    SHIPSHAPE_STUB_VERSION="${SHIPSHAPE_STUB_VERSION:-0.10.1}" \
-    SHIPSHAPE_STUB_COMMIT="${SHIPSHAPE_STUB_COMMIT:-3e46568d6969701c5fea82fb134b62aa17121cbe}" \
+    SHIPSHAPE_STUB_VERSION="${SHIPSHAPE_STUB_VERSION:-0.12.2}" \
+    SHIPSHAPE_STUB_COMMIT="${SHIPSHAPE_STUB_COMMIT:-d1d48d692707fee0d98697721e763a59e7ee3fb7}" \
     SHIPSHAPE_STUB_OMIT_COMMIT="${SHIPSHAPE_STUB_OMIT_COMMIT:-0}" \
     GH_STUB_REPO="$gh_repo" \
     GH_STUB_VIEW_EXPECTED="$view_expected" \
-    "$repo_root/scripts/shipshape-release.sh" resume "$test_run_id" \
+    "$repo_root/scripts/shipshape-release.sh" resume "$candidate_run" \
     >"$tmp/stdout" 2>"$tmp/stderr"
 }
 
@@ -162,6 +163,20 @@ assert_no_release_show() {
     exit 1
   fi
 }
+
+# Reject hostile or malformed identifiers before repository/network inspection;
+# quoting is not a substitute for enforcing the one documented input grammar.
+for malformed in lowercase01m0ja657ejjjyc7j7230jf42n '../run' '--help' '01M0JA657EJJJYC7J7230JF42N;touch'; do
+  reset_logs
+  set +e
+  run_wrapper jarimustonen/taskfleet git@github.com:jarimustonen/taskfleet.git jarimustonen/taskfleet "$malformed"
+  status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || { echo "malformed run id was not rejected: $malformed" >&2; exit 1; }
+  test ! -s "$tmp/gh.log" || { echo "malformed run id reached gh: $malformed" >&2; exit 1; }
+  grep -F "invalid release run id: $malformed" "$tmp/stderr" >/dev/null
+  ! grep -F 'release show' "$tmp/shipshape.log" >/dev/null || { echo "malformed run id reached release show" >&2; exit 1; }
+done
 
 reset_logs
 set +e
@@ -242,7 +257,7 @@ for unsupported in 0.9.0 0.10.0 0.10.2 0.11.0 1.0.0; do
     echo "unsupported shipshape $unsupported did not fail closed (status=$status)" >&2
     exit 1
   }
-  grep -F "validated Shipshape 0.10.1 required; found $unsupported" "$tmp/stderr" >/dev/null || {
+  grep -F "validated Shipshape 0.12.2 required; found $unsupported" "$tmp/stderr" >/dev/null || {
     echo "unsupported Shipshape $unsupported emitted the wrong diagnostic" >&2
     cat "$tmp/stderr" >&2
     exit 1
@@ -252,23 +267,23 @@ done
 
 reset_logs
 set +e
-SHIPSHAPE_STUB_VERSION=0.10.1 SHIPSHAPE_STUB_COMMIT=0000000000000000000000000000000000000000 run_wrapper
+SHIPSHAPE_STUB_VERSION=0.12.2 SHIPSHAPE_STUB_COMMIT=0000000000000000000000000000000000000000 run_wrapper
 status=$?
 set -e
-[[ "$status" -eq 1 ]] || { echo "unvalidated Shipshape 0.10.1 commit did not fail closed" >&2; exit 1; }
-grep -F "shipshape 0.10.1 is not the exact build validated for the held-tag protocol" "$tmp/stderr" >/dev/null
+[[ "$status" -eq 1 ]] || { echo "unvalidated Shipshape 0.12.2 commit did not fail closed" >&2; exit 1; }
+grep -F "shipshape 0.12.2 is not the exact build validated for the held-tag protocol" "$tmp/stderr" >/dev/null
 test ! -s "$tmp/gh.log" || { echo "unvalidated Shipshape build reached repository preflight" >&2; exit 1; }
 
 reset_logs
 set +e
-SHIPSHAPE_STUB_VERSION=0.10.1 SHIPSHAPE_STUB_COMMIT=3e46568d6969701c5fea82fb134b62aa17121cbe run_wrapper
+SHIPSHAPE_STUB_VERSION=0.12.2 SHIPSHAPE_STUB_COMMIT=d1d48d692707fee0d98697721e763a59e7ee3fb7 run_wrapper
 status=$?
 set -e
-[[ "$status" -eq 42 ]] || { echo "validated Shipshape 0.10.1 build was rejected" >&2; exit 1; }
+[[ "$status" -eq 42 ]] || { echo "validated Shipshape 0.12.2 build was rejected" >&2; exit 1; }
 
 reset_logs
 set +e
-SHIPSHAPE_STUB_VERSION=0.10.1 SHIPSHAPE_STUB_OMIT_COMMIT=1 run_wrapper
+SHIPSHAPE_STUB_VERSION=0.12.2 SHIPSHAPE_STUB_OMIT_COMMIT=1 run_wrapper
 status=$?
 set -e
 [[ "$status" -eq 1 ]] || { echo "shipshape identity with a missing commit did not fail closed" >&2; exit 1; }
@@ -280,8 +295,8 @@ for abandoned in 01M0FD8FSTMGYG8YTV92WMWC87 01M0FG88NAKBJ7Y3QNFZEHRM4K; do
   set +e
   env -i HOME="$tmp/home" PATH="$tmp/bin" GH_STUB_LOG="$tmp/gh.log" GIT_STUB_LOG="$tmp/git.log" \
     GIT_STUB_ROOT="$tmp/work" GIT_STUB_ORIGIN=git@github.com:jarimustonen/taskfleet.git \
-    SHIPSHAPE_STUB_LOG="$tmp/shipshape.log" SHIPSHAPE_STUB_VERSION=0.10.1 \
-    SHIPSHAPE_STUB_COMMIT=3e46568d6969701c5fea82fb134b62aa17121cbe \
+    SHIPSHAPE_STUB_LOG="$tmp/shipshape.log" SHIPSHAPE_STUB_VERSION=0.12.2 \
+    SHIPSHAPE_STUB_COMMIT=d1d48d692707fee0d98697721e763a59e7ee3fb7 \
     GH_STUB_REPO=jarimustonen/taskfleet "$repo_root/scripts/shipshape-release.sh" resume "$abandoned" \
     >"$tmp/stdout" 2>"$tmp/stderr"
   status=$?
@@ -302,7 +317,7 @@ set -e
   exit 1
 }
 
-# R10 activation is now structurally ready. The exact 0.10.1 protocol fixture
+# R10 activation is now structurally ready. The exact 0.12.2 protocol fixture
 # owns the cut-path proof; this preflight suite must no longer assert the retired
 # blocked ledger state.
 "$repo_root/scripts/verify-release-activation.sh" >/dev/null

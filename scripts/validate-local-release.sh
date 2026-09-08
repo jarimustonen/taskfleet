@@ -12,7 +12,7 @@ require_command() {
   }
 }
 
-for command in cargo cargo-nextest cargo-deny git jq rustup shipshape; do
+for command in cargo cargo-nextest cargo-deny git jq rustc rustup shipshape; do
   require_command "$command"
 done
 
@@ -48,6 +48,7 @@ run() {
   "$@"
 }
 
+run ./scripts/test-build-script-relocation.sh
 run cargo fmt --all --check
 run cargo clippy --locked --workspace --all-targets -- -D warnings
 run cargo nextest run --locked --release --workspace

@@ -2,11 +2,13 @@
 created: 2026-08-15
 updated: 2026-09-08
 type: feature
-status: in-progress
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 lane: workflow-skills
 lane_seq: 40
+closed: 2026-09-08
+closed_by: pi
 ---
 
 # Stamp issue trailers in issue-driven worktree skills

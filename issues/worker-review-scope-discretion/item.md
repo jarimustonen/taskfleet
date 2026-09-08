@@ -3,13 +3,15 @@ created: 2026-09-01
 updated: 2026-09-08
 type: improvement
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 labels: [skills, review-workflow]
 provenance: chat
 source_ref: chat:2026-09-01/stint-review-scope-discretion
 lane: workflow-skills
 lane_seq: 30
+closed: 2026-09-08
+closed_by: pi
 ---
 
 # Let workers choose proportionate review depth
@@ -50,12 +52,12 @@ The retry-with-harvest section should follow the same rule. A harvest worker mus
 
 ## Acceptance Criteria
 
-- [ ] Replace the unconditional production-code multi-model review mandate in `stint-start` with worker-selected, risk-proportionate review guidance.
-- [ ] Include a concrete prompt example that gives the implementing worker authority to choose and justify review depth.
-- [ ] Preserve explicit review mandates from the user, issue, repository policy, or calling workflow.
-- [ ] Update retry-with-harvest guidance to reuse adequate prior review evidence and repeat review only when the risk surface materially changes.
-- [ ] Add or update bundled-skill snapshots/tests covering the new wording.
-- [ ] Verify the generated installed `stint-start` skill contains the updated guidance.
+- [x] Replace the unconditional production-code multi-model review mandate in `stint-start` with worker-selected, risk-proportionate review guidance.
+- [x] Include a concrete prompt example that gives the implementing worker authority to choose and justify review depth.
+- [x] Preserve explicit review mandates from the user, issue, repository policy, or calling workflow.
+- [x] Update retry-with-harvest guidance to reuse adequate prior review evidence and repeat review only when the risk surface materially changes.
+- [x] Add or update bundled-skill snapshots/tests covering the new wording.
+- [x] Verify the generated installed `stint-start` skill contains the updated guidance.
 
 ## Decisions
 

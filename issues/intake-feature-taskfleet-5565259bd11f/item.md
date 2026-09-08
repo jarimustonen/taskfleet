@@ -3,12 +3,14 @@ created: 2026-09-02
 updated: 2026-09-08
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:taskfleet-stint-start-safe-rebase-20260902
 lane: workflow-skills
 lane_seq: 20
+closed: 2026-09-08
+closed_by: pi
 ---
 
 # stint-start should safely rebase a clean diverged main

@@ -3,11 +3,13 @@ created: 2026-08-21
 updated: 2026-09-08
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 related: ['@split-stint-start-handoff', '@stint-start-autonomous', '@stint-handoff-intake-check', '@add-configurable-agent', '@config-subcommand', '@pi-background-jobs-extension']
 lane: workflow-skills
 lane_seq: 50
+closed: 2026-09-08
+closed_by: pi
 ---
 
 # Remove end-to-end stint friction without durable lifecycle state

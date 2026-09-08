@@ -2,7 +2,7 @@
 created: 2026-09-08
 updated: 2026-09-08
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: homebase:2026-09-07/taskfleet-recovery-status
@@ -12,6 +12,8 @@ lane: terminal-work-disposition
 lane_seq: 30
 blocked_by: ['@intake-feature-taskfleet-41343c4dd3e4']
 collision: [crates/taskfleet-core/src/reducer.rs, crates/taskfleet/src/supervise/cleanup.rs]
+closed: 2026-09-08
+closed_by: codex
 ---
 
 # Recovery merge leaves landed run failed
@@ -30,3 +32,9 @@ Status consumers and handoff preflight can classify successfully recovered work 
 ## Triage analysis
 
 Manually reproduced and confirmed against production run `01m1xd8tvgqvvf0281btqn04gt`. The final public state is contradictory: run `failed`, node `done`, `landed:true`, and a confirmed successful `run-merge` report after cleanup. Source inspection confirms that late merge adoption intentionally repairs the node, while the terminal guard in run roll-up intentionally leaves an already failed manifest unchanged. The focused existing regression test permits this recovery merge but does not assert its final run status. See `analysis.md` for the event sequence, code-path distinction, test evidence, and recommended narrow `Failed` → `Done` recovery contract.
+
+## Resolution
+
+### 2026-09-08T12:08:41Z · @codex
+
+Implemented and verified narrow Failed -> Done recovery after an adopted authoritative run-merge report and wholly successful own/linked-child topology. Cancelled runs, forged/malformed/false reports, failed/live siblings, and non-successful children remain immutable/blocking. Five required gates, canonical identity check, local release build/skill print, explicit native dependency fixtures, and iterative independent concurrency/authority review all passed.

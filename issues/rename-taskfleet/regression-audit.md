@@ -106,3 +106,35 @@ main for these units:
 
 These per-unit results do not replace the final integrated gate. Retained-work
 disposition and recovery-status work are still in progress.
+
+## Findings from observing implementation
+
+The retained-work implementation received focused independent review because it
+adds an explicitly destructive command. These findings were corrected inside the
+assigned work rather than filed as speculative residual issues:
+
+- The existing worker-identity helper conflated an unavailable OS start-time probe
+  with a verified recycled PID. Extraction now preserves the distinction in one
+  shared observer, retaining positive live proof over a stale exit report.
+- Exact Git identity requires preserving path content and comparing the actual
+  worktree's common directory. A disposable real-Git experiment replaced a stale
+  registered path with an independent repository: Git refused deletion, but the
+  initial Taskfleet observer would have authorized it first. The ownership check
+  now refuses that contradiction before authorization.
+- A locked projection can still lag a durable event. Mutation eligibility now
+  uses the existing replay logic before reading; dry-run refuses lagging state
+  without replay or truncation. The replay prelude was extracted from existing
+  append logic, not implemented as another recovery mechanism.
+- Retrying a recorded decision must reuse its target binding and actor, not just
+  its idempotency key. Historical completed discards do not compete with current
+  retained resources for node selection; all-absent retries reuse a real prior
+  decision without another event or persisted selection record.
+- Display and deletion share the resource observation, verification result, and
+  node-file reader. For a present worktree, commit counts use its actual HEAD;
+  branch-only resources use the recorded branch.
+- The canonical identity inventory was absent from CI. The final worker will
+  connect that existing check to the existing cheap CI job, closing the observed
+  gap without another validation framework.
+
+The implementation gates and final integrated validation remain the completion
+criterion; review findings alone are not a success claim.

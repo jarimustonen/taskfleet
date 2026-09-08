@@ -2,9 +2,10 @@
 created: 2026-09-02
 updated: 2026-09-08
 type: epic
-status: open
+status: done
 priority: high
 owner: jari
+closed: 2026-09-08
 ---
 
 # Establish Taskfleet as the sole product identity
@@ -33,6 +34,12 @@ identity. Immutable external artifacts and git history are not rewritten.
 Close this epic only after the repository clean-break issue has passed its full
 gate and the conductor has separately verified dependent repository convergence.
 
+## Acceptance Criteria
+
+- [x] Taskfleet maintained source passes the canonical identity inventory and full integrated gate.
+- [x] All 38 local owned/work repository HEADs were audited; four current-guidance findings were corrected and pushed.
+- [x] Historical records and intentional external tap migration metadata remain intact.
+
 ## Comments
 
 ### 2026-09-08T12:21:59Z · @ai-agent
@@ -42,3 +49,9 @@ Repository regression/simplification round complete: 13 executable issues resolv
 ### 2026-09-08T13:32:09Z · @ai-agent
 
 Completed the user-requested independent per-repository HEAD audit across all 38 locally owned/work repositories. Results: 30 clean, four historical-only, four retain current references (Aggountant and CRMctl open issue guidance, Glasspad maintained comments, retired tap README plus intentional formula migration metadata). Verified moving Homebase/Intakectl HEAD deltas without new matches. Exact commits, actionable paths, scope limits, and canonical 0.7.1 tap/release/installed-version evidence are in local-head-verification.md. Epic remains open on these concrete residual references; prior uncertainty about the broad local repository inventory is now resolved. No downstream source edits or release were performed.
+
+## Resolution
+
+### 2026-09-08T13:51:00Z · @issuectl
+
+Completed repository clean-break gate and the requested 38-repository local HEAD convergence audit. All four concrete current-reference findings were corrected in isolated worktree spinoffs, verified from Git and explicit-merge reports, and pushed to each remote main. Historical provenance and the intentional retired-tap formula migration mapping are preserved. See local-head-verification.md for exact landing commits and scope. This closes source convergence; distribution publication proceeds separately, with no installed-tool changes.

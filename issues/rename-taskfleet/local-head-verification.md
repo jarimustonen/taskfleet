@@ -9,11 +9,14 @@ inspected the 38 direct repository checkouts under Sources whose remotes identif
 the user or the relevant work organizations. Five third-party source clones were
 excluded: claude-code, ds4, openclaw, pi, and pi-mono.
 
-Thirty repositories are clean, four contain only historical references, and four
-retain current references. No audit is incomplete and no required tool failure
-remains. The four current-reference repositories are Aggountant, CRMctl,
-Glasspad, and the retired Homebrew tap. Thus the broad migration is substantially
-complete, but the user's exact historical-only criterion is not yet satisfied.
+The initial audit found 30 clean repositories, four with historical references,
+and four with current references. The conductor subsequently launched one
+correction worktree spinoff for each of the latter four. All four merged through
+`taskfleet run merge`, were verified directly from Git, and were pushed to their
+respective remote main branches. No stale current product guidance remains in
+those findings. Historical provenance is preserved, as is the retired tap's
+intentional formula migration mapping; that mapping is the explicit operational
+exception to a literal historical-prose-only criterion.
 
 ## Method and limits
 
@@ -31,7 +34,7 @@ or running services on other hosts. Repository content was not edited, tested,
 installed, or released by the audit agents. The durable report is centralized in
 this existing issue instead of adding documents or issues to all 38 repositories.
 
-## Remaining current references
+## Initial findings and completed corrections
 
 | Repository | Location | Finding |
 | --- | --- | --- |
@@ -49,6 +52,23 @@ migration mechanism and must not be deleted as a blanket text replacement.
 The retired tap's inspected tree contains only its README and migration mapping;
 it has no formula. Its old local directory/origin name is separately understood
 as repository metadata. This audit does not change tap behavior.
+
+## Correction landings — 2026-09-08
+
+| Repository | Merged and pushed commit | Verification |
+| --- | --- | --- |
+| aggountant | `b157936d016f28da6ba4cc9945f16fae568285ee` | One open-issue prose substitution; frontmatter unchanged. |
+| crmctl | `48866aa1d6197385c513b766cdb72bfa6a1b43d7` | Two open-issue prose substitutions; frontmatter unchanged. |
+| glasspad | `cd0e55c3a3e0b19d78dd1d95894a282ad9360bc8` | Five comment substitutions across the three allowed files; executable source and configuration unchanged. |
+| retired Homebrew tap | `932705f3914cf3541228a263b563ac5ed5f054f3` | README now states retirement and canonical installation; migration mapping retains its exact Git blob. |
+
+Each run has a successful explicit-merge report and `landed: true`. The conductor
+reviewed every complete commit diff, verified clean source trees, repeated the
+HEAD name scan, and pushed main after a successful rebase check. Remaining
+matches in the first three repositories are closed issue history or immutable
+run provenance. The tap retains a clearly historical name and the intentional
+migration metadata needed by existing installations. These corrections do not
+install tools or change release behavior in any dependent repository.
 
 ## Per-repository evidence
 

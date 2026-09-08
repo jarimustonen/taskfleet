@@ -14,7 +14,6 @@ readonly sha256_bin="${SHA256_BIN:-sha256sum}"
 readonly sleep_bin="${SLEEP_BIN:-sleep}"
 readonly registry="${CRATES_IO_API:-https://crates.io/api/v1}"
 readonly user_agent="taskfleet-release-reconciler/1 (+https://github.com/jarimustonen/taskfleet)"
-readonly receipt_dir="${RELEASE_RECEIPT_DIR:-$repo_root/target/release-receipts}"
 publish_token="${CARGO_REGISTRY_TOKEN:-}"
 unset CARGO_REGISTRY_TOKEN
 
@@ -60,6 +59,12 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/taskfleet-registry.XXXXXX")"
 cleanup() { rm -f "$metadata_file"; rm -rf "$tmp_dir"; }
 trap cleanup EXIT
 "$cargo_bin" metadata --locked --no-deps --format-version 1 >"$metadata_file"
+target_dir="$(jq -er '.target_directory | select(type == "string" and length > 0)' "$metadata_file")" || {
+  echo "cargo metadata did not report a target directory" >&2
+  exit 2
+}
+readonly target_dir
+readonly receipt_dir="${RELEASE_RECEIPT_DIR:-$target_dir/release-receipts}"
 
 package_manifest() {
   jq -er --arg package "$1" '.crates_io.legs[] | select(.package == $package) | .manifest' "$topology"
@@ -86,7 +91,7 @@ assert_local_metadata() {
   fi
 }
 
-archive_path() { printf '%s/target/package/%s-%s.crate\n' "$repo_root" "$1" "$version"; }
+archive_path() { printf '%s/package/%s-%s.crate\n' "$target_dir" "$1" "$version"; }
 
 validate_archive() {
   local package="$1" archive root archive_commit dependency

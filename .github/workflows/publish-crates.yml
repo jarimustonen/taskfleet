@@ -1,8 +1,9 @@
 name: Publish to crates.io
 
 # The version tag also starts cargo-dist's independent release.yml. Neither
-# workflow waits for the other. This workflow owns only the ordered crates.io
-# saga and never publishes on workflow_dispatch.
+# workflow waits for the other. This workflow owns only release authorization,
+# topology verification, and the ordered crates.io saga. Repository tests run
+# locally before the wrapper creates the authorization ref and pushes the tag.
 on:
   push:
     tags:
@@ -31,7 +32,7 @@ jobs:
       - name: Require wrapper-authorized exact-main release tag
         shell: bash
         # This job exists only for tag pushes. Manual package inspection and
-        # untrusted PR workflows have no path to this administration credential.
+        # untrusted workflows have no path to this administration credential.
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: ./scripts/verify-release-tag-authorization.sh
@@ -57,85 +58,9 @@ jobs:
               select(.name == "taskfleet-core" and .req == ("=" + $version))] | length) == 1
           ' >/dev/null
 
-  fmt:
-    name: rustfmt
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: {components: rustfmt}
-      - run: cargo fmt --all --check
-
-  version-snapshots:
-    name: version snapshots
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - run: ./scripts/check-version-snapshots.sh
-
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: {components: clippy}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@nextest
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo nextest run --locked --release --workspace
-      - run: cargo test --locked --release --workspace --doc
-
-  msrv:
-    name: msrv (1.85)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --locked --workspace --all-targets
-
-  doc:
-    name: docs
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env: {RUSTDOCFLAGS: -D warnings}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo doc --locked --workspace --no-deps
-
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
-          arguments: --locked
-
   package-archives:
     name: package archives (inspection only)
-    needs: [release-version, fmt, version-snapshots, clippy, test, msrv, doc, deny]
+    needs: [release-version]
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -150,7 +75,7 @@ jobs:
 
   publish-core:
     name: crates.io / taskfleet-core
-    needs: [release-authorization, release-version, fmt, version-snapshots, clippy, test, msrv, doc, deny]
+    needs: [release-authorization, release-version]
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30

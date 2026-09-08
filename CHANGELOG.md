@@ -23,7 +23,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proportionate review depth.
 - Use Shipshape 0.12.2's authenticated stored bump plan, canonical schema-v2
   distribution contract, resumable verification, and final default-branch
-  phase while retaining Taskfleet's exact-main-CI held-tag authorization gate.
+  phase while retaining Taskfleet's held-tag authorization gate.
+- Replace GitHub test CI with one fail-closed local release-validation script on
+  the exact clean bump commit; retain ordered crates.io publication and
+  cargo-dist GitHub binary/Homebrew workflows.
 
 ### Fixed
 

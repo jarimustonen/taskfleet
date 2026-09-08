@@ -20,7 +20,7 @@ distributions:
     platforms: [aarch64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu]
 provenance_level: keyless
 dependency_bot: dependabot
-health_badges: [ci, registry, license]
+health_badges: [registry, license]
 license: MIT
 docs_site: none
 ---
@@ -37,7 +37,7 @@ The release publishes one executable, `taskfleet`.
 `scripts/shipshape-release.sh plan <major|minor|patch>` seals the non-mutating
 plan. `scripts/shipshape-release.sh cut <plan-id>` owns version bumping, the
 exact core pin, `Cargo.lock`, CHANGELOG finalization, version snapshots, bump
-commit, exact-main CI gate, authorization ref, and tag push. Never invoke Cargo
+commit, exact-commit local validation, authorization ref, and tag push. Never invoke Cargo
 publication locally, push a release tag manually, or use a bare Shipshape resume
 while a tag is held locally.
 
@@ -46,8 +46,9 @@ The wrapper admits only Shipshape 0.12.2 build
 plan and, after destination verification, idempotently records default-branch
 advancement. The Taskfleet adapter must still hold the tag because Taskfleet's
 tag starts both publishing workflows: it first advances `main` to the bump
-commit, requires green `ci.yml` for that exact push SHA, and creates the
-protected exact-commit authorization ref before resuming the immutable tag.
+commit, runs `scripts/validate-local-release.sh` on that exact clean `HEAD`,
+rechecks local and remote `main`, and creates the protected exact-commit
+authorization ref before resuming the immutable tag.
 Both release workflows verify that ref. Registry versions are permanent and may
 only be yanked, so a partial saga is resumed from the same immutable tag or fixed
 forward with a new patch.
@@ -56,15 +57,14 @@ forward with a new patch.
 
 Before a release:
 
-- run the full repository green gate from `AGENTS.md`;
-- run and review the complete insta snapshot loop;
-- run release topology, publication, authorization, and distribution fixture
-  tests;
-- package the workspace with `cargo package --workspace --locked --no-verify`
-  and inspect that archives contain exactly the two canonical packages;
-- verify the generated cargo-dist plan contains only Taskfleet archives,
-  checksums, installers, GitHub hosting, and the canonical Homebrew formula;
-- verify the tree and remote `main` are clean, synchronized, and exact-SHA green.
+- run `scripts/validate-local-release.sh` on the exact clean commit; it owns fmt,
+  clippy, release nextest, doctests, rustdoc, snapshots/identity, Rust 1.85,
+  dependency policy, shell protocol fixtures, package archives, Shipshape
+  readiness, and cargo-dist generation/plan validation;
+- inspect the two package archives and generated cargo-dist plan when using the
+  manual publication-inspection workflow;
+- verify the tree and remote `main` remain clean, synchronized, and equal to the
+  locally validated commit.
 
 `.github/workflows/publish-crates.yml` owns crates.io. cargo-dist owns the
 generated `.github/workflows/release.yml`; regenerate it rather than editing it

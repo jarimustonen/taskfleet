@@ -17,7 +17,7 @@ jq -e '
   .source_repository.current == "jarimustonen/taskfleet" and
   .cargo_dist.trigger == "tag-push" and
   .cargo_dist.pr_run_mode == "skip" and
-  .cargo_dist.authorization == "wrapper-ref-exact-tag-main-green-ci" and
+  .cargo_dist.authorization == "wrapper-ref-exact-tag-main-local-validation" and
   .cargo_dist.release_tag_ruleset == 22234415 and
   .cargo_dist.authorization_ref_ruleset == 22234417 and
   .cargo_dist.tap == "jarimustonen/homebrew-taskfleet" and

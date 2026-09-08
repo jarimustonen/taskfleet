@@ -1,6 +1,5 @@
 # Taskfleet 🎬
 
-[![CI](https://github.com/jarimustonen/taskfleet/actions/workflows/ci.yml/badge.svg)](https://github.com/jarimustonen/taskfleet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Rust CLI for orchestrating AI-agent workflows on a developer's machine.**

@@ -48,7 +48,8 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$CARGO_LOG"
 if [[ "$1" == --version ]]; then echo 'cargo 1.85.0 (fixture)'; exit 0; fi
 if [[ "$1" == metadata ]]; then
-  jq -n --arg root "$FIXTURE_ROOT" '{packages:[
+  target_dir="${CARGO_TARGET_DIR:-$FIXTURE_ROOT/target}"
+  jq -n --arg root "$FIXTURE_ROOT" --arg target "$target_dir" '{target_directory:$target,packages:[
     {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"core",dependencies:[]},
     {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
 
@@ -57,11 +58,12 @@ if [[ "$1" == metadata ]]; then
 fi
 if [[ "$1" == package ]]; then
   make_archive() {
-    package="$1"; root="$FIXTURE_ROOT/target/package/$package-1.2.3"
-    mkdir -p "$root" "$FIXTURE_ROOT/target/package"
+    package="$1"; target_dir="${CARGO_TARGET_DIR:-$FIXTURE_ROOT/target}"
+    root="$target_dir/package/$package-1.2.3"
+    mkdir -p "$root" "$target_dir/package"
     printf '%s\n' '[package]' "name = \"$package\"" 'version = "1.2.3"' >"$root/Cargo.toml"
     jq -n --arg sha "${ARCHIVE_COMMIT:-1111111111111111111111111111111111111111}" '{git:{sha1:$sha}}' >"$root/.cargo_vcs_info.json"
-    tar -czf "$FIXTURE_ROOT/target/package/$package-1.2.3.crate" -C "$FIXTURE_ROOT/target/package" "$package-1.2.3"
+    tar -czf "$target_dir/package/$package-1.2.3.crate" -C "$target_dir/package" "$package-1.2.3"
     rm -rf "$root"
   }
   if [[ "$*" == *--workspace* ]]; then
@@ -164,6 +166,13 @@ rm -rf "$tmp/repo/target"; : >"$tmp/cargo.log"
 env -i HOME="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" \
   SOURCE_COMMIT=1111111111111111111111111111111111111111 "$tmp/repo/scripts/publish-crates.sh" package >/dev/null
 [[ "$(find "$tmp/repo/target/package" -name '*.crate' | wc -l | tr -d ' ')" == 2 ]]
+
+# A caller-selected build cache also owns package archives and default receipts.
+custom_target="$tmp/custom-target"
+env -i HOME="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" \
+  CARGO_TARGET_DIR="$custom_target" SOURCE_COMMIT=1111111111111111111111111111111111111111 \
+  "$tmp/repo/scripts/publish-crates.sh" package >/dev/null
+[[ "$(find "$custom_target/package" -name '*.crate' | wc -l | tr -d ' ')" == 2 ]]
 
 run_case match 0
 ! grep -q '^publish ' "$tmp/cargo.log" || { echo 'matching existing crate was republished' >&2; exit 1; }

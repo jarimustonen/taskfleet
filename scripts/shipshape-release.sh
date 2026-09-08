@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Safe wrapper around the validated Shipshape 0.12.2 resumable protocol.
-# It pauses a bump cut at tag push, advances main to the bump commit, waits for
-# CI on that exact SHA, then resumes the journalled cut.
+# It pauses a bump cut at tag push, advances main to the bump commit, validates
+# that exact clean commit locally, then resumes the journalled cut.
 set -euo pipefail
 
 readonly shipshape_0_12_2_commit="d1d48d692707fee0d98697721e763a59e7ee3fb7"
@@ -218,30 +218,33 @@ advance_main_to_bump() {
   validate_bump_tree
   if [[ "$origin_main" != "$bump_commit" ]]; then
     # Explicitly disable follow-tags: the held local release tag must not ride the
-    # branch push before CI. A normal non-force push rejects any concurrent move.
+    # branch push before local validation. A normal non-force push rejects any concurrent move.
     git -c push.followTags=false push origin HEAD:refs/heads/main
   fi
 }
 
-wait_for_exact_main_ci() {
-  local sha="$1" id="" run_json
-  for ((attempt = 0; attempt < 60; attempt++)); do
-    id="$(gh run list -R "$expected_repo" --workflow ci.yml --branch main --commit "$sha" --event push --limit 1 --json databaseId -q '.[0].databaseId')"
-    test -n "$id" && test "$id" != null && break
-    sleep 5
-  done
-  test -n "$id" && test "$id" != null || { echo "no main CI run for $sha" >&2; exit 1; }
-  run_json="$(gh run view -R "$expected_repo" "$id" --json headSha,headBranch,event)"
-  jq -e --arg sha "$sha" '
-    .headSha == $sha and .headBranch == "main" and .event == "push"
-  ' <<<"$run_json" >/dev/null || {
-    echo "GitHub run $id does not attest exact main SHA $sha" >&2
+validate_exact_release_commit() {
+  local sha="$1"
+  [[ "$(git rev-parse HEAD)" == "$sha" ]] || {
+    echo "local HEAD is not the journalled bump commit $sha" >&2
     exit 2
   }
-  if ! gh run watch -R "$expected_repo" "$id" --exit-status; then
-    echo "main CI failed for $sha; release $run_id remains untagged remotely" >&2
+  test -z "$(git status --porcelain --untracked-files=all)" || {
+    echo "exact release commit validation requires a clean working tree" >&2
+    exit 2
+  }
+  if ! "$repo_root/scripts/validate-local-release.sh"; then
+    echo "local release validation failed for $sha; release $run_id remains unauthorized and untagged remotely" >&2
     exit 1
   fi
+  [[ "$(git rev-parse HEAD)" == "$sha" ]] || {
+    echo "HEAD changed during local release validation of $sha" >&2
+    exit 2
+  }
+  test -z "$(git status --porcelain --untracked-files=all)" || {
+    echo "working tree changed during local release validation of $sha" >&2
+    exit 2
+  }
 }
 
 remote_tag_commit() {
@@ -444,11 +447,16 @@ resume_after_gate() {
       exit 1
     }
     validate_bump_tree
-    wait_for_exact_main_ci "$bump_commit"
+    validate_exact_release_commit "$bump_commit"
     git fetch origin +refs/heads/main:refs/remotes/origin/main
-    [[ "$(git rev-parse refs/remotes/origin/main)" == "$bump_commit" ]] || {
-      echo "origin/main advanced after exact-SHA CI; release $run_id remains untagged" >&2
+    [[ "$(git rev-parse HEAD)" == "$bump_commit" &&
+       "$(git rev-parse refs/remotes/origin/main)" == "$bump_commit" ]] || {
+      echo "local or remote main advanced after exact-commit local validation; release $run_id remains untagged" >&2
       exit 1
+    }
+    test -z "$(git status --porcelain --untracked-files=all)" || {
+      echo "working tree changed after exact-commit local validation" >&2
+      exit 2
     }
     assert_recorded_checkpoint
     assert_repo_identity
@@ -481,7 +489,7 @@ resume_after_gate() {
 
   remote_tag="$(remote_tag_commit)"
   [[ "$remote_tag" == "$bump_commit" ]] || {
-    echo "remote tag $tag points at ${remote_tag:-<missing>}, expected CI-validated $bump_commit" >&2
+    echo "remote tag $tag points at ${remote_tag:-<missing>}, expected locally validated $bump_commit" >&2
     exit 2
   }
   shipshape release verify "$run_id" --json
@@ -585,7 +593,7 @@ set -euo pipefail
 while read -r local_ref local_oid remote_ref remote_oid; do
   if [[ "$local_ref" == refs/tags/v* || "$remote_ref" == refs/tags/v* ]]; then
     printf '%s\n' "$1" "$2" "$local_ref" "$local_oid" "$remote_ref" "$remote_oid" >"$SHIPSHAPE_PRETAG_MARKER"
-    echo "release tag held locally until main CI is green on its exact commit" >&2
+    echo "release tag held locally until its exact clean commit passes local validation" >&2
     exit 75
   fi
 done
@@ -614,7 +622,7 @@ HOOK
     if SHIPSHAPE_PRETAG_MARKER="$marker" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$hooks" \
       shipshape "${cut_args[@]}"; then
-      echo "safety stop failed: release cut passed the tag boundary before exact-SHA CI" >&2
+      echo "safety stop failed: release cut passed the tag boundary before exact-commit local validation" >&2
       exit 2
     fi
     test -s "$marker" || {

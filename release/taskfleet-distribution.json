@@ -12,7 +12,7 @@
     "tap_secret": "HOMEBREW_TAP_TOKEN",
     "tap_secret_state": "active-proven-r10",
     "activation_gate": "scripts/verify-release-tag-authorization.sh",
-    "authorization": "wrapper-ref-exact-tag-main-green-ci",
+    "authorization": "wrapper-ref-exact-tag-main-local-validation",
     "release_tag_ruleset": 22234415,
     "authorization_ref_ruleset": 22234417,
     "macos_runner": "macOS"

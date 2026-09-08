@@ -10,7 +10,7 @@
 # snapshots leaves them stale — `cargo test` then fails. During the v0.1.8
 # release that stale-snapshot failure only surfaced on `main` CI *after* the tag
 # was cut (the local integrated gate ran before the bump). This guard makes the
-# mismatch fail fast — locally and in CI — instead of silently riding a release.
+# mismatch fail fast in the local release gate instead of silently riding a release.
 #
 # Fix when it fails: refresh the snapshots and re-run the suite —
 #   cargo insta test --accept -p taskfleet   # (or the sed/find accept loop)

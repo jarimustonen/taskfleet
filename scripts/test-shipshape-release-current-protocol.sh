@@ -174,14 +174,22 @@ jq '.activation = "ready" | .source_repository.current = "jarimustonen/taskfleet
   .cargo_dist.trigger = "tag-push" | .cargo_dist.pr_run_mode = "skip" |
   .cargo_dist.tap_secret_state = "active-proven-r10" |
   .cargo_dist.activation_gate = "scripts/verify-release-tag-authorization.sh" |
-  .cargo_dist.authorization = "wrapper-ref-exact-tag-main-green-ci"' \
+  .cargo_dist.authorization = "wrapper-ref-exact-tag-main-local-validation"' \
   "$tmp/repo/release/taskfleet-distribution.json" >"$tmp/distribution.json"
 mv "$tmp/distribution.json" "$tmp/repo/release/taskfleet-distribution.json"
 sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/dist-workspace.toml"
 rm "$tmp/repo/dist-workspace.toml.bak"
+cat >"$tmp/repo/scripts/validate-local-release.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$(git rev-parse HEAD)" >>"$LOCAL_VALIDATION_LOG"
+echo reached-exact-commit-local-validation >&2
+exit 42
+STUB
+chmod +x "$tmp/repo/scripts/validate-local-release.sh"
 grep -F 'https://github.com/jarimustonen/taskfleet' "$tmp/repo/Cargo.toml" >/dev/null
 git -C "$tmp/repo" add release/taskfleet-release.json release/taskfleet-distribution.json \
-  dist-workspace.toml Cargo.toml .github/workflows/release.yml
+  dist-workspace.toml Cargo.toml .github/workflows/release.yml scripts/validate-local-release.sh
 git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
 git -C "$tmp/repo" push -q origin HEAD:refs/heads/main
 
@@ -198,6 +206,7 @@ run_env=(
   GIT_STUB_LOG="$tmp/git.log"
   TAG_PUSH_LOG="$tmp/tag-push.log"
   GH_STUB_LOG="$tmp/gh.log"
+  LOCAL_VALIDATION_LOG="$tmp/local-validation.log"
   GIT_CONFIG_GLOBAL=/dev/null
   GIT_CONFIG_NOSYSTEM=1
   GIT_TERMINAL_PROMPT=0
@@ -248,12 +257,12 @@ set +e
 ) >"$tmp/cut.stdout" 2>"$tmp/cut.stderr"
 status=$?
 set -e
-[[ "$status" -eq 42 ]] || {
-  echo "real shipshape cut did not stop at the isolated exact-SHA CI gate (status=$status)" >&2
+[[ "$status" -eq 1 ]] || {
+  echo "real shipshape cut did not stop at isolated local validation (status=$status)" >&2
   cat "$tmp/cut.stderr" >&2
   exit 1
 }
-grep -F reached-exact-sha-ci-gate "$tmp/cut.stderr" >/dev/null
+grep -F reached-exact-commit-local-validation "$tmp/cut.stderr" >/dev/null
 
 (
   cd "$tmp/repo"
@@ -269,9 +278,13 @@ run_id="$(jq -er --arg plan "$plan_id" '
 )
 tag="$(jq -er '.data.state.tags | keys | if length == 1 then .[0] else error("one tag required") end' "$tmp/show.json")"
 bump_commit="$(jq -er '.data.state.bump.commit' "$tmp/show.json")"
-expected_gh="run list -R jarimustonen/taskfleet --workflow ci.yml --branch main --commit $bump_commit --event push --limit 1 --json databaseId -q .[0].databaseId"
-grep -Fx "$expected_gh" "$tmp/gh.log" >/dev/null || {
-  echo "real protocol test did not query push CI for the exact bump SHA" >&2
+[[ "$(cat "$tmp/local-validation.log")" == "$bump_commit" ]] || {
+  echo "real protocol test did not validate the exact bump commit" >&2
+  cat "$tmp/local-validation.log" >&2
+  exit 1
+}
+! grep -F 'run list' "$tmp/gh.log" >/dev/null || {
+  echo "real protocol test queried a remote test gate instead of validating locally" >&2
   cat "$tmp/gh.log" >&2
   exit 1
 }

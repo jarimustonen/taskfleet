@@ -42,8 +42,8 @@ jq -e --arg ref "refs/heads/$authorization_name" --arg sha "$release_commit" '
   .ref == $ref and .object.type == "commit" and .object.sha == $sha
 ' <<<"$authorization_json" >/dev/null || fail "authorization ref does not identify this release commit"
 
-# The wrapper creates the authorization ref only after its exact-SHA main CI
-# wait succeeds and immediately before Shipshape resumes the held tag. Live main
+# The wrapper creates the authorization ref only after exact-commit local
+# validation succeeds and immediately before Shipshape resumes the held tag. Live main
 # may advance after tag push; the durable ref, not a racy later main lookup, is
 # the release-time proof.
 printf 'authorized %s at %s by refs/heads/%s\n' \

@@ -31,4 +31,40 @@ cargo metadata --locked --no-deps --format-version 1 | jq -e '
 ' >/dev/null
 
 grep -F 'repository: "jarimustonen/homebrew-taskfleet"' .github/workflows/release.yml >/dev/null
+
+if [[ $# -gt 1 ]]; then
+  echo "usage: scripts/validate-distribution-topology.sh [cargo-dist-plan.json]" >&2
+  exit 2
+fi
+if [[ $# -eq 1 ]]; then
+  plan="$1"
+  [[ -f "$plan" ]] || { echo "cargo-dist plan not found: $plan" >&2; exit 2; }
+  version="$(awk -F'"' '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{print $2;exit}' Cargo.toml)"
+  jq -e --arg version "$version" '
+    .dist_version == "0.28.2" and
+    .announcement_tag == ("v" + $version) and
+    (.releases | length) == 1 and
+    .releases[0].app_name == "taskfleet" and
+    .releases[0].app_version == $version and
+    .releases[0].hosting.github.owner == "jarimustonen" and
+    .releases[0].hosting.github.repo == "taskfleet" and
+    ([.artifacts[] | select(.kind == "executable-zip") | .target_triples[]] | sort) == [
+      "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu"
+    ] and
+    .artifacts["taskfleet-installer.sh"].kind == "installer" and
+    .artifacts["taskfleet.rb"].kind == "installer" and
+    (.artifacts["taskfleet.rb"].install_hint | contains("jarimustonen/taskfleet/taskfleet")) and
+    ([.ci.github.artifacts_matrix.include[].targets[]] | sort) == [
+      "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu"
+    ] and
+    .ci.github.pr_run_mode == "skip"
+  ' "$plan" >/dev/null || {
+    echo "cargo-dist plan does not match the canonical Taskfleet release topology" >&2
+    exit 2
+  }
+fi
 printf 'Taskfleet distribution topology verified\n'

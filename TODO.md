@@ -107,13 +107,3 @@ these stints are in `AGENTS.md`.
   `AGENTS.md`.
 
 ---
-
-## Piialiisan bugiraportit
-
-- [ ] 🐛 Piialiisan bugiraportti: run create omits source_repo from fresh run manifest — jari via Telegram ([`intake-bug-taskfleet-19a653fff4c9`](issues/intake-bug-taskfleet-19a653fff4c9/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: run show cannot identify a run repository once its worktree is gone — jari via Telegram ([`intake-feature-taskfleet-f706c536df01`](issues/intake-feature-taskfleet-f706c536df01/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: Expose source_repo in run show JSON — jari via Telegram ([`intake-feature-taskfleet-635e9e31cdf2`](issues/intake-feature-taskfleet-635e9e31cdf2/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated concurrent agents — jari via Telegram ([`intake-bug-taskfleet-53fa835cfa74`](issues/intake-bug-taskfleet-53fa835cfa74/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: Add teardown for terminal failed runs with preserved worktrees — jari via Telegram ([`intake-feature-taskfleet-41343c4dd3e4`](issues/intake-feature-taskfleet-41343c4dd3e4/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated global runs — jari via Telegram ([`intake-bug-taskfleet-6edf517c691a`](issues/intake-bug-taskfleet-6edf517c691a/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stint-start should safely rebase a clean diverged main — jari via Telegram ([`intake-feature-taskfleet-5565259bd11f`](issues/intake-feature-taskfleet-5565259bd11f/item.md))

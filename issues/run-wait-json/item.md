@@ -2,10 +2,12 @@
 created: 2026-08-21
 updated: 2026-09-08
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 lane: run-read-surfaces
 lane_seq: 10
+closed: 2026-09-08
+closed_by: codex
 ---
 
 # run wait JSON cannot distinguish a timeout from a settled result
@@ -82,3 +84,9 @@ by reading `data` alone, without consulting the process exit code.
 ### 2026-09-08T09:38:59Z · @codex
 
 Implementation design: the wait loop's existing Stop decision is now the sole source of data.outcome (condition-met | timed-out); no second settle classifier or derived pending-id vocabulary was added. Existing per-run attention/awaiting-input/stall semantics and exit grading remain unchanged.
+
+## Resolution
+
+### 2026-09-08T10:15:13Z · @codex
+
+Fixed and verified: run wait now serializes the loop's authoritative outcome as condition-met or timed-out without re-deriving settlement.

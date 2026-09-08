@@ -2,11 +2,13 @@
 created: 2026-08-20
 updated: 2026-09-08
 type: feature
-status: in-progress
+status: done
 priority: normal
 provenance: agent:issuectl-stint-wrapup
 lane: run-read-surfaces
 lane_seq: 20
+closed: 2026-09-08
+closed_by: codex
 ---
 
 # run list has no repo filter, so sibling-repo runs are indistinguishable by title
@@ -72,3 +74,9 @@ the session's other findings.
 ### 2026-09-08T09:38:59Z · @codex
 
 Implementation design: RunSummary now exposes the manifest's recorded source_repo verbatim (null stays unknown). --repo resolves the selector and each distinct recorded source to Git's absolute common-dir, caching repeated source values; this matches linked worktrees and excludes independent nested repositories without title or path-prefix inference. Real-Git regression covers '.', subdirectories, linked worktrees, nested repos, sibling repos, and unrecorded identity.
+
+## Resolution
+
+### 2026-09-08T10:15:13Z · @codex
+
+Completed and verified: run list exposes recorded source_repo and --repo filters by exact Git common-dir identity with linked-worktree and nested-repository coverage.

@@ -9,12 +9,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.8.0] - 2026-09-08
+
+### Added
+
 - Add `run discard` as an audited, idempotent cleanup path for preserved work
   from terminal failed or cancelled runs, with explicit force required for a
   verified dirty worktree.
 - Expose preserved work and recorded source-repository identity in run output;
   add exact repository filtering to `run list` and an explicit
   `condition-met`/`timed-out` outcome to `run wait`.
+
+- Add teardown for terminal failed runs with preserved worktrees (`intake-feature-taskfleet-41343c4dd3e4`).
+- Remove end-to-end stint friction without durable lifecycle state (`end-end-stint`).
+- Stamp issue trailers in issue-driven worktree skills (`run-merge-stamp`).
+- run list has no repo filter, so sibling-repo runs are indistinguishable by title (`phenomenally-noisy-behavior`).
+- stint-start should safely rebase a clean diverged main (`intake-feature-taskfleet-5565259bd11f`).
 
 ### Changed
 
@@ -28,6 +43,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the exact clean bump commit; retain ordered crates.io publication and
   cargo-dist GitHub binary/Homebrew workflows.
 
+- Establish Taskfleet as the sole product identity (`rename-taskfleet`).
+- Let workers choose proportionate review depth (`worker-review-scope-discretion`).
+- Taskfleet bug analysis should emit canonical triage heading (`canonical-triage-heading`).
+- Use current Shipshape release protocol (`shipshape-current-protocol`).
+- Use local validation instead of GitHub test CI (`local-release-validation`).
+
 ### Fixed
 
 - Restore the single canonical default state root and enforce its identity in
@@ -37,7 +58,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Preserve workmux-owned project prefixes on worker window names.
 - Require bug-analysis workers to emit the canonical `## Triage analysis`
   heading.
-<!-- oss-changelog:unreleased-end -->
+
+- Cancelled run hides preserved dirty worktree (`cancelled-run-hides-preserved-worktree`).
+- Recovery merge leaves landed run failed (`recovery-merge-status`).
+- Restore the single canonical default state root (`canonical-root-regression`).
+- Restore the workmux project prefix emoji on Taskfleet worktree windows (`workmux-project-prefix-emoji`).
+- run wait JSON cannot distinguish a timeout from a settled result (`run-wait-json`).
+- stint-handoff blocks on unrelated global runs (`intake-bug-taskfleet-6edf517c691a`).
 
 ## [0.7.1] - 2026-09-07
 

@@ -21,7 +21,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-taskfleet-core = { path = "../taskfleet-core", version = "=0.7.1" }
+taskfleet-core = { path = "../taskfleet-core", version = "=0.8.0" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

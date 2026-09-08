@@ -2,7 +2,7 @@
 created: 2026-08-21
 updated: 2026-09-08
 type: bug
-status: open
+status: in-progress
 priority: normal
 lane: run-read-surfaces
 lane_seq: 10
@@ -78,3 +78,7 @@ by reading `data` alone, without consulting the process exit code.
 ### 2026-09-08T09:20:05Z · @codex
 
 2026-09-08 regression/simplification stint: implement with phenomenally-noisy-behavior in one run-read-surfaces worktree. Serialize existing Stop decision; expose recorded source_repo rather than infer ownership. Runtime visibility/discard follows after this lands to avoid DTO collisions.
+
+### 2026-09-08T09:38:59Z · @codex
+
+Implementation design: the wait loop's existing Stop decision is now the sole source of data.outcome (condition-met | timed-out); no second settle classifier or derived pending-id vocabulary was added. Existing per-run attention/awaiting-input/stall semantics and exit grading remain unchanged.

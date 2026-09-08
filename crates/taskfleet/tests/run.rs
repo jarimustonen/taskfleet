@@ -53,6 +53,36 @@ fn create(home: &TempDir, kind: &str, title: &str) -> String {
         .to_string()
 }
 
+fn create_for_repo(home: &TempDir, title: &str, repo: &std::path::Path) -> String {
+    let v = run_ok(bin(home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        title,
+        "--source-repo",
+        repo.to_str().unwrap(),
+    ]));
+    v["data"]["run_id"].as_str().unwrap().to_string()
+}
+
+fn git_init(path: &std::path::Path) {
+    std::fs::create_dir_all(path).unwrap();
+    let out = Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(path)
+        .output()
+        .expect("git available for repository identity test");
+    assert!(
+        out.status.success(),
+        "git init: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn write_profiles(home: &TempDir) {
     std::fs::write(
         home.path().join("config.toml"),
@@ -724,6 +754,92 @@ fn show_surfaces_run_row_at_top_level_matching_list() {
             "run show and run list disagree on flat field `{key}`"
         );
     }
+}
+
+#[test]
+fn list_repo_filter_uses_git_identity_and_excludes_nested_repository() {
+    let home = TestHome::new();
+    let repos = TempDir::new().unwrap();
+    let outer = repos.path().join("outer");
+    let nested = outer.join("vendor/independent");
+    let subdir = outer.join("src/deep");
+    let linked = repos.path().join("outer-linked");
+    let other = repos.path().join("other");
+    git_init(&outer);
+    let commit = Command::new("git")
+        .args(["-C"])
+        .arg(&outer)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+        ])
+        .args(["commit", "--quiet", "--allow-empty", "-m", "init"])
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "git commit: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let add = Command::new("git")
+        .args(["-C"])
+        .arg(&outer)
+        .args(["worktree", "add", "--quiet", "-b", "linked"])
+        .arg(&linked)
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "git worktree add: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    git_init(&nested);
+    git_init(&other);
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let outer_id = create_for_repo(&home, "outer-run", &outer);
+    let linked_id = create_for_repo(&home, "linked-run", &linked);
+    let nested_id = create_for_repo(&home, "nested-run", &nested);
+    let _other_id = create_for_repo(&home, "other-run", &other);
+    let _unknown_id = create(&home, "spinoff", "unrecorded-run");
+
+    // `.` from a subdirectory resolves the containing repository. A nested
+    // independent repository must not match merely because its path has the
+    // selected checkout as a prefix.
+    let mut command = bin(&home);
+    command
+        .current_dir(&subdir)
+        .args(["--output", "json", "run", "list", "--repo", "."]);
+    let listed = run_ok(&mut command);
+    let rows = listed["data"]["runs"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        2,
+        "main and linked worktrees share one exact git identity"
+    );
+    let listed_ids: Vec<&str> = rows
+        .iter()
+        .map(|row| row["run_id"].as_str().unwrap())
+        .collect();
+    assert!(listed_ids.contains(&outer_id.as_str()));
+    assert!(listed_ids.contains(&linked_id.as_str()));
+    assert!(!listed_ids.contains(&nested_id.as_str()));
+    assert!(rows
+        .iter()
+        .any(|row| row["source_repo"] == outer.display().to_string()));
+
+    // Without the filter, repository provenance stays explicit and unknown
+    // provenance remains a truthful null rather than an inferred identity.
+    let all = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let rows = all["data"]["runs"].as_array().unwrap();
+    assert_eq!(rows.len(), 5);
+    let unrecorded = rows
+        .iter()
+        .find(|row| row["title"] == "unrecorded-run")
+        .unwrap();
+    assert!(unrecorded["source_repo"].is_null());
 }
 
 #[test]

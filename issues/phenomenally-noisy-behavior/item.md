@@ -1,8 +1,8 @@
 ---
 created: 2026-08-20
-updated: 2026-09-07
+updated: 2026-09-08
 type: feature
-status: open
+status: in-progress
 priority: normal
 provenance: agent:issuectl-stint-wrapup
 lane: run-read-surfaces
@@ -66,3 +66,9 @@ can filter client-side in one pass instead of N `run show` calls.
 Convenience gap rather than a defect: the information is available, just not without a
 per-run lookup. Filed at the maintainer's discretion after weighing it as lower-value than
 the session's other findings.
+
+## Comments
+
+### 2026-09-08T09:38:59Z · @codex
+
+Implementation design: RunSummary now exposes the manifest's recorded source_repo verbatim (null stays unknown). --repo resolves the selector and each distinct recorded source to Git's absolute common-dir, caching repeated source values; this matches linked worktrees and excludes independent nested repositories without title or path-prefix inference. Real-Git regression covers '.', subdirectories, linked worktrees, nested repos, sibling repos, and unrecorded identity.

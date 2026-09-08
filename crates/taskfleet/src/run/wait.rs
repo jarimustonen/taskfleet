@@ -225,15 +225,29 @@ struct RunOutcome {
 struct WaitData {
     waited_ms: u64,
     condition: &'static str,
+    /// The authoritative reason the wait loop returned. This is intentionally
+    /// serialized from `Stop` itself rather than re-derived from run outcomes.
+    outcome: Stop,
     runs: Vec<RunOutcome>,
 }
 
 /// Why the poll loop stopped.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
 enum Stop {
     /// The wait condition (`--all`/`--any`) was satisfied.
-    Met,
+    ConditionMet,
     /// `--timeout` elapsed first.
     TimedOut,
+}
+
+impl Stop {
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::ConditionMet => "condition-met",
+            Self::TimedOut => "timed-out",
+        }
+    }
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -298,13 +312,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // without ever finishing `done`, so each grades as a failure too.
     let exit_code: u8 = match stop {
         Stop::TimedOut => 2,
-        Stop::Met if args.fail_on_error && any_settled_error(&outcomes) => 3,
-        Stop::Met => 0,
+        Stop::ConditionMet if args.fail_on_error && any_settled_error(&outcomes) => 3,
+        Stop::ConditionMet => 0,
     };
 
     let data = WaitData {
         waited_ms,
         condition: condition.wire(),
+        outcome: stop,
         runs: outcomes,
     };
     emit(&data, args.spec, args.warnings)?;
@@ -406,7 +421,7 @@ fn wait_loop(
             Condition::Any => settled >= 1,
         };
         if met {
-            return Ok((Stop::Met, settle_now));
+            return Ok((Stop::ConditionMet, settle_now));
         }
         if let Some(t) = timeout {
             if start.elapsed() >= t {
@@ -837,6 +852,7 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         }
         OutputFormat::Text => {
             println!("condition:  {}", data.condition);
+            println!("outcome:    {}", data.outcome.wire());
             println!("waited_ms:  {}", data.waited_ms);
             for r in &data.runs {
                 print!(

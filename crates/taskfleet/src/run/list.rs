@@ -1,5 +1,9 @@
 //! `run list` — walk `<root>/runs/` and emit a manifest summary per run.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 use serde::Serialize;
 
 use taskfleet_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths};
@@ -17,6 +21,7 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 pub struct Args<'a> {
     pub status: Option<String>,
     pub kind: Option<String>,
+    pub repo: Option<PathBuf>,
     pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
@@ -66,6 +71,16 @@ fn stillborn_list_grace() -> chrono::Duration {
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
     let runs_dir = runs_root(&root);
+    // Resolve the selected repository once. Recorded source paths are resolved
+    // lazily below and cached by distinct value, so linked worktrees compare by
+    // their shared git common-dir without repeating probes for every run.
+    let repo_identity = args
+        .repo
+        .as_deref()
+        .map(|repo| repository_identity(repo, true))
+        .transpose()?
+        .flatten();
+    let mut source_identities: HashMap<String, Option<PathBuf>> = HashMap::new();
 
     // Strict-input rule from AGENTS-AI-FIRST-CLI §1: only validate that
     // the filter values are well-formed strings. We don't reject unknown
@@ -246,6 +261,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         {
             continue;
         }
+        if let Some(selected) = repo_identity.as_ref() {
+            let Some(source) = summary.source_repo.as_deref() else {
+                // Legacy/unrecorded repository identity cannot truthfully match.
+                continue;
+            };
+            let source_identity = if let Some(cached) = source_identities.get(source) {
+                cached.clone()
+            } else {
+                let resolved = repository_identity(Path::new(source), false)?;
+                source_identities.insert(source.to_string(), resolved.clone());
+                resolved
+            };
+            if source_identity.as_ref() != Some(selected) {
+                continue;
+            }
+        }
         // Advisory scan failures never suppress the canonical row and never
         // masquerade as invalid samples; availability + an envelope warning
         // preserve the distinction.
@@ -261,6 +292,65 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     out.sort_by_key(|r| std::cmp::Reverse(r.created_at));
     emit(out, args.spec, &output_warnings)
+}
+
+/// Resolve a repository's identity as its absolute git common-dir.
+///
+/// Main and linked worktrees therefore compare equal, while an independent
+/// repository nested under a checkout compares different. A caller-supplied
+/// selector is an actionable error when invalid. A stale recorded manifest
+/// source is instead unknown (`None`) and does not match the filter.
+fn repository_identity(repo: &Path, selector: bool) -> Result<Option<PathBuf>, CliError> {
+    if repo.as_os_str().is_empty() {
+        return if selector {
+            Err(CliError::user("invalid_value", "--repo must not be empty"))
+        } else {
+            Ok(None)
+        };
+    }
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .map_err(|e| CliError::system("dependency_missing", format!("run git: {e}")))?;
+    if !output.status.success() {
+        if !selector {
+            return Ok(None);
+        }
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(CliError::user(
+            "invalid_repository",
+            format!(
+                "--repo '{}' is not a readable git repository: {}",
+                repo.display(),
+                detail.trim()
+            ),
+        )
+        .with_invalid_value(repo.display().to_string()));
+    }
+
+    let raw = String::from_utf8(output.stdout).map_err(|e| {
+        CliError::system(
+            "git_output_invalid",
+            format!("git common-dir for '{}' was not UTF-8: {e}", repo.display()),
+        )
+    })?;
+    // `rev-parse` terminates its one path with LF. Remove exactly that protocol
+    // byte; `trim()` would corrupt a legitimate path with edge whitespace.
+    let raw = raw.strip_suffix('\n').unwrap_or(&raw);
+    let identity = PathBuf::from(raw);
+    if !identity.is_absolute() || identity.as_os_str().is_empty() {
+        return Err(CliError::system(
+            "git_output_invalid",
+            format!(
+                "git returned invalid common-dir '{}' for '{}'",
+                raw,
+                repo.display()
+            ),
+        ));
+    }
+    Ok(Some(identity.canonicalize().unwrap_or(identity)))
 }
 
 fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {

@@ -171,6 +171,11 @@ pub enum RunAction {
         status: Option<String>,
         #[arg(long)]
         kind: Option<String>,
+        /// Include only runs whose recorded source repository belongs to the git
+        /// repository containing this path. Accepts `.` and paths inside linked
+        /// worktrees. Runs without recorded repository identity do not match.
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
     /// Show one run's manifest and counters. Pass an id, or use `--current`
     /// inside a worker worktree to resolve its exact owning run from durable
@@ -349,9 +354,10 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             spec,
             warnings,
         }),
-        RunAction::List { status, kind } => list::run(list::Args {
+        RunAction::List { status, kind, repo } => list::run(list::Args {
             status,
             kind,
+            repo,
             spec,
             warnings,
         }),

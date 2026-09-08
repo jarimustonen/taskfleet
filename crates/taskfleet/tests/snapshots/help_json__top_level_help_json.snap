@@ -3305,6 +3305,35 @@ expression: value
                 }
               },
               {
+                "name": "repo",
+                "long": "repo",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Include only runs whose recorded source repository belongs to the git repository containing this path. Accepts `.` and paths inside linked worktrees. Runs without recorded repository identity do not match",
+                "value_names": [
+                  "REPO"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "status",
                 "long": "status",
                 "long_aliases": [],

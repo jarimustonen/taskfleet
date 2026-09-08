@@ -246,6 +246,7 @@ fn all_happy_path_two_done_runs_exit_zero() {
     // Default condition is --all; both runs are already terminal.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &a, &b]));
     assert_eq!(v["data"]["condition"], "all");
+    assert_eq!(v["data"]["outcome"], "condition-met");
     let runs = v["data"]["runs"].as_array().expect("runs array");
     assert_eq!(runs.len(), 2);
     for r in runs {
@@ -275,6 +276,7 @@ fn any_returns_when_one_of_two_is_terminal() {
 
     let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &done, &pending, "--any"]));
     assert_eq!(v["data"]["condition"], "any");
+    assert_eq!(v["data"]["outcome"], "condition-met");
     let runs = v["data"]["runs"].as_array().expect("runs array");
     assert_eq!(runs.len(), 2);
     // The first-listed terminal run is reported done; the other is still pending.
@@ -306,6 +308,10 @@ fn timeout_without_terminal_run_exits_two() {
         2,
     );
     assert_eq!(v["data"]["condition"], "all");
+    assert_eq!(
+        v["data"]["outcome"], "timed-out",
+        "the JSON result must carry the loop's timeout decision without relying on exit status"
+    );
     let waited = v["data"]["waited_ms"].as_u64().expect("waited_ms u64");
     assert!(
         (400..=2000).contains(&waited),

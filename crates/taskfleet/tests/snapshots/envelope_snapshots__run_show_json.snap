@@ -12,6 +12,7 @@ expression: value
     "status": "pending",
     "title": "seed-run",
     "created_at": "[TS]",
+    "source_repo": null,
     "source_branch": null,
     "worktree_path": "/tmp/seed-wt",
     "harness": "pi",

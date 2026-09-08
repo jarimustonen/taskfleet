@@ -259,6 +259,10 @@ pub struct RunSummary {
     pub status: String,
     pub title: String,
     pub created_at: DateTime<Utc>,
+    /// Source repository recorded at run creation. This is durable provenance,
+    /// not a title/path guess; legacy or skeleton runs may legitimately carry
+    /// `null` when no repository identity was recorded.
+    pub source_repo: Option<String>,
     /// Merge target recorded for the run. Populated when the worktree is
     /// materialized, including while the run remains `pending`.
     pub source_branch: Option<String>,
@@ -436,6 +440,7 @@ impl From<&Manifest> for RunSummary {
             status: status_kebab(m.status).to_string(),
             title: m.title.clone(),
             created_at: m.created_at,
+            source_repo: m.source_repo.clone(),
             source_branch: m.source_branch.clone(),
             worktree_path: None,
             harness: m.harness.clone(),
@@ -543,6 +548,7 @@ mod tests {
                 "status": "pending",
                 "title": "seed-run",
                 "created_at": "2024-01-01T00:00:00Z",
+                "source_repo": null,
                 "source_branch": null,
                 "worktree_path": null,
                 "harness": null,

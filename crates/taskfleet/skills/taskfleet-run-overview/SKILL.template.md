@@ -13,7 +13,9 @@ fan-outs, orchestrations, and spinoffs. Every workflow is a **run** with
 canonical state under `~/.taskfleet/runs/<run-id>/`. These commands
 expose that state:
 
-- `taskfleet run list` — every run, newest first
+- `taskfleet run list` — every run, newest first; add `--repo <path>` (including
+  `--repo .` from a subdirectory or linked worktree) to select runs by their
+  recorded git repository identity
 - `taskfleet run show <run-id>` — one run, full detail (one-shot)
 - `taskfleet run wait <run-id> …` — the blocking counterpart to
   `run show`: poll one or more runs with sane backoff until they reach a
@@ -57,6 +59,7 @@ by `created_at` (RFC3339).
         "kind": "spinoff | research | technical-decision | fan-out",
         "lifecycle": "autonomous | interactive",
         "status": "pending | running | done | failed | cancelled",
+        "source_repo": "/path/recorded-at-create | null",
         "created_at": "2026-06-12T10:30:00Z",
         "updated_at": "2026-06-12T10:45:12Z"
       }
@@ -82,6 +85,10 @@ Fields that drive decisions:
   `done | failed | cancelled`** — once any of those is set the run is
   settled (the reducer freezes further status changes). Branch on this
   to detect completion.
+- `source_repo` — the repository path recorded at creation, or `null` for a
+  legacy/skeleton run where identity was not recorded. `run list --repo <path>`
+  compares actual git common-dir identity, so main and linked worktrees match
+  while an independent nested repository does not.
 
 ## `run show` payload
 
@@ -173,11 +180,14 @@ taskfleet node show "$run_id" n-0001 --output json |
 ```
 
 Do not apply `run show` paths to `run wait`: waiting can cover several run
-ids, so its outcomes live in `data.runs[]`. A valid wait probe is:
+ids, so its outcomes live in `data.runs[]`. Read `data.outcome` first:
+`condition-met` means the requested `all`/`any` condition was met, while
+`timed-out` means the timeout elapsed first. This is authoritative even when a
+pipeline loses the process exit code. A valid wait probe is:
 
 ```bash
 taskfleet run wait "$run_id" --output json |
-  jq '.data.runs[] | {run_id, status, summary}'
+  jq '.data | {outcome, runs: [.runs[] | {run_id, status, summary}]}'
 ```
 
 Thus `.data.status` is intentionally null on a `run wait` response. `run wait`
@@ -190,10 +200,10 @@ folds in a summary; use `run show` or `node show` to read the full
    Terminal values (`done | failed | cancelled`) mean the run is settled
    and the supervisor has either already torn it down or is about to.
    Anything else (`pending | running`) is still live.
-2. **Polling "wait until merged"** — loop on
-   `taskfleet run show <id> --output json | jq -r '.data.manifest.status'`
-   and break on `done|failed|cancelled`. Do NOT poll `lifecycle` — it is
-   the category, not a progress field, and never transitions.
+2. **Waiting for completion** — use `taskfleet run wait <id> --output json`
+   and branch first on `.data.outcome`; never treat `timed-out` as completion.
+   Then inspect `.data.runs[]`. Do NOT poll `lifecycle` — it is the category,
+   not a progress field, and never transitions.
 3. **Deciding whether to spawn more work** — list runs first. If a
    `fan-out` is already `running` on the same scope, do not start a
    second; resume or wait.

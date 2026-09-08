@@ -3,10 +3,13 @@ created: 2026-09-08
 updated: 2026-09-08
 type: bug
 reporter: jari
-status: untriaged
+status: duplicate
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:homebase-wrapup-taskfleet-recovery-status-20260907
+duplicate_of: recovery-merge-status
+closed: 2026-09-08
+closed_by: ai-agent
 ---
 
 # Recovery merge leaves landed run failed
@@ -68,3 +71,9 @@ A supported recovery merge that lands and records a successful terminal report s
 ## Impact
 
 Status consumers and handoff preflight can classify successfully recovered work as a failed run even though no recoverable worktree, branch, or ownership remains.
+
+## Resolution
+
+### 2026-09-08T11:58:54Z · @ai-agent
+
+Duplicate of @recovery-merge-status: same observed run 01m1xd8tvgqvvf0281btqn04gt, successful explicit merge, and failed run manifest. The canonical issue was already reproduced and its worktree correction is in validation during this regression round. This intake is linked without a second implementation or another status owner.

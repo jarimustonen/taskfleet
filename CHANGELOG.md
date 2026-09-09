@@ -14,6 +14,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.10.0] - 2026-09-09
+
+### Fixed
+
+- Linux native merge executes a write-open tempfile and fails ETXTBSY (`intake-bug-taskfleet-41424b3d959e`).
+- Parse every shipped skill description as valid YAML (`skill-description-yaml`).
+- Retention tmux fixture can continue before child reaches SIGSTOP (`intake-bug-taskfleet-47b9a99a2591`).
+- Supervisor retry test reads partially written fixture output under load (`intake-bug-taskfleet-184a86a0335a`).
+
 ## [0.9.0] - 2026-09-08
 
 ### Added

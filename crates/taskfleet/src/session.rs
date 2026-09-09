@@ -1071,6 +1071,44 @@ mod tests {
             .is_ok_and(|out| out.status.success())
     }
 
+    struct PrivateTmuxServer(std::path::PathBuf);
+
+    impl Drop for PrivateTmuxServer {
+        fn drop(&mut self) {
+            let _ = Command::new("tmux")
+                .arg("-S")
+                .arg(&self.0)
+                .arg("kill-server")
+                .status();
+        }
+    }
+
+    /// Owns the deliberately stopped fixture child across assertions. SIGKILL is
+    /// effective even while stopped, unlike a pending HUP/TERM from tmux teardown.
+    struct StoppedChildGuard(Option<u32>);
+
+    impl Drop for StoppedChildGuard {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    fn process_is_stopped(pid: u32) -> bool {
+        Command::new("ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|out| {
+                out.status.success()
+                    && String::from_utf8_lossy(&out.stdout)
+                        .trim_start()
+                        .starts_with('T')
+            })
+    }
+
     #[test]
     fn real_private_tmux_expiry_preserves_unrelated_split_and_is_idempotent() {
         if !tmux_available() {
@@ -1078,6 +1116,8 @@ mod tests {
         }
         let temp = tempfile::tempdir().unwrap();
         let socket = temp.path().join("tmux.sock");
+        // Arm cleanup before the first command that can start the private server.
+        let _server = PrivateTmuxServer(socket.clone());
         let socket_s = socket.to_str().unwrap();
         let run_id = RunId::parse_str("01jxsnap000000000000000000").unwrap();
         let run_dir = temp.path().join("state/runs").join(run_id.as_str());
@@ -1126,7 +1166,15 @@ mod tests {
             .unwrap()
             .success());
         let script = temp.path().join("dead.sh");
-        std::fs::write(&script, "#!/bin/sh\nkill -STOP $$\necho archived\n").unwrap();
+        let stopped_pid_path = temp.path().join("dead.pid");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n/bin/sh -c 'kill -STOP $$; echo archived' &\nchild=$!\nprintf '%s\\n' \"$child\" > '{pid}.tmp'\nmv '{pid}.tmp' '{pid}'\nwait \"$child\"\n",
+                pid = stopped_pid_path.display()
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let made = Command::new("tmux")
             .args([
@@ -1145,9 +1193,33 @@ mod tests {
             ])
             .output()
             .unwrap();
+
+        // `new-window` returning does not prove the fixture child reached
+        // SIGSTOP. The pane script stays alive while its child is stopped,
+        // atomically publishes that child's pid, and waits for it. Acquire exact
+        // child ownership before parsing tmux output or making later assertions.
+        let stopped_deadline = Instant::now() + Duration::from_secs(5);
+        let mut stopped_child = StoppedChildGuard(None);
+        let stopped_pid = loop {
+            let pid = std::fs::read_to_string(&stopped_pid_path)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u32>().ok());
+            if let Some(pid) = pid {
+                stopped_child.0 = Some(pid);
+                if process_is_stopped(pid) {
+                    break pid;
+                }
+            }
+            assert!(
+                Instant::now() < stopped_deadline,
+                "retained fixture script never published a stopped pid"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
         let made = String::from_utf8(made.stdout).unwrap();
         let fields: Vec<&str> = made.trim().split('\t').collect();
-        let (window, pane, pane_pid) = (fields[0], fields[1], fields[2].parse::<u32>().unwrap());
+        let (window, pane) = (fields[0], fields[1]);
         let marker = format!("taskfleet:{}:{}:0", paths.run_id, node_id);
         assert!(Command::new("tmux")
             .args([
@@ -1175,9 +1247,8 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        unsafe {
-            libc::kill(pane_pid as libc::pid_t, libc::SIGCONT);
-        }
+        let continued = unsafe { libc::kill(stopped_pid as libc::pid_t, libc::SIGCONT) };
+        assert_eq!(continued, 0, "failed to continue retained fixture child");
         let wait_deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if tmux_text(
@@ -1194,6 +1265,8 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        // pane_dead proves the wrapper's `wait "$child"` completed.
+        stopped_child.0 = None;
         let server = tmux_text(
             Some(socket_s),
             &["display-message", "-p", "-t", "agents", "#{pid}"],
@@ -1249,9 +1322,6 @@ mod tests {
         );
         let archived = std::fs::read(paths.root.join("events.jsonl")).unwrap();
         assert!(!archived.is_empty(), "durable run archive is untouched");
-        let _ = Command::new("tmux")
-            .args(["-S", socket_s, "kill-server"])
-            .status();
     }
 
     #[test]

@@ -4212,6 +4212,30 @@ mod tests {
         }
     }
 
+    /// Panic-safe ownership of a fixture worker. Assertions after respawn must not
+    /// leave its long-running `sleep` behind.
+    struct AgentPidGuard(i64);
+
+    impl Drop for AgentPidGuard {
+        fn drop(&mut self) {
+            if self.0 <= 0 {
+                return;
+            }
+            unsafe {
+                libc::kill(self.0 as libc::pid_t, libc::SIGKILL);
+            }
+            // Native materialization returns the detached worker pid rather than
+            // a Child handle. Confirm bounded disappearance so panic cleanup does
+            // not merely send a signal and leave the fixture running.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while crate::supervise::pid_file::pid_alive(self.0 as u32)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
     /// Init a repo on `main` with one commit, then fork `wt/foo` at `main` with NO
     /// commits of its own — the empty-handed case (`main..wt/foo == 0`). Returns
     /// `(repo, worktree, base_sha)` where `base_sha == main == wt HEAD`.
@@ -4701,12 +4725,18 @@ EOF
         std::fs::write(paths.root.join("prompt.md"), "retry the task").unwrap();
 
         let observed = tmp.path().join("retry-observed.txt");
+        let partial = tmp.path().join("retry-observed.partial");
+        let publication_ready = tmp.path().join("retry-publication-ready");
+        let publication_release = tmp.path().join("retry-publication-release");
         let worker = tmp.path().join("recorded-worker.sh");
         std::fs::write(
             &worker,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$TASKFLEET_RUN_ID\" \"$TASKFLEET_NODE_ID\" \"$TASKFLEET_ATTEMPT\" \"$#\" \"$@\" > '{}'\nexec sleep 120\n",
-                observed.display()
+                "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$TASKFLEET_RUN_ID\" \"$TASKFLEET_NODE_ID\" \"$TASKFLEET_ATTEMPT\" > '{partial}'\n: > '{ready}'\nwhile [ ! -e '{release}' ]; do sleep 0.01; done\nprintf '%s\\n' \"$#\" \"$@\" >> '{partial}'\nmv '{partial}' '{observed}'\nexec sleep 120\n",
+                partial = partial.display(),
+                ready = publication_ready.display(),
+                release = publication_release.display(),
+                observed = observed.display(),
             ),
         )
         .unwrap();
@@ -4758,6 +4788,26 @@ EOF
         let _self_exe = EnvGuard::set("TASKFLEET_TEST_SELF_EXE", self_exe.to_str().unwrap());
 
         let spawned = respawn_agent(&paths, &node, &manifest, 3).unwrap();
+        let _agent = AgentPidGuard(spawned.agent_pid);
+
+        // Deterministically hold the writer after a partial record exists. The
+        // published path must remain absent: path existence is the completion
+        // signal only because publication is an atomic rename.
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !publication_ready.exists() && std::time::Instant::now() < ready_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            publication_ready.exists(),
+            "fixture writer never became ready"
+        );
+        assert!(!observed.exists(), "partial output was published early");
+        assert_eq!(
+            std::fs::read_to_string(&partial).unwrap(),
+            format!("{}\nn-0001\n3\n", manifest.run_id)
+        );
+        std::fs::write(&publication_release, "continue").unwrap();
+
         let observed_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !observed.exists() && std::time::Instant::now() < observed_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -4780,9 +4830,6 @@ EOF
             .root
             .join("agent-launch-n-0001-attempt-3.sh")
             .is_file());
-        let _ = PCommand::new("kill")
-            .arg(spawned.agent_pid.to_string())
-            .status();
     }
 
     /// Done-criterion: an autonomous single-node worker that dies EMPTY-HANDED is

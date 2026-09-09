@@ -3,10 +3,12 @@ created: 2026-09-09
 updated: 2026-09-09
 type: bug
 reporter: jari
-status: untriaged
-priority: normal
+status: open
+priority: high
 provenance: agent:homebase-haapa-migration
 source_ref: agent:homebase-haapa-migration/reporter:jari/id:homebase-haapa-taskfleet-etxtbsy-20260909
+lane: merge-runtime
+collision: [crates/taskfleet/src/run/merge.rs]
 ---
 
 # Linux native merge executes a write-open tempfile and fails ETXTBSY

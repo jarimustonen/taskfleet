@@ -3,10 +3,12 @@ created: 2026-09-09
 updated: 2026-09-09
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:haapa-migration
 source_ref: agent:haapa-migration/reporter:jari/id:haapa-taskfleet-retention-stop-race-20260909
+closed: 2026-09-09
+closed_by: pi
 ---
 
 # Retention tmux fixture can continue before child reaches SIGSTOP

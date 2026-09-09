@@ -3,7 +3,7 @@ created: 2026-09-09
 updated: 2026-09-09
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: high
 provenance: agent:homebase-haapa-migration
 source_ref: agent:homebase-haapa-migration/reporter:jari/id:homebase-haapa-taskfleet-etxtbsy-20260909

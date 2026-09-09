@@ -1,11 +1,14 @@
 ---
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 type: improvement
-status: open
+status: obsolete
 priority: high
 lane: supervisor
 collision: [taskfleet-supervisor]
+disposition_note: Historical tree retirement is no longer required for migration; fully archived inactive trees remain recovery holdings. No source-binding implementation or deletion is claimed.
+disposition_reason: withdrawn
+closed: 2026-09-09
 ---
 
 # Validate explicit source binding for archived historical run retirement
@@ -25,3 +28,15 @@ Add the smallest explicit caller-supplied source binding for this legacy-null ca
 ## Acceptance
 
 Hermetic real-Git fixtures reproduce null-original-source failure and prove safe explicit binding with untouched original metadata; negative identity/liveness/replacement/path and partial retry cases. No use against real historical trees from worker. Run exact scripts/validate-local-release.sh plus focused independent review/assessment. Conductor releases production unit, later Homebase distribution-channel update and guarded archived retirement. This is necessary migration recovery, not an unsolicited general repair framework.
+
+## Decisions
+
+### 2026-09-09T11:14:20Z · @codex
+
+The migration cleanup requirement is withdrawn. The seven inactive historical worktrees with null original source_repo are intentionally retained on Gertrud as recovery holdings, with their complete tree/common-Git/index/ref archives preserved and verified on recovery hosts. They have no live ownership and no longer block migrated main repositories or sessions. Close this issue obsolete, disposition withdrawn: no native source-binding feature was implemented, no deletion is authorized or claimed safe by this disposition, and no missing state is claimed reconstructed. Existing native fail-closed guards and all original branches/worktrees remain intact. This is a scope decision for the completed project migration, not an implementation success.
+
+## Resolution
+
+### 2026-09-09T11:14:20Z · @issuectl
+
+Withdrawn migration cleanup requirement; preserve the seven archived historical worktrees and native guard behavior. No feature completion or safe deletion claim.

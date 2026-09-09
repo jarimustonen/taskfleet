@@ -1011,21 +1011,28 @@ fn materialize_merge_sh() -> Result<MergeScript, CliError> {
     let perms = std::fs::Permissions::from_mode(0o700);
     std::fs::set_permissions(tmp.path(), perms)
         .map_err(|e| CliError::system("chmod_failed", format!("chmod merge.sh tempfile: {e}")))?;
-    Ok(MergeScript::Temp(tmp))
+
+    // Linux refuses to execute a script whose inode is still open for writing
+    // (`ETXTBSY`). Converting to `TempPath` closes the writable descriptor while
+    // retaining ownership of the private pathname, so it remains present for the
+    // child invocation and is removed automatically afterward.
+    Ok(MergeScript::Temp(tmp.into_temp_path()))
 }
 
 /// Where the materialized merge backend lives — an external override path
-/// or an owned temp file that must outlive the command invocation.
+/// or an owned temp path that must outlive the command invocation. The temp
+/// path deliberately owns no open file descriptor: Linux rejects exec of a
+/// write-open script with `ETXTBSY`.
 enum MergeScript {
     External(std::path::PathBuf),
-    Temp(tempfile::NamedTempFile),
+    Temp(tempfile::TempPath),
 }
 
 impl MergeScript {
     fn path(&self) -> &Path {
         match self {
             MergeScript::External(p) => p.as_path(),
-            MergeScript::Temp(t) => t.path(),
+            MergeScript::Temp(t) => t.as_ref(),
         }
     }
 }

@@ -8,7 +8,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+use serde_json::json;
 use serde_json::Value;
+#[cfg(target_os = "linux")]
+use taskfleet_core::{append_and_apply_event, NodeId, RunPaths};
 use tempfile::TempDir;
 
 mod common;
@@ -991,6 +995,68 @@ fn fake_workmux_dir(dir: &Path, code: i32) -> std::path::PathBuf {
     bindir
 }
 
+/// A fixture-only `workmux merge` that performs the source fast-forward the real
+/// command owns. It keeps these tests isolated from an installed workmux/tmux.
+#[cfg(target_os = "linux")]
+fn fake_workmux_fast_forward_dir(dir: &Path) -> std::path::PathBuf {
+    let bindir = dir.join("fakebin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let p = bindir.join("workmux");
+    std::fs::write(
+        &p,
+        r#"#!/bin/bash
+set -euo pipefail
+target=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--into" ]]; then target="$2"; shift 2; else shift; fi
+done
+[[ -n "$target" ]]
+branch=$(git symbolic-ref --short HEAD)
+target_path=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+actual_target=$(git -C "$target_path" symbolic-ref --short HEAD)
+[[ "$actual_target" == "$target" ]]
+git -C "$target_path" merge --ff-only "$branch"
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&p).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&p, perms).unwrap();
+    bindir
+}
+
+#[cfg(target_os = "linux")]
+fn commit_worker_change(worktree: &Path) {
+    std::fs::write(worktree.join("WORKER.txt"), "worker change\n").unwrap();
+    git(worktree, &["add", "WORKER.txt"]);
+    git(worktree, &["commit", "-qm", "worker change"]);
+}
+
+#[cfg(target_os = "linux")]
+fn oid(repo: &Path, rev: &str) -> String {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", rev])
+        .output()
+        .expect("spawn git rev-parse");
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn assert_no_embedded_merge_tempfiles(tmp: &Path) {
+    let leftovers: Vec<_> = std::fs::read_dir(tmp)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("taskfleet-merge-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "embedded merge-script temp paths must be cleaned up: {leftovers:?}"
+    );
+}
+
 /// `PATH` with `prepend` in front of the inherited one.
 fn path_with(prepend: &Path) -> String {
     format!(
@@ -1009,6 +1075,139 @@ fn wait_for(path: &Path, secs: u64) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     panic!("timed out waiting for {}", path.display());
+}
+
+/// Linux regression for the default embedded backend. The old implementation
+/// retained `NamedTempFile`'s writable descriptor through `execve`, which fails
+/// with `ETXTBSY` on Linux before any script logic runs. No backend override is
+/// present here: the embedded bytes are materialized, executed, and cleaned up.
+#[cfg(target_os = "linux")]
+#[test]
+fn default_embedded_backend_executes_and_cleans_up() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let script_tmp = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
+    let worker_oid = oid(&wt, "HEAD");
+    let run_id = create_run(&home, "spinoff", "embedded-linux-merge");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+    let fakebin = fake_workmux_fast_forward_dir(gitroot.path());
+
+    let v = run_ok(
+        bin(&home)
+            .env_remove("TASKFLEET_MERGE_SH")
+            .env("TMPDIR", script_tmp.path())
+            .env("PATH", path_with(&fakebin))
+            .args([
+                "--output", "json", "run", "merge", &run_id, "--source", "main",
+            ]),
+    );
+
+    assert_eq!(v["data"]["merged"], true);
+    assert_eq!(oid(&repo, "main"), worker_oid, "source must fast-forward");
+    assert!(branch_exists(&repo, "wt/foo"), "supervisor owns teardown");
+    let reports = node_reports(&run_dir(&home, &run_id).join("events.jsonl"));
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["data"]["via"], "explicit-merge");
+    assert_eq!(reports[0]["data"]["success"], true);
+    assert_no_embedded_merge_tempfiles(script_tmp.path());
+}
+
+/// `run salvage` delegates to the same merge execution path. Exercise that real
+/// path too, without the external backend override that masked Linux `ETXTBSY`.
+#[cfg(target_os = "linux")]
+#[test]
+fn salvage_uses_default_embedded_backend() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let script_tmp = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
+    let worker_oid = oid(&wt, "HEAD");
+    let run_id = create_run(&home, "spinoff", "embedded-linux-salvage");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    let paths = RunPaths::new(run_dir(&home, &run_id), &run_id).unwrap();
+    append_and_apply_event(
+        &paths,
+        "worker.exited",
+        Some(&NodeId::parse_str("n-0001").unwrap()),
+        None,
+        json!({ "exit_code": 0 }),
+    )
+    .unwrap();
+
+    let fakebin = fake_workmux_fast_forward_dir(gitroot.path());
+    let v = run_ok(
+        bin(&home)
+            .env_remove("TASKFLEET_MERGE_SH")
+            .env("TMPDIR", script_tmp.path())
+            .env("PATH", path_with(&fakebin))
+            .args([
+                "--output", "json", "run", "salvage", &run_id, "--source", "main",
+            ]),
+    );
+
+    assert_eq!(v["data"]["worker_state"], "exited");
+    assert_eq!(v["data"]["merge"]["merged"], true);
+    assert_eq!(
+        oid(&repo, "main"),
+        worker_oid,
+        "salvage must fast-forward source"
+    );
+    let reports = node_reports(&run_dir(&home, &run_id).join("events.jsonl"));
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["data"]["via"], "explicit-merge");
+    assert_no_embedded_merge_tempfiles(script_tmp.path());
+}
+
+/// Embedded-script failures retain the established error/report/ref contract and
+/// still remove the private script path after the child exits.
+#[cfg(target_os = "linux")]
+#[test]
+fn default_embedded_backend_failure_preserves_state_and_cleans_up() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let script_tmp = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
+    let source_before = oid(&repo, "main");
+    let worker_before = oid(&wt, "HEAD");
+    let run_id = create_run(&home, "spinoff", "embedded-linux-failure");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+    let fakebin = fake_workmux_dir(gitroot.path(), 42);
+
+    let out = bin(&home)
+        .env_remove("TASKFLEET_MERGE_SH")
+        .env("TMPDIR", script_tmp.path())
+        .env("PATH", path_with(&fakebin))
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn taskfleet");
+
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).expect("JSON error envelope");
+    assert_eq!(err["error"]["code"], "merge_failed");
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("workmux merge failed (exit 42)"));
+    assert_eq!(
+        oid(&repo, "main"),
+        source_before,
+        "source ref must not move"
+    );
+    assert_eq!(oid(&wt, "HEAD"), worker_before, "worker ref must not move");
+    assert!(branch_exists(&repo, "wt/foo"));
+    assert_eq!(
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        0,
+        "a failed backend must not submit a success report"
+    );
+    assert_no_embedded_merge_tempfiles(script_tmp.path());
 }
 
 /// THE regression for the race: another merge holds the lock AND the target

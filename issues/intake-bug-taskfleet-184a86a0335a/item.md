@@ -3,7 +3,7 @@ created: 2026-09-09
 updated: 2026-09-09
 type: bug
 reporter: jari
-status: untriaged
+status: in-progress
 priority: normal
 provenance: agent:haapa-migration
 source_ref: agent:haapa-migration/reporter:jari/id:haapa-taskfleet-supervisor-retry-partial-read-20260909

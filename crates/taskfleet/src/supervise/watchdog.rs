@@ -698,6 +698,9 @@ mod tests {
             window_id: window_id.to_string(),
             // Watchdog liveness keys off session:window_id, not the pane.
             pane_id: None,
+            server_pid: None,
+            server_pid_start_secs: None,
+            server_marker: None,
         }
     }
 

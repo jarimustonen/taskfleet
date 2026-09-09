@@ -91,6 +91,7 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
 }
 
 /// Per-run paths anchored on `<root>/runs/<run-id>/`.
+#[derive(Clone)]
 pub struct RunPaths {
     /// The run's root directory; every other path is derived from it.
     pub root: PathBuf,

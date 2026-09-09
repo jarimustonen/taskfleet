@@ -2534,6 +2534,10 @@ fn reconcile_agent_retries(
             "tmux_socket": spawn.tmux_socket,
             "tmux_session": spawn.tmux_session,
             "tmux_window_id": spawn.tmux_window_id,
+            "tmux_pane_id": spawn.tmux_pane_id,
+            "tmux_server_pid": spawn.tmux_server_pid,
+            "tmux_server_pid_start_secs": spawn.tmux_server_pid_start_secs,
+            "tmux_server_marker": spawn.tmux_server_marker,
             "pi_session_id": spawn.pi_session_id,
             "pi_session_path": spawn.pi_session_path,
             "pi_session_cwd": spawn.pi_session_cwd,
@@ -2668,6 +2672,10 @@ struct RespawnOutcome {
     tmux_socket: Option<String>,
     tmux_session: Option<String>,
     tmux_window_id: Option<String>,
+    tmux_pane_id: Option<String>,
+    tmux_server_pid: Option<u32>,
+    tmux_server_pid_start_secs: Option<u64>,
+    tmux_server_marker: Option<String>,
     pi_session_id: Option<String>,
     pi_session_path: Option<String>,
     pi_session_cwd: Option<String>,
@@ -2765,6 +2773,7 @@ fn respawn_agent(
         source_branch,
         cwd: source_repo,
         launcher: Some(&agent_launcher),
+        require_server_identity: manifest.tmux_retention.is_some(),
     };
     let outcome = match crate::run::spawn::materialize_native(&req) {
         Ok(outcome) => outcome,
@@ -2792,6 +2801,10 @@ fn respawn_agent(
         tmux_socket: outcome.tmux_socket.clone(),
         tmux_session: outcome.tmux_session.clone(),
         tmux_window_id: outcome.tmux_window_id.clone(),
+        tmux_pane_id: outcome.tmux_pane_id.clone(),
+        tmux_server_pid: outcome.tmux_server_pid,
+        tmux_server_pid_start_secs: outcome.tmux_server_pid_start_secs,
+        tmux_server_marker: outcome.tmux_server_marker.clone(),
         pi_session_id: outcome.pi_session_id.clone(),
         pi_session_path: outcome.pi_session_path.clone(),
         pi_session_cwd: outcome.pi_session_cwd.clone(),
@@ -3370,7 +3383,7 @@ fn watchdog_tick(
                 pid: pid as u32,
                 start_time: n.agent_pid_start_time.map(|t| t.timestamp().max(0) as u64),
                 tmux_window: n.tmux_window.clone(),
-                tmux_identity: n.tmux_identity.clone(),
+                tmux_identity: n.tmux_identity.as_deref().cloned(),
                 // Skip the tmux probe only when there is neither a qualified
                 // identity nor a legacy window name to probe with — don't fail
                 // liveness on that absence alone. When present, the qualified
@@ -3776,6 +3789,8 @@ mod tests {
             tmux_window: None,
             tmux_identity: None,
             evidence: None,
+            retained_display: None,
+            retention_unavailable: None,
             agent_pid: Some(4242),
             agent_pid_start_time: None,
             supervisor_pid: None,

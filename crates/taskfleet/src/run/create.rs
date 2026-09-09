@@ -297,11 +297,24 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         None => None,
     };
 
-    // Resolve the optional headless target session up-front so a malformed
-    // `--tmux-session` fails before we touch disk or the parent log — same
-    // fail-fast contract as the prompt-source resolution below. `None` keeps
-    // the existing foreground-spawn behavior (opt-in only).
-    let parent_session = resolve_parent_session(args.headless, args.tmux_session.as_deref())?;
+    // Resolve autonomous session placement from explicit CLI first, then the
+    // opt-in user config. Explicit interactive runs keep their current tmux
+    // session unless the caller names one; compatibility defaults are unchanged.
+    let tmux_config = crate::config::Config::load()?.tmux;
+    let parent_session = resolve_parent_session(
+        args.headless,
+        args.tmux_session.as_deref(),
+        lifecycle,
+        tmux_config.default_session.as_deref(),
+    )?;
+    let uses_persistent_autonomous_session = lifecycle == Lifecycle::Autonomous
+        && (args.tmux_session.is_some() || !args.headless)
+        && parent_session.as_deref() == tmux_config.default_session.as_deref();
+    let tmux_retention = if uses_persistent_autonomous_session {
+        tmux_config.retention_policy()?
+    } else {
+        None
+    };
 
     let is_child = args.parent_run_id.is_some();
     if args.parent_run_id.is_some() ^ args.parent_node_id.is_some() {
@@ -699,6 +712,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     if let Some(v) = parent_session.as_deref() {
         data.insert("managed_tmux_session".into(), Value::String(v.into()));
     }
+    if let Some(policy) = tmux_retention.as_ref() {
+        data.insert(
+            "tmux_retention".into(),
+            serde_json::to_value(policy).expect("tmux retention policy serializes"),
+        );
+    }
     // Persist the terminal-completion hook so the supervisor can run it once
     // when this run settles (issue `no-completion-notification-to-parent`).
     // Trimmed and empty-rejected up front — an all-whitespace `--notify` is a
@@ -872,6 +891,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // reconciliation and retries act on the same checkout.
         cwd: materialization_repo.as_deref().map(Path::new),
         launcher: Some(&agent_launcher),
+        require_server_identity: tmux_retention.is_some(),
     };
     // On any spawn failure for a child, drop the orphan run dir before
     // returning the error. Best-effort: a leftover dir is far less harmful
@@ -936,6 +956,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "tmux_session": outcome.tmux_session,
         "tmux_window_id": outcome.tmux_window_id,
         "tmux_pane_id": outcome.tmux_pane_id,
+        "tmux_server_pid": outcome.tmux_server_pid,
+        "tmux_server_pid_start_secs": outcome.tmux_server_pid_start_secs,
+        "tmux_server_marker": outcome.tmux_server_marker,
         // Exact native Pi session identity was assigned and its header durably
         // created by the pre-exec handshake before the candidate started.
         "pi_session_id": outcome.pi_session_id,
@@ -1366,6 +1389,8 @@ fn capture_materialized_source_branch(worktree_path: &str, branch: &str) -> Opti
 fn resolve_parent_session(
     headless: bool,
     tmux_session: Option<&str>,
+    lifecycle: Lifecycle,
+    configured_default: Option<&str>,
 ) -> Result<Option<String>, CliError> {
     match tmux_session {
         Some(raw) => {
@@ -1390,6 +1415,14 @@ fn resolve_parent_session(
             Ok(Some(name.to_string()))
         }
         None if headless => Ok(Some(DEFAULT_HEADLESS_SESSION.to_string())),
+        None if lifecycle == Lifecycle::Autonomous => {
+            if let Some(name) = configured_default {
+                crate::config::validate_tmux_session_name(name)?;
+                Ok(Some(name.to_string()))
+            } else {
+                Ok(None)
+            }
+        }
         None => Ok(None),
     }
 }
@@ -1926,14 +1959,42 @@ mod tests {
     }
 
     #[test]
-    fn parent_session_defaults_to_none() {
-        assert_eq!(resolve_parent_session(false, None).unwrap(), None);
+    fn parent_session_defaults_and_precedence() {
+        assert_eq!(
+            resolve_parent_session(false, None, Lifecycle::Interactive, Some("agents")).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_parent_session(false, None, Lifecycle::Autonomous, Some("agents"))
+                .unwrap()
+                .as_deref(),
+            Some("agents")
+        );
+        assert_eq!(
+            resolve_parent_session(true, None, Lifecycle::Autonomous, Some("agents"))
+                .unwrap()
+                .as_deref(),
+            Some(DEFAULT_HEADLESS_SESSION)
+        );
+        assert_eq!(
+            resolve_parent_session(
+                false,
+                Some("explicit"),
+                Lifecycle::Autonomous,
+                Some("agents")
+            )
+            .unwrap()
+            .as_deref(),
+            Some("explicit")
+        );
     }
 
     #[test]
     fn headless_yields_default_session() {
         assert_eq!(
-            resolve_parent_session(true, None).unwrap().as_deref(),
+            resolve_parent_session(true, None, Lifecycle::Interactive, None)
+                .unwrap()
+                .as_deref(),
             Some("headless")
         );
     }
@@ -1942,13 +2003,13 @@ mod tests {
     fn explicit_tmux_session_wins_and_implies_headless() {
         // Explicit name overrides the default even with --headless unset.
         assert_eq!(
-            resolve_parent_session(false, Some("campaign"))
+            resolve_parent_session(false, Some("campaign"), Lifecycle::Interactive, None)
                 .unwrap()
                 .as_deref(),
             Some("campaign")
         );
         assert_eq!(
-            resolve_parent_session(true, Some("campaign"))
+            resolve_parent_session(true, Some("campaign"), Lifecycle::Interactive, None)
                 .unwrap()
                 .as_deref(),
             Some("campaign")
@@ -1958,7 +2019,7 @@ mod tests {
     #[test]
     fn tmux_session_trimmed() {
         assert_eq!(
-            resolve_parent_session(false, Some("  bg  "))
+            resolve_parent_session(false, Some("  bg  "), Lifecycle::Interactive, None)
                 .unwrap()
                 .as_deref(),
             Some("bg")
@@ -1967,14 +2028,16 @@ mod tests {
 
     #[test]
     fn empty_tmux_session_rejected() {
-        let e = resolve_parent_session(false, Some("   ")).unwrap_err();
+        let e =
+            resolve_parent_session(false, Some("   "), Lifecycle::Interactive, None).unwrap_err();
         assert_eq!(e.code, "invalid_value");
     }
 
     #[test]
     fn tmux_session_with_separator_rejected() {
         for bad in ["a:b", "a.b", "a b"] {
-            let e = resolve_parent_session(false, Some(bad)).unwrap_err();
+            let e =
+                resolve_parent_session(false, Some(bad), Lifecycle::Interactive, None).unwrap_err();
             assert_eq!(e.code, "invalid_value", "expected reject for {bad:?}");
         }
     }

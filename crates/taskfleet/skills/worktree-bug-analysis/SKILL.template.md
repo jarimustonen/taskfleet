@@ -1,6 +1,6 @@
 ---
 name: worktree-bug-analysis
-description: Spawn an autonomous READ-ONLY spinoff that analyses ONE existing bug and writes findings back into its issue: reproduce/explain, locate the code path with Read/Grep, classify, estimate severity, and sketch fix scope. It self-merges only the issue update and never changes application code. Use before a fix/defer/not-a-bug decision. Fix with issue-driven `/worktree-spinoff`; use `/worktree-research` for open-ended multi-source research.
+description: "Spawn an autonomous READ-ONLY spinoff that analyses ONE existing bug and writes findings back into its issue: reproduce/explain, locate the code path with Read/Grep, classify, estimate severity, and sketch fix scope. It self-merges only the issue update and never changes application code. Use before a fix/defer/not-a-bug decision. Fix with issue-driven `/worktree-spinoff`; use `/worktree-research` for open-ended multi-source research."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1

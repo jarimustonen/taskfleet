@@ -132,10 +132,19 @@ fn config_show_json_pins_payload_and_default_layers() {
             "harness.research",
             "harness.technical-decision",
             "harness.fan-out",
+            "tmux.default_session",
+            "tmux.persistent",
+            "tmux.completed_window_ttl",
+            "tmux.completed_window_max",
         ]
     );
 
-    for row in data["keys"].as_array().unwrap() {
+    for row in data["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["key"].as_str().unwrap().starts_with("harness."))
+    {
         let fields: BTreeSet<&str> = row
             .as_object()
             .unwrap()
@@ -197,7 +206,12 @@ fn config_show_env_override_keeps_file_layers_visible() {
     command.env("TASKFLEET_HARNESS", "pi");
     let data = show_json(command.args(["config", "show", "--output", "json"]));
 
-    for row in data["keys"].as_array().unwrap() {
+    for row in data["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["key"].as_str().unwrap().starts_with("harness."))
+    {
         assert_eq!(row["effective_value"], "pi", "row: {row}");
         assert_eq!(row["effective_source"], "env", "row: {row}");
     }

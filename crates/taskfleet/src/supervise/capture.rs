@@ -165,7 +165,7 @@ fn capture_tick_with(
             let Some(identity) = n.tmux_identity.clone() else {
                 continue;
             };
-            targets.push((node_id, identity));
+            targets.push((node_id, *identity));
         }
         Ok(())
     });
@@ -313,6 +313,9 @@ mod tests {
             session: "taskfleet".to_string(),
             window_id: window_id.to_string(),
             pane_id: None,
+            server_pid: None,
+            server_pid_start_secs: None,
+            server_marker: None,
         }
     }
 

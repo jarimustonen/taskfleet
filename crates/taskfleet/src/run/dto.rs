@@ -484,6 +484,7 @@ mod tests {
             source_branch: None,
             worktree_root: None,
             managed_tmux_session: None,
+            tmux_retention: None,
             notify_cmd: None,
             harness: None,
             agent_selection: None,

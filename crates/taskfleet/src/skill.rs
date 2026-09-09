@@ -2756,6 +2756,51 @@ mod tests {
     }
 
     #[test]
+    fn every_embedded_skill_is_valid_portable_yaml_frontmatter() {
+        for skill in SKILLS {
+            let mut lines = skill.body.lines();
+            assert_eq!(
+                lines.next(),
+                Some("---"),
+                "{} frontmatter start",
+                skill.name
+            );
+            let mut frontmatter = Vec::new();
+            let mut closed = false;
+            for line in lines.by_ref() {
+                if line == "---" {
+                    closed = true;
+                    break;
+                }
+                frontmatter.push(line);
+            }
+            assert!(
+                closed,
+                "{} frontmatter has no closing delimiter",
+                skill.name
+            );
+            let yaml = frontmatter.join("\n");
+            let value: serde_norway::Value =
+                serde_norway::from_str(&yaml).unwrap_or_else(|error| {
+                    panic!("skill {} has invalid YAML frontmatter: {error}", skill.name)
+                });
+            let mapping = value
+                .as_mapping()
+                .unwrap_or_else(|| panic!("skill {} frontmatter is not a mapping", skill.name));
+            for required in ["name", "description"] {
+                let value = mapping
+                    .get(serde_norway::Value::String(required.into()))
+                    .unwrap_or_else(|| panic!("skill {} missing {required}", skill.name));
+                assert!(
+                    value.as_str().is_some_and(|text| !text.is_empty()),
+                    "skill {} {required} must be a non-empty string",
+                    skill.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_embedded_skill_has_a_description_and_matching_name() {
         // Guards against frontmatter drift: if someone edits a SKILL.md
         // and breaks the `description:` line, `skill list` would silently

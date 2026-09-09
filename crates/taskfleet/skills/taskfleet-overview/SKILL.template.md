@@ -65,6 +65,10 @@ If `schema_version` is a value you do not recognise, refuse to proceed
 - `taskfleet supervise <run-id>` — the long-lived per-run
   supervisor process; `run reattach` invokes it. Most agents do not call
   this directly.
+- `taskfleet session maintain --output json` — bounded, idempotent timer
+  maintenance for opt-in persistent worker sessions. It uses only each run's
+  recorded socket/server/window/pane ownership, never `$TMUX` or cwd, and does
+  not start a missing tmux server.
 - `taskfleet node list` / `node show <id>` / `node report` —
   per-unit detail inside a run, and the structured terminal report a
   worker submits to end its run. A worktree worker usually submits this
@@ -108,6 +112,31 @@ Two distinct fields, two distinct meanings — do not conflate them:
   `cancelled` are terminal. Read `status` (via `run show <id>` →
   `data.manifest.status`), never `lifecycle`, to tell whether work is
   complete.
+
+## Persistent autonomous-worker session (opt-in)
+
+User config may select one named session and bounded inert completed displays:
+
+```toml
+[tmux]
+default_session = "agents"
+persistent = true
+completed_window_ttl = "24h"
+completed_window_max = 20
+```
+
+With no `[tmux]` section behavior is unchanged. `--tmux-session NAME` wins over
+that default and selects a **session on the invocation's actual tmux socket**,
+not a socket; `--headless` still explicitly selects `headless`. Explicit
+interactive runs stay in the current session unless the caller names one.
+Completed Pi evidence is archived before the worker pane is stopped and replaced
+by a dead, inert display whose cwd is the surviving source repository. Schedule
+`taskfleet session maintain --output json` (for example every five minutes)
+from a bounded noninteractive timer with `HOME`, `TASKFLEET_HOME`, and `PATH`
+set explicitly. The strictest recorded count limit wins within one exact
+server/session generation. Expiry removes only the owned pane; a final inert
+pane remains as the persistent session anchor. Pane expiry never removes run
+events, transcripts, reports, or preserved Git work.
 
 ## When to use which skill
 

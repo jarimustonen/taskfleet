@@ -19,6 +19,7 @@ mod proc;
 mod run;
 mod run_worker;
 mod self_exec;
+mod session;
 mod skill;
 mod supervise;
 mod worker_handshake;

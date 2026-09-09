@@ -1,8 +1,8 @@
 ---
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 type: feature
-status: open
+status: testing
 priority: high
 lane: supervisor
 collision: [taskfleet-supervisor]

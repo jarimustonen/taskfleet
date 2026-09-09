@@ -298,6 +298,9 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "worker.exited" => reduce_worker_exited(paths, ev),
         "worker.evidence.archived" => reduce_worker_evidence_archived(paths, ev),
         "worker.evidence.failed" => reduce_worker_evidence_failed(paths, ev),
+        "worker.display.retained" => reduce_worker_display_retained(paths, ev),
+        "worker.display.expired" => reduce_worker_display_expired(paths, ev),
+        "worker.display.unavailable" => reduce_worker_display_unavailable(paths, ev),
         "node.death_observed" => reduce_node_death_observed(paths, ev),
         "node.awaiting_input" => reduce_node_awaiting_input(paths, ev),
         "node.input_resolved" => reduce_node_input_resolved(paths, ev),
@@ -524,6 +527,7 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             .get("managed_tmux_session")
             .and_then(Value::as_str)
             .map(str::to_string),
+        tmux_retention: retention_policy_from_data(&events_path, d)?,
         notify_cmd: d
             .get("notify_cmd")
             .and_then(Value::as_str)
@@ -594,6 +598,30 @@ fn reduce_run_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
 /// events from a create.sh that predates the qualified fields (or that emit a
 /// partial/empty identity) yield `None`, so the node falls back to bare-name
 /// matching on `tmux_window`.
+fn retention_policy_from_data(
+    events_path: &Path,
+    data: &Value,
+) -> Result<Option<Box<crate::schema::TmuxRetentionPolicy>>> {
+    let Some(value) = data.get("tmux_retention") else {
+        return Ok(None);
+    };
+    let policy: crate::schema::TmuxRetentionPolicy = serde_json::from_value(value.clone())
+        .map_err(|e| Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!("run.created invalid `tmux_retention`: {e}"),
+        })?;
+    if !policy.persistent
+        || policy.completed_window_ttl_secs == 0
+        || policy.completed_window_max == 0
+    {
+        return Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: "run.created tmux_retention must be persistent with positive ttl/max".into(),
+        });
+    }
+    Ok(Some(Box::new(policy)))
+}
+
 fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
     let nonempty = |key| {
         d.get(key)
@@ -611,6 +639,12 @@ fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
         // Optional: create.sh predating the field (or a failed pane query)
         // emits no `tmux_pane_id`; capture then falls back to `window_id`.
         pane_id: nonempty("tmux_pane_id"),
+        server_pid: d
+            .get("tmux_server_pid")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok()),
+        server_pid_start_secs: d.get("tmux_server_pid_start_secs").and_then(Value::as_u64),
+        server_marker: nonempty("tmux_server_marker"),
     })
 }
 
@@ -755,8 +789,10 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
             .get("tmux_window")
             .and_then(Value::as_str)
             .map(str::to_string),
-        tmux_identity: tmux_identity_from_data(d),
+        tmux_identity: tmux_identity_from_data(d).map(Box::new),
         evidence: worker_evidence_from_spawn_data(&events_path, ev, d)?,
+        retained_display: None,
+        retention_unavailable: None,
         agent_pid: optional_i32(d, "agent_pid", &events_path, ev)?,
         agent_pid_start_time: optional_ts(d, "agent_pid_start_time", &events_path, ev)?,
         supervisor_pid: optional_i32(d, "supervisor_pid", &events_path, ev)?,
@@ -846,8 +882,10 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
         .get("tmux_window")
         .and_then(Value::as_str)
         .map(str::to_string);
-    n.tmux_identity = tmux_identity_from_data(d);
+    n.tmux_identity = tmux_identity_from_data(d).map(Box::new);
     n.evidence = worker_evidence_from_spawn_data(&events_path, ev, d)?;
+    n.retained_display = None;
+    n.retention_unavailable = None;
     n.agent_pid = optional_i32(d, "agent_pid", &events_path, ev)?;
     n.agent_pid_start_time = optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
     n.status = Status::Pending;
@@ -1175,6 +1213,71 @@ fn reduce_worker_evidence_archived(paths: &RunPaths, ev: &Event) -> Result<Vec<P
     evidence.status = EvidenceStatus::Complete;
     evidence.error = None;
     node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
+}
+
+fn reduce_worker_display_retained(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let display: crate::schema::RetainedDisplay =
+        serde_json::from_value(ev.data.clone()).map_err(|e| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!("event seq={} invalid retained display: {e}", ev.seq),
+        })?;
+    let mut node = match read_node_opt(paths, &node_id)? {
+        Some(node) => node,
+        None => return Ok(vec![]),
+    };
+    if display.attempt != node.retry_attempts || display.ownership_marker.is_empty() {
+        return Ok(vec![]);
+    }
+    if node.retained_display.is_some() {
+        return Ok(vec![]);
+    }
+    node.retained_display = Some(Box::new(display));
+    node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
+}
+
+fn reduce_worker_display_expired(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let marker = want_str(&events_path, ev, &ev.data, "ownership_marker")?;
+    let attempt = evidence_attempt(&events_path, ev)?;
+    let mut node = match read_node_opt(paths, &node_id)? {
+        Some(node) => node,
+        None => return Ok(vec![]),
+    };
+    let Some(display) = node.retained_display.as_mut() else {
+        return Ok(vec![]);
+    };
+    if display.attempt != attempt
+        || display.ownership_marker != marker
+        || display.expired_at.is_some()
+    {
+        return Ok(vec![]);
+    }
+    display.expired_at = Some(ev.ts);
+    node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
+}
+
+fn reduce_worker_display_unavailable(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let attempt = evidence_attempt(&events_path, ev)?;
+    let reason = want_str(&events_path, ev, &ev.data, "reason")?;
+    let mut node = match read_node_opt(paths, &node_id)? {
+        Some(node) => node,
+        None => return Ok(vec![]),
+    };
+    if attempt != node.retry_attempts || node.retained_display.is_some() {
+        return Ok(vec![]);
+    }
+    if node.retention_unavailable.is_none() {
+        node.retention_unavailable = Some(reason.to_string());
+        node.updated_at = ev.ts;
+    }
     Ok(vec![ProjectionOp::Node(node)])
 }
 

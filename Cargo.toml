@@ -37,6 +37,7 @@ sha2 = "0.10"
 libc = "0.2"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 serial_test = { version = "3", default-features = false, features = ["file_locks"] }
+serde_norway = "0.9.42"
 
 [profile.release]
 lto = "thin"

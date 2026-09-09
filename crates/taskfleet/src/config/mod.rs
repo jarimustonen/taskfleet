@@ -123,6 +123,90 @@ pub struct Config {
     /// configuration is parsed through [`RepoConfig`] and cannot define these.
     #[serde(default)]
     pub profiles: BTreeMap<String, AgentProfile>,
+    /// Optional autonomous-worker tmux placement and retention policy.
+    #[serde(default)]
+    pub tmux: TmuxConfig,
+}
+
+/// User-owned autonomous-worker session policy. All fields are opt-in; an
+/// absent section preserves foreground placement and immediate cleanup.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TmuxConfig {
+    /// Default named session for autonomous workers when neither
+    /// `--tmux-session` nor `--headless` is supplied.
+    #[serde(default)]
+    pub default_session: Option<String>,
+    /// Preserve `default_session` and retain inert completed displays.
+    #[serde(default)]
+    pub persistent: bool,
+    /// Human duration such as `24h`; required when persistent.
+    #[serde(default)]
+    pub completed_window_ttl: Option<String>,
+    /// Positive retained-display bound; required when persistent.
+    #[serde(default)]
+    pub completed_window_max: Option<u32>,
+}
+
+impl TmuxConfig {
+    pub fn retention_policy(
+        &self,
+    ) -> Result<Option<taskfleet_core::TmuxRetentionPolicy>, CliError> {
+        if !self.persistent {
+            if self.completed_window_ttl.is_some() || self.completed_window_max.is_some() {
+                return Err(CliError::user(
+                    "invalid_config",
+                    "tmux completed-window limits require tmux.persistent = true",
+                ));
+            }
+            return Ok(None);
+        }
+        let session = self
+            .default_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        if session.is_none() {
+            return Err(CliError::user(
+                "invalid_config",
+                "tmux.persistent requires a non-empty tmux.default_session",
+            ));
+        }
+        let raw_ttl = self.completed_window_ttl.as_deref().ok_or_else(|| {
+            CliError::user(
+                "invalid_config",
+                "tmux.persistent requires tmux.completed_window_ttl",
+            )
+        })?;
+        let ttl = humantime::parse_duration(raw_ttl).map_err(|e| {
+            CliError::user(
+                "invalid_config",
+                format!("invalid tmux.completed_window_ttl {raw_ttl:?}: {e}"),
+            )
+        })?;
+        const MAX_RETENTION_SECS: u64 = 365 * 24 * 60 * 60;
+        let ttl_secs = ttl.as_secs();
+        if ttl_secs == 0 || ttl_secs > MAX_RETENTION_SECS {
+            return Err(CliError::user(
+                "invalid_config",
+                "tmux.completed_window_ttl must be between 1s and 365d",
+            ));
+        }
+        let max = self
+            .completed_window_max
+            .filter(|value| *value > 0)
+            .ok_or_else(|| {
+                CliError::user(
+                    "invalid_config",
+                    "tmux.completed_window_max must be greater than zero",
+                )
+            })?;
+        Ok(Some(taskfleet_core::TmuxRetentionPolicy {
+            persistent: true,
+            completed_window_ttl_secs: ttl_secs,
+            completed_window_max: max,
+        }))
+    }
 }
 
 /// User/repository profile-name defaults. This section contains names only;
@@ -271,6 +355,10 @@ impl Config {
             validate_profile_reference(path, Some(value))?;
         }
         validate_profiles(path, &config.profiles)?;
+        if let Some(session) = config.tmux.default_session.as_deref() {
+            validate_tmux_session_name(session)?;
+        }
+        config.tmux.retention_policy()?;
         Ok(config)
     }
 }
@@ -377,6 +465,25 @@ fn validate_kind_keys(
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_tmux_session_name(name: &str) -> Result<(), CliError> {
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if valid {
+        Ok(())
+    } else {
+        Err(CliError::user(
+            "invalid_tmux_session",
+            format!(
+                "invalid tmux session {name:?}; expected 1..=64 ASCII letters, digits, '-' or '_'"
+            ),
+        )
+        .with_invalid_value(name))
+    }
 }
 
 fn valid_profile_name(name: &str) -> bool {
@@ -515,6 +622,40 @@ mod tests {
         let p = dir.path().join("config.toml");
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    #[test]
+    fn persistent_tmux_policy_is_strict_and_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[tmux]
+default_session = "agents"
+persistent = true
+completed_window_ttl = "24h"
+completed_window_max = 20
+"#,
+        )
+        .unwrap();
+        let config = Config::load_from(&path).unwrap();
+        let policy = config.tmux.retention_policy().unwrap().unwrap();
+        assert_eq!(config.tmux.default_session.as_deref(), Some("agents"));
+        assert_eq!(policy.completed_window_ttl_secs, 86_400);
+        assert_eq!(policy.completed_window_max, 20);
+
+        for invalid in [
+            "[tmux]\ndefault_session='agents'\npersistent=true\ncompleted_window_ttl='0s'\ncompleted_window_max=20\n",
+            "[tmux]\ndefault_session='agents'\npersistent=true\ncompleted_window_ttl='24h'\ncompleted_window_max=0\n",
+            "[tmux]\ndefault_session='bad:name'\npersistent=true\ncompleted_window_ttl='24h'\ncompleted_window_max=20\n",
+            "[tmux]\ncompleted_window_ttl='24h'\n",
+            "[tmux]\ndefault_session='agents'\npersistent=true\ncompleted_window_ttl='500ms'\ncompleted_window_max=20\n",
+            "[tmux]\ndefault_session='agents'\npersistent=true\ncompleted_window_ttl='366d'\ncompleted_window_max=20\n",
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(Config::load_from(&path).is_err(), "accepted {invalid}");
+        }
     }
 
     #[test]

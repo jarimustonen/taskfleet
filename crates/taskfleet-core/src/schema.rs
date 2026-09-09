@@ -660,6 +660,12 @@ pub struct Manifest {
     /// keeps a manifest written before this field existed readable.
     #[serde(default)]
     pub managed_tmux_session: Option<String>,
+    /// Create-time terminal-window retention policy. `None` preserves the
+    /// historical immediate-window/session cleanup behavior. The policy is
+    /// recorded so supervisors and timer maintenance never reinterpret a run
+    /// through later config drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_retention: Option<Box<TmuxRetentionPolicy>>,
     /// Completion-notification command registered at `run create --notify`,
     /// if any. When the run reaches a terminal state (`done | failed |
     /// cancelled`) the supervisor runs this command (at-least-once, deduped on a
@@ -764,6 +770,48 @@ pub struct WorkerEvidence {
     pub error: Option<String>,
 }
 
+/// Opt-in policy recorded on a run placed in a persistent tmux session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TmuxRetentionPolicy {
+    /// Keep the selected session after the last worker completes.
+    pub persistent: bool,
+    /// Maximum age of a completed inert display.
+    pub completed_window_ttl_secs: u64,
+    /// Maximum completed inert displays retained in this session.
+    pub completed_window_max: u32,
+}
+
+/// Durable identity of one inert completed-worker display.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainedDisplay {
+    /// Worker attempt represented by this display.
+    pub attempt: u32,
+    /// Exact socket path observed at worker spawn.
+    pub socket: String,
+    /// Exact session name observed at worker spawn.
+    pub session: String,
+    /// Window created for the inert display.
+    pub window_id: String,
+    /// Its sole dead pane.
+    pub pane_id: String,
+    /// tmux server PID observed at worker spawn and retention creation.
+    pub server_pid: u32,
+    /// OS process start identity for `server_pid`, guarding PID/socket reuse.
+    pub server_pid_start_secs: u64,
+    /// Runtime-owned server marker observed at spawn (empty when unset).
+    pub server_marker: String,
+    /// Exact Taskfleet ownership marker stored as a tmux window option.
+    pub ownership_marker: String,
+    /// Time the terminal display became durable.
+    pub retained_at: DateTime<Utc>,
+    /// Policy-derived expiry time.
+    pub expires_at: DateTime<Utc>,
+    /// Set after maintenance removed the exact owned display. Durable archives
+    /// and run events are intentionally untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired_at: Option<DateTime<Utc>>,
+}
+
 /// `nodes/<node-id>.json` (design.md §1.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -813,11 +861,18 @@ pub struct Node {
     /// [`Node::tmux_window`]. New spawns always populate this when create.sh
     /// returns it.
     #[serde(default)]
-    pub tmux_identity: Option<TmuxIdentity>,
+    pub tmux_identity: Option<Box<TmuxIdentity>>,
     /// Native worker evidence, when this attempt uses Pi. Initialized before
     /// publication and advanced only by locked evidence events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<WorkerEvidence>,
+    /// Inert completed-window identity, when this run opted into retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_display: Option<Box<RetainedDisplay>>,
+    /// Permanent reason why a configured terminal display could not exist
+    /// (for example the recorded tmux server generation was lost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_unavailable: Option<String>,
     /// PID of the running agent process, if live.
     pub agent_pid: Option<i32>,
     /// Start time of the agent process, used to detect PID reuse.
@@ -1072,6 +1127,16 @@ pub struct TmuxIdentity {
     /// [`TmuxIdentity::capture_target`] over reading this directly.
     #[serde(default)]
     pub pane_id: Option<String>,
+    /// tmux server PID and its OS start identity at spawn. New persistent
+    /// sessions require both; legacy nodes deserialize them as absent.
+    #[serde(default)]
+    pub server_pid: Option<u32>,
+    /// Unix-second process start identity for the recorded tmux server PID.
+    #[serde(default)]
+    pub server_pid_start_secs: Option<u64>,
+    /// Runtime-owned server marker (for example Homebase's owner marker).
+    #[serde(default)]
+    pub server_marker: Option<String>,
 }
 
 impl TmuxIdentity {
@@ -1267,6 +1332,9 @@ mod tests {
             session: "taskfleet".into(),
             window_id: "@42".into(),
             pane_id: Some("%7".into()),
+            server_pid: None,
+            server_pid_start_secs: None,
+            server_marker: None,
         };
         assert_eq!(with_pane.capture_target(), "%7");
 

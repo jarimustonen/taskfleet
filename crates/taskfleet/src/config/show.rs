@@ -91,6 +91,7 @@ struct RawHarness {
     per_kind: BTreeMap<String, toml::Value>,
     unknown: BTreeMap<String, toml::Value>,
     section_error: Option<(String, String)>,
+    tmux: Option<toml::Value>,
 }
 
 impl ConfigLayer {
@@ -119,6 +120,31 @@ impl ConfigLayer {
 }
 
 impl ConfigKey {
+    fn raw(
+        key: impl Into<String>,
+        value: String,
+        source: &'static str,
+        valid: bool,
+        validation_error: Option<String>,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            effective_value: value.clone(),
+            effective_source: source,
+            valid,
+            validation_error: validation_error.clone(),
+            secret: false,
+            layers: vec![ConfigLayer {
+                value,
+                source,
+                origin_key: (source == "file").then(|| "tmux".into()),
+                valid,
+                validation_error,
+                active: true,
+            }],
+        }
+    }
+
     fn from_layers(key: impl Into<String>, mut layers: Vec<ConfigLayer>) -> Self {
         let effective = layers
             .first_mut()
@@ -171,6 +197,8 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
             ),
         ));
     }
+
+    append_tmux_keys(raw.tmux.as_ref(), &mut keys);
 
     // Parseable but schema-invalid entries are inspection data, not fatal
     // errors. Keep them outside `keys`, whose logical key identifiers stay
@@ -277,6 +305,75 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
         }
     }
     Ok(())
+}
+
+fn append_tmux_keys(raw: Option<&toml::Value>, keys: &mut Vec<ConfigKey>) {
+    let parsed = raw
+        .cloned()
+        .map(toml::Value::try_into::<crate::config::TmuxConfig>)
+        .transpose();
+    match parsed {
+        Ok(config) => {
+            let config = config.unwrap_or_default();
+            let policy_error = config.retention_policy().err().map(|error| error.message);
+            let session_error = config
+                .default_session
+                .as_deref()
+                .and_then(|value| crate::config::validate_tmux_session_name(value).err())
+                .map(|error| error.message)
+                .or_else(|| policy_error.clone());
+            let source = if raw.is_some() { "file" } else { "default" };
+            keys.push(ConfigKey::raw(
+                "tmux.default_session",
+                config.default_session.unwrap_or_else(|| "<unset>".into()),
+                source,
+                session_error.is_none(),
+                session_error,
+            ));
+            keys.push(ConfigKey::raw(
+                "tmux.persistent",
+                config.persistent.to_string(),
+                source,
+                policy_error.is_none(),
+                policy_error.clone(),
+            ));
+            keys.push(ConfigKey::raw(
+                "tmux.completed_window_ttl",
+                config
+                    .completed_window_ttl
+                    .unwrap_or_else(|| "<unset>".into()),
+                source,
+                policy_error.is_none(),
+                policy_error.clone(),
+            ));
+            keys.push(ConfigKey::raw(
+                "tmux.completed_window_max",
+                config
+                    .completed_window_max
+                    .map_or_else(|| "<unset>".into(), |value| value.to_string()),
+                source,
+                policy_error.is_none(),
+                policy_error,
+            ));
+        }
+        Err(error) => {
+            let detail = format!("invalid [tmux] section: {error}");
+            for key in [
+                "default_session",
+                "persistent",
+                "completed_window_ttl",
+                "completed_window_max",
+            ] {
+                keys.push(ConfigKey::raw(
+                    format!("tmux.{key}"),
+                    raw.map_or_else(|| "<unset>".into(), raw_value),
+                    "file",
+                    false,
+                    Some(detail.clone()),
+                ));
+            }
+        }
+    }
 }
 
 fn harness_layers(
@@ -416,8 +513,12 @@ fn load_raw_harness(path: &Path) -> Result<RawHarness, CliError> {
             format!("config file {} is not valid TOML: {error}", path.display()),
         )
     })?;
+    let tmux = document.get("tmux").cloned();
     let Some(harness) = document.get("harness") else {
-        return Ok(RawHarness::default());
+        return Ok(RawHarness {
+            tmux,
+            ..RawHarness::default()
+        });
     };
     let Some(table) = harness.as_table() else {
         return Ok(RawHarness {
@@ -425,11 +526,15 @@ fn load_raw_harness(path: &Path) -> Result<RawHarness, CliError> {
                 raw_value(harness),
                 format!("expected [harness] table, found {}", harness.type_str()),
             )),
+            tmux,
             ..RawHarness::default()
         });
     };
 
-    let mut raw = RawHarness::default();
+    let mut raw = RawHarness {
+        tmux,
+        ..RawHarness::default()
+    };
     for (name, value) in table {
         match name.as_str() {
             "default" => raw.default = Some(value.clone()),

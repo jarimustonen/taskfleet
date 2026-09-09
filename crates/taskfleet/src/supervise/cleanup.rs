@@ -267,10 +267,21 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
     let Ok(nodes) = list_nodes(paths) else {
         return false;
     };
+    let persistent = read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .and_then(|manifest| manifest.tmux_retention)
+        .is_some_and(|policy| policy.persistent);
     nodes.iter().all(|node| {
-        node.evidence
+        let evidence_complete = node
+            .evidence
             .as_ref()
-            .is_none_or(|evidence| evidence.status == taskfleet_core::EvidenceStatus::Complete)
+            .is_none_or(|evidence| evidence.status == taskfleet_core::EvidenceStatus::Complete);
+        let display_settled = !persistent
+            || node.evidence.is_none()
+            || node.retained_display.is_some()
+            || node.retention_unavailable.is_some();
+        evidence_complete && display_settled
     })
 }
 
@@ -309,6 +320,16 @@ pub fn cleanup_managed_session(paths: &RunPaths) {
 /// [`cleanup_managed_session`] with the tmux binary injected, so tests can drive
 /// the teardown against a stub without racing on the `TMUX_BIN` env var.
 fn cleanup_managed_session_with(paths: &RunPaths, tmux: &str) {
+    if read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .and_then(|manifest| manifest.tmux_retention)
+        .is_some_and(|policy| policy.persistent)
+    {
+        // The user explicitly owns this persistent session. Never apply the
+        // synthetic-shell teardown heuristic to it, even when it is empty.
+        return;
+    }
     let Some(session) = managed_session(paths) else {
         // Foreground run (no managed session) — never a teardown candidate.
         return;
@@ -460,7 +481,20 @@ pub(crate) fn cleanup_superseded_node(paths: &RunPaths, n: &Node, tmux: &str, gi
 }
 
 fn cleanup_node_after_evidence(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
-    close_tmux_window(paths, n, tmux);
+    let persistent = read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .and_then(|manifest| manifest.tmux_retention)
+        .is_some_and(|policy| policy.persistent);
+    if persistent {
+        match crate::session::retain_completed_display(paths, n, tmux) {
+            crate::session::Retention::Retained | crate::session::Retention::Unavailable => {}
+            crate::session::Retention::NotApplicable => close_tmux_window(paths, n, tmux),
+            crate::session::Retention::Retry => return,
+        }
+    } else {
+        close_tmux_window(paths, n, tmux);
+    }
 
     let Some(worktree_path) = n.worktree_path.as_deref() else {
         // Nothing materialized for this node (e.g. a driver node) — only the

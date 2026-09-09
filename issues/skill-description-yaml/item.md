@@ -2,7 +2,7 @@
 created: 2026-09-09
 updated: 2026-09-09
 type: bug
-status: open
+status: testing
 priority: high
 lane: skills-format
 collision: [taskfleet-skills]

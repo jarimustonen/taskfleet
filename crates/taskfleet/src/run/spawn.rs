@@ -29,6 +29,9 @@ pub struct SpawnOutcome {
     pub tmux_session: Option<String>,
     pub tmux_window_id: Option<String>,
     pub tmux_pane_id: Option<String>,
+    pub tmux_server_pid: Option<u32>,
+    pub tmux_server_pid_start_secs: Option<u64>,
+    pub tmux_server_marker: Option<String>,
     pub pi_session_id: Option<String>,
     pub pi_session_path: Option<String>,
     pub pi_session_cwd: Option<String>,
@@ -62,6 +65,8 @@ pub struct SpawnRequest<'a> {
     /// Expected private handshake for `agent`. Native materialization refuses
     /// an unbound launcher.
     pub launcher: Option<&'a AgentLauncher>,
+    /// Persistent retention requires a reboot-safe tmux server identity.
+    pub require_server_identity: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -536,6 +541,9 @@ fn test_script_materialize(req: &SpawnRequest<'_>) -> Option<Result<SpawnOutcome
                 tmux_session: o.tmux_session,
                 tmux_window_id: o.tmux_window_id,
                 tmux_pane_id: o.tmux_pane_id,
+                tmux_server_pid: None,
+                tmux_server_pid_start_secs: None,
+                tmux_server_marker: None,
                 pi_session_id: None,
                 pi_session_path: None,
                 pi_session_cwd: None,
@@ -641,6 +649,16 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     // `window_prefix` configuration. Record what it actually created; the
     // stable ids below, not a Taskfleet-generated name, own later operations.
     let window = query_tmux_window(&pane, &session, cwd)?;
+    if req.require_server_identity
+        && (window.identity.socket.as_deref().is_none_or(str::is_empty)
+            || window.server_pid.is_none()
+            || window.server_pid_start_secs.is_none())
+    {
+        return Err(CliError::system(
+            "tmux_server_identity_unavailable",
+            "persistent tmux retention requires an exact socket, server PID, and PID start identity",
+        ));
+    }
 
     let dest = Path::new(&worktree)
         .join("history/.worktree")
@@ -665,6 +683,9 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         tmux_session: Some(session),
         tmux_window_id: Some(window.identity.window_id),
         tmux_pane_id: Some(pane),
+        tmux_server_pid: window.server_pid,
+        tmux_server_pid_start_secs: window.server_pid_start_secs,
+        tmux_server_marker: window.server_marker,
         pi_session_id: handshake.pi_session_id,
         pi_session_path: handshake.pi_session_path,
         pi_session_cwd: handshake.pi_session_cwd,
@@ -792,6 +813,9 @@ fn ensure_session(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> 
 struct TmuxWindow {
     identity: TmuxIdentity,
     name: String,
+    server_pid: Option<u32>,
+    server_pid_start_secs: Option<u64>,
+    server_marker: Option<String>,
 }
 
 fn query_tmux_window(
@@ -806,31 +830,40 @@ fn query_tmux_window(
             "-p".into(),
             "-t".into(),
             pane.into(),
-            "#{socket_path}\t#{session_name}\t#{window_id}\t#{window_name}".into(),
+            "#{socket_path}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pid}\t#{HOMEBASE_TMUX_OWNER}".into(),
         ],
         cwd,
         "tmux_identity_unavailable",
     )?;
     let text = text_stdout(&out, "tmux_identity_unavailable")?.trim_end_matches(['\r', '\n']);
-    let mut fields = text.splitn(4, '\t');
+    let mut fields = text.splitn(6, '\t');
     let socket = fields.next().unwrap_or("");
     let session = fields.next().unwrap_or("");
     let window_id = fields.next().unwrap_or("");
     let name = fields.next().unwrap_or("");
+    let server_pid = fields.next().unwrap_or("").parse::<u32>().ok();
+    let server_marker = fields.next().unwrap_or("");
     if session != expected_session || !window_id.starts_with('@') || name.is_empty() {
         return Err(CliError::system(
             "tmux_identity_unavailable",
             "tmux returned a wrong-session or malformed worker identity/name",
         ));
     }
+    let server_pid_start_secs = server_pid.and_then(crate::supervise::watchdog::pid_start_time);
     Ok(TmuxWindow {
         identity: TmuxIdentity {
             socket: (!socket.is_empty()).then(|| socket.into()),
             session: session.into(),
             window_id: window_id.into(),
             pane_id: Some(pane.into()),
+            server_pid,
+            server_pid_start_secs,
+            server_marker: (!server_marker.is_empty()).then(|| server_marker.into()),
         },
         name: name.into(),
+        server_pid,
+        server_pid_start_secs,
+        server_marker: (!server_marker.is_empty()).then(|| server_marker.into()),
     })
 }
 

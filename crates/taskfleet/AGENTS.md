@@ -69,6 +69,53 @@ For an explicit real-pi operator check, use `scripts/native-spawn-smoke.sh` afte
 
 `tests/e2e_spinoff.rs` drives one full autonomous-spinoff round-trip on every run — native `run create --kind spinoff --headless` (real generated launcher, durable PID handshake, detached supervisor) → live stub candidate → `run merge` → supervisor rolls the run up to `done`, tears down, and exits. It asserts the canonical event sequence (`run.created`, `node.created`, `supervisor.started`, `node.report`, `run.status`, `supervisor.exited`) and terminal manifest.
 
+## Persistent worker-session retention
+
+`[tmux]` in user `config.toml` may opt autonomous workers into one named
+`default_session` plus `persistent = true`, `completed_window_ttl`, and
+`completed_window_max`. No section means historical foreground placement and
+immediate cleanup. Explicit `--tmux-session` and `--headless` placement win;
+interactive runs remain foreground by default. The selected name is a tmux
+SESSION on the invocation's actual socket, never a socket selector.
+
+The create-time policy and exact socket/server-PID/start-marker/window/pane
+identity are recorded. `supervise::evidence` completes first, then
+`session::retain_completed_display` removes only the owned worker pane (leaving
+unrelated split panes), creates one dead `remain-on-exit` display in the
+surviving source repo, and records its option marker. Names show repo + short run
++ purpose but confer no authority. `taskfleet session maintain --output json`
+scans canonical state without `$TMUX` or repo cwd, rechecks each run under its
+shared lock and every exact tmux identity/marker, and applies TTL/count bounds.
+It never starts a missing server and never removes archives or Git-preserved
+work. Persistent sessions bypass `cleanup_managed_session`'s legacy synthetic-
+shell heuristic. Across recorded policy generations in one exact session, the
+strictest (lowest) completed-window maximum wins. Maintenance removes only the
+exact owned pane; if it is the session's final pane, it remains as the inert
+session anchor rather than destroying the persistent session.
+
+A Homebase-managed systemd user timer should run every five minutes with an
+explicit environment and a hard service timeout, for example:
+
+```ini
+[Service]
+Type=oneshot
+Environment=HOME=/Users/jari
+Environment=TASKFLEET_HOME=/Users/jari/.taskfleet
+Environment=PATH=/opt/homebrew/bin:/usr/bin:/bin
+ExecStart=/opt/homebrew/bin/taskfleet session maintain --timeout-secs 30 --output jsonl
+TimeoutStartSec=40
+UMask=0077
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+```
+
+Homebase owns the actual unit installation and tmux-server ordering. The unit
+must not use `Requires=`/`PartOf=` against the shared server or start a tmux
+server when its recorded generation is absent.
+
 ## Durable native Pi worker evidence
 
 Every Pi launcher owns session selection. It assigns a UUID, creates the exact

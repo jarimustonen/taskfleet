@@ -100,6 +100,11 @@ enum Command {
         #[command(subcommand)]
         action: crate::config::ConfigAction,
     },
+    /// Maintain persistent autonomous-worker tmux sessions.
+    Session {
+        #[command(subcommand)]
+        action: crate::session::SessionAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -367,6 +372,7 @@ pub(crate) fn run() -> ExitCode {
         // answer), which does not map onto the shared `Result` path below.
         Command::Doctor(args) => return crate::doctor::run(&args, output, &logging_warnings),
         Command::Config { action } => crate::config::dispatch(action, output, &logging_warnings),
+        Command::Session { action } => crate::session::dispatch(action, output, &logging_warnings),
     };
 
     match result {
@@ -409,7 +415,7 @@ fn command_writes_state(command: &Command) -> bool {
             crate::node::NodeAction::Report { dry_run, .. } => !dry_run,
             crate::node::NodeAction::List { .. } | crate::node::NodeAction::Show { .. } => false,
         },
-        Command::Supervise(_) | Command::RunWorker(_) => true,
+        Command::Supervise(_) | Command::RunWorker(_) | Command::Session { .. } => true,
         Command::Version | Command::Config { .. } | Command::WorkerHandshake(_) => false,
         Command::Doctor(args) => args.fix && !args.dry_run,
     }

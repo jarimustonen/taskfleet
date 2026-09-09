@@ -2,11 +2,16 @@
 created: 2026-09-08
 updated: 2026-09-09
 type: feature
-status: testing
+status: done
 priority: high
 lane: supervisor
 collision: [taskfleet-supervisor]
 blocked_by: ['@durable-worker-evidence']
+closed: 2026-09-09
+closed_by: pi
+commits:
+- hash: 0fed73412567e50b8851654ad8310abe9cfa4ccb
+  summary: retain bounded autonomous worker displays
 ---
 
 # Bound completed windows in persistent agent sessions
@@ -35,3 +40,9 @@ Add explicit opt-in shared-session persistence and age/count retention through e
 ## Validation
 
 scripts/validate-local-release.sh; private-tmux mixed-ownership and expiry tests; required /llm-review and /assess-findings. No worker release/install or host changes. Depends on durable-worker-evidence so cleanup has a proven archive contract.
+
+## Resolution
+
+### 2026-09-09T05:43:52Z · @pi
+
+Implemented opt-in persistent autonomous tmux sessions, complete pre-retention archival, identity-safe retained displays, deterministic TTL/count bounds, and bounded repository-independent maintenance. Multi-model review findings were assessed and the confirmed recovery and fail-closed gaps were fixed.

@@ -9,7 +9,7 @@ provenance: agent:homebase-taskfleet-cutover
 source_ref: agent:homebase-taskfleet-cutover/reporter:jari/id:taskfleet:01m25aak6vsxwcfjppj44ht618/native-intake-lifecycle-gap
 ---
 
-# Native one-shot profile can race publication and remain non-terminal af…
+# Add a native bounded one-shot worker contract
 
 ## Description
 

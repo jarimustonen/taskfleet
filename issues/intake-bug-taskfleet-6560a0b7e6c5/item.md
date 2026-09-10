@@ -3,10 +3,13 @@ created: 2026-09-10
 updated: 2026-09-10
 type: bug
 reporter: jari
-status: untriaged
+status: wontfix
 priority: normal
 provenance: agent:homebase-taskfleet-cutover
 source_ref: agent:homebase-taskfleet-cutover/reporter:jari/id:taskfleet:01m25aak6vsxwcfjppj44ht618/native-intake-lifecycle-gap
+closed: 2026-09-10
+disposition_note: The observed behavior is Taskfleet’s intentional no-false-success contract. The one-shot completion adapter and publication wait are consumer-specific Intakectl lifecycle responsibilities; implementation is being moved to Intakectl instead of changing generic Taskfleet success semantics.
+disposition_reason: out-of-scope
 ---
 
 # Add a native bounded one-shot worker contract
@@ -29,3 +32,9 @@ Expected: expose a native primitive/profile contract that preserves Taskfleet's 
 This filing is also the bounded real intake canary for Homebase issue `taskfleet-launcher-cutover-order`: it must be deterministically filed and landed first, acknowledged with the real slug, then analyzed through the existing quarantine/pinned-base gate. It contains no secrets. Do not implement or disposition it as part of the canary analysis.
 
 Originating run: `01m25aak6vsxwcfjppj44ht618` (kind `spinoff`).
+
+## Comments
+
+### 2026-09-10T11:24:46Z · @intake
+
+Rejected (out-of-scope): The observed behavior is Taskfleet’s intentional no-false-success contract. The one-shot completion adapter and publication wait are consumer-specific Intakectl lifecycle responsibilities; implementation is being moved to Intakectl instead of changing generic Taskfleet success semantics.

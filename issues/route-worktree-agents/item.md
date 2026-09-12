@@ -37,3 +37,9 @@ A caller may explicitly escalate a particular issue when its risk warrants it. M
 - `crates/taskfleet/skills/worktree-technical-decision/SKILL.template.md`: decision default
 
 Current `~/.taskfleet/config.toml` has only `capable`, launching bare `pi`; runs therefore inherit ambient Pi model selection. Do not change installed Taskfleet or user configuration as part of this issue. Design the configuration contract and backward-compatible behavior first.
+
+## Comments
+
+### 2026-09-12T18:31:28Z · @pi
+
+Observation from aggountant VAT work (2026-09-12): implementation briefs accumulated a second four-lens Fable panel after the ADR decision had already examined the same architecture/compliance/simplicity concerns. This is duplicate cost, not stronger evidence. Model routing should ship with a proportionate validation policy: decisions rely first on primary evidence and only use a panel when genuine trade-offs need it; a bounded implementation gets at most one focused diff review covering all relevant concerns; deterministic tests, source-grounded scenarios, local-bundle runs and user-environment behavioural evidence are the primary correctness evidence. Multiple review rounds/panels require an explicit risk rationale, not a workflow default.

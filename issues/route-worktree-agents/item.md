@@ -2,7 +2,7 @@
 created: 2026-09-12
 updated: 2026-09-14
 type: improvement
-status: open
+status: in-progress
 priority: normal
 lane: agent-routing
 ---

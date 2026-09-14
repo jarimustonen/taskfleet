@@ -404,9 +404,10 @@ fn failed_merge_surfaces_error_and_writes_no_report() {
 fn dry_run_resolves_without_side_effects() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
     let run_id = create_run(&home, "spinoff", "merge-dry");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "should never run");
     let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
@@ -418,7 +419,7 @@ fn dry_run_resolves_without_side_effects() {
         "--dry-run",
     ]));
     assert_eq!(v["data"]["dry_run"], true);
-    assert_eq!(v["data"]["branch"], "wt/test-x");
+    assert_eq!(v["data"]["branch"], "wt/foo");
 
     // The backend was never invoked and no report was written.
     assert!(

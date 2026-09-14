@@ -209,8 +209,23 @@ impl Git {
     /// reported — they are disposable by policy, exactly as git's own non-force
     /// `worktree remove` treats them.
     pub fn worktree_status_clean(&self, dir: &str) -> Option<bool> {
-        match self
-            .at(dir)
+        self.worktree_status_clean_impl(dir, false)
+    }
+
+    /// The same complete cleanliness observation as [`Self::worktree_status_clean`],
+    /// with Git's optional locks disabled. This is the dry-run-safe form: `git
+    /// status` may otherwise refresh and rewrite the index as an optimization even
+    /// though the caller requested a read-only preview.
+    pub fn worktree_status_clean_read_only(&self, dir: &str) -> Option<bool> {
+        self.worktree_status_clean_impl(dir, true)
+    }
+
+    fn worktree_status_clean_impl(&self, dir: &str, read_only: bool) -> Option<bool> {
+        let mut cmd = self.at(dir);
+        if read_only {
+            cmd.env("GIT_OPTIONAL_LOCKS", "0");
+        }
+        match cmd
             .args(["status", "--porcelain", "--untracked-files=all"])
             .stderr(Stdio::null())
             .output()

@@ -98,6 +98,48 @@ fn fresh_run_id() -> String {
     taskfleet_core::new_run_id()
 }
 
+fn git(cwd: &Path, args: &[&str]) -> Vec<u8> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .expect("spawn git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// Create a real repository with `main` as the target worktree and `wt/dry` as
+/// the worker. Dry-run target checks intentionally exercise only declared Git,
+/// not ambient tmux/workmux/taskfleet installations.
+fn repo_with_worker(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let repo = root.join("repo");
+    let worker = root.join("worker");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@example.invalid"]);
+    git(&repo, &["config", "user.name", "Taskfleet Test"]);
+    std::fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+    git(&repo, &["add", "tracked.txt"]);
+    git(&repo, &["commit", "-q", "-m", "base"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt/dry",
+            worker.to_str().unwrap(),
+        ],
+    );
+    (repo, worker)
+}
+
 /// Run `run salvage` and return the parsed error envelope (asserting failure).
 fn salvage_err(cmd: &mut Command) -> Value {
     let out = cmd.output().expect("spawn");
@@ -116,15 +158,11 @@ fn salvage_err(cmd: &mut Command) -> Value {
 fn attention_required_run_is_finished() {
     let home = TempDir::new().unwrap();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = repo_with_worker(gitroot.path());
     let run_id = fresh_run_id();
     let paths = seed_run(home.path(), &run_id);
-    add_worker_node(
-        &paths,
-        Some(worktree.path()),
-        Some("wt/salvage-x"),
-        json!({}),
-    );
+    add_worker_node(&paths, Some(&worktree), Some("wt/dry"), json!({}));
     record_clean_exit(&paths);
 
     let merge_sh = fake_merge_sh(scratch.path(), 0);
@@ -144,7 +182,7 @@ fn attention_required_run_is_finished() {
     assert_eq!(v["data"]["worker_state"], "exited");
     assert_eq!(v["data"]["fenced"], false);
     assert_eq!(v["data"]["merge"]["merged"], true);
-    assert_eq!(v["data"]["merge"]["branch"], "wt/salvage-x");
+    assert_eq!(v["data"]["merge"]["branch"], "wt/dry");
 
     // Exactly one terminal report, stamped explicit-merge.
     let reports: Vec<Value> = read_events(&paths)
@@ -161,13 +199,20 @@ fn attention_required_run_is_finished() {
 #[test]
 fn dry_run_previews_without_mutating() {
     let home = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = repo_with_worker(gitroot.path());
     let run_id = fresh_run_id();
     let paths = seed_run(home.path(), &run_id);
-    add_worker_node(&paths, Some(worktree.path()), Some("wt/dry"), json!({}));
+    add_worker_node(&paths, Some(&worktree), Some("wt/dry"), json!({}));
     record_clean_exit(&paths);
 
-    let before = read_events(&paths).len();
+    let events_before = std::fs::read(paths.events()).unwrap();
+    let refs_before = git(&repo, &["show-ref"]);
+    let target_status_before = git(&repo, &["status", "--porcelain", "--untracked-files=all"]);
+    let worker_status_before = git(
+        &worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
     let out = bin(&home)
         .args([
             "--output",
@@ -189,7 +234,52 @@ fn dry_run_previews_without_mutating() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["data"]["dry_run"], true);
     assert_eq!(v["data"]["merge"]["merged"], false);
-    assert_eq!(read_events(&paths).len(), before, "dry-run appends nothing");
+    assert_eq!(std::fs::read(paths.events()).unwrap(), events_before);
+    assert_eq!(git(&repo, &["show-ref"]), refs_before);
+    assert_eq!(
+        git(&repo, &["status", "--porcelain", "--untracked-files=all"]),
+        target_status_before
+    );
+    assert_eq!(
+        git(
+            &worktree,
+            &["status", "--porcelain", "--untracked-files=all"],
+        ),
+        worker_status_before
+    );
+}
+
+/// Regression: dry-run auto-detects main and rejects unrelated uncommitted work
+/// in that target with the same stable error class/message as the real backend,
+/// without changing refs, worktree contents, or run events.
+#[test]
+fn dry_run_refuses_dirty_auto_detected_target_without_mutating() {
+    let home = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = repo_with_worker(gitroot.path());
+    let run_id = fresh_run_id();
+    let paths = seed_run(home.path(), &run_id);
+    add_worker_node(&paths, Some(&worktree), Some("wt/dry"), json!({}));
+    record_clean_exit(&paths);
+    std::fs::write(repo.join("UNRELATED.txt"), "do not merge over me\n").unwrap();
+
+    let events_before = std::fs::read(paths.events()).unwrap();
+    let refs_before = git(&repo, &["show-ref"]);
+    let target_status_before = git(&repo, &["status", "--porcelain", "--untracked-files=all"]);
+    let v =
+        salvage_err(bin(&home).args(["--output", "json", "run", "salvage", &run_id, "--dry-run"]));
+
+    assert_eq!(v["error"]["code"], "merge_failed");
+    assert_eq!(v["error"]["invalid_value"], "wt/dry");
+    let message = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("Uncommitted changes in target worktree"));
+    assert!(message.contains("Please commit or stash changes in the target before merging"));
+    assert_eq!(std::fs::read(paths.events()).unwrap(), events_before);
+    assert_eq!(git(&repo, &["show-ref"]), refs_before);
+    assert_eq!(
+        git(&repo, &["status", "--porcelain", "--untracked-files=all"]),
+        target_status_before
+    );
 }
 
 /// A run that already merged (`done`) has nothing to salvage — refuse.

@@ -58,6 +58,7 @@ use crate::run::merge_recovery;
 use crate::supervise::cleanup::git_bin;
 
 use crate::error::{CliError, ExitKind};
+use crate::git::repo::Git;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::SupervisorView;
 use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths_from_cli_arg};
@@ -401,6 +402,14 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         .collect();
 
     if args.dry_run {
+        // Preview the same target-worktree safety condition that the real merge
+        // backend enforces after taking its serialization lock. This observer is
+        // deliberately read-only: a dry-run must not create the merge lock or
+        // open a merge transaction. The real backend still repeats the check
+        // inside the lock, because a preview cannot reserve a cleanliness result
+        // against a concurrent writer.
+        validate_dry_run_target(worktree_path, branch, effective_source.as_deref())?;
+
         return Ok(MergeOutcome {
             run_id: run_id.clone(),
             node_id: node_id.as_str().to_string(),
@@ -584,6 +593,76 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         warnings,
         report_advisory_warnings: advisory_warnings,
     })
+}
+
+/// Perform the read-only part of merge target eligibility for `--dry-run`.
+///
+/// Target resolution mirrors merge.sh: an explicit/resolved source names the
+/// checked-out branch, while an absent source auto-detects the first main/master
+/// worktree. The real operation repeats cleanliness under its merge lock; this
+/// preview intentionally does not acquire that mkdir lock because dry-run has a
+/// no-write contract.
+fn validate_dry_run_target(
+    worktree_path: &str,
+    branch: &str,
+    source: Option<&str>,
+) -> Result<(), CliError> {
+    let git = Git::with_bin(git_bin());
+    let registrations = git
+        .worktree_registrations(worktree_path)
+        .ok_or_else(|| merge_failed(branch, "Error: could not inspect registered worktrees"))?;
+
+    let target = if let Some(source) = source {
+        registrations
+            .iter()
+            .find(|row| row.branch.as_deref() == Some(source))
+            .ok_or_else(|| {
+                merge_failed(
+                    branch,
+                    format!(
+                        "Error: target branch '{source}' is not checked out in any worktree\n\
+                         /orchestrate keeps its own worktree alive as the merge parent; ensure it still exists."
+                    ),
+                )
+            })?
+    } else {
+        registrations
+            .iter()
+            .find(|row| matches!(row.branch.as_deref(), Some("main" | "master")))
+            .ok_or_else(|| merge_failed(branch, "Error: Could not find main worktree"))?
+    };
+
+    match git.worktree_status_clean_read_only(&target.path) {
+        Some(true) => Ok(()),
+        Some(false) => Err(merge_failed(
+            branch,
+            format!(
+                "Error: Uncommitted changes in target worktree ({})\n\
+                 Please commit or stash changes in the target before merging",
+                target.path
+            ),
+        )),
+        None => Err(merge_failed(
+            branch,
+            format!(
+                "Error: could not inspect target worktree status ({})",
+                target.path
+            ),
+        )),
+    }
+}
+
+/// Build the stable error shape shared by Rust-side merge eligibility checks and
+/// the merge.sh exit adapter.
+fn merge_failed(branch: &str, detail: impl Into<String>) -> CliError {
+    CliError {
+        kind: ExitKind::User,
+        code: "merge_failed".to_string(),
+        message: format!("merge.sh exited 1 merging {branch}: {}", detail.into()),
+        invalid_value: Some(branch.to_string()),
+        expected: None,
+        details: None,
+    }
 }
 
 /// Guarantee the terminal `node.report` just appended has a live consumer, or
@@ -1123,6 +1202,9 @@ fn run_merge_sh(
         } else {
             "merge_failed"
         };
+        if exit_code == 1 {
+            return Err(merge_failed(branch, detail));
+        }
         return Err(CliError {
             kind: ExitKind::User,
             code: code.to_string(),

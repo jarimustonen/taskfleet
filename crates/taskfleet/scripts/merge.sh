@@ -120,7 +120,7 @@ echo ""
 # `git status` FAILURE (e.g. the worktree vanished) inside `[[ -n "$(...)" ]]`
 # yields an empty string and would be silently read as "clean" — `set -e` does
 # not fire on a substitution nested in a test. Fail loud instead.
-if ! SOURCE_STATUS=$(git status --porcelain); then
+if ! SOURCE_STATUS=$(git status --porcelain --untracked-files=all); then
     echo "Error: could not inspect worktree status" >&2
     exit 1
 fi
@@ -248,7 +248,7 @@ echo ""
 # writer — and must still block (this is the real safety check, replacing the
 # racy pre-lock one that produced the false positive). As above, capture the
 # status so a `git status` failure can't be misread as "clean".
-if ! TARGET_STATUS=$(git -C "$TARGET_PATH" status --porcelain); then
+if ! TARGET_STATUS=$(git -C "$TARGET_PATH" status --porcelain --untracked-files=all); then
     echo "Error: could not inspect target worktree status ($TARGET_PATH)" >&2
     exit 1
 fi

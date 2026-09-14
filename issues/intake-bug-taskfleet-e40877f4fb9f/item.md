@@ -3,7 +3,7 @@ created: 2026-09-12
 updated: 2026-09-14
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:taskfleet-salvage-dry-run-dirty-target-20260911

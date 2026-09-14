@@ -46,6 +46,9 @@ one path and records the call.
    directory in the worktree.
 3. `taskfleet version --output json` to confirm
    `{{CLI_VERSION}}`.
+4. Parse an optional caller `--profile <name>` as an explicit escalation or
+   selection. Strip it from the decision question and preserve it for `run create`;
+   never hard-code a concrete model name or command into the brief.
 
 ### 1. Pin the decision question
 
@@ -68,9 +71,13 @@ If any of the above is missing, ask **once** before spawning.
 
 1. Pinned decision question + constraints.
 2. Options to consider.
-3. **Lens application** — agent runs the equivalent of `/llm-panel`
-   over the question (architect, maintainability, security, plus
-   topic-specific lenses) and synthesizes a recommendation.
+3. **Evidence and lenses** — begin with primary sources, repository evidence,
+   deterministic checks, and source-grounded scenarios. Apply the relevant
+   architecture, maintainability, security, and topic-specific lenses directly.
+   Use a panel only when the decision contains genuine unresolved trade-offs for
+   which independent role perspectives add evidence; record that rationale in the
+   brief. A panel is not a default ritual, and repeated review/panels require a
+   separate concrete risk or unresolved-trade-off rationale.
 4. **ADR structure** — Title / Status (Accepted) / Context / Decision
    / Consequences (including explicitly-rejected alternatives with
    reasons) / Date / Authors. Project-specific ADR templates take
@@ -87,18 +94,38 @@ If any of the above is missing, ask **once** before spawning.
    including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
    `skill install` variant.
 7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
-   into the brief. In particular, an incomplete required lens panel blocks the
-   decision; surviving responses cannot stand in for the requested panel.
+   into the brief. If a panel was explicitly required for a genuine trade-off,
+   an incomplete panel blocks the decision; surviving responses cannot stand in
+   for the requested panel.
 
-### 3. Create the run
+### 3. Select the profile and create the run
+
+Technical decisions, ADRs, and broad/high-risk design select the user-owned
+`capable` profile by default. A caller's explicit `--profile <name>` wins and may
+escalate this choice; do not silently downgrade it. The skill selects only the
+name. `$TASKFLEET_HOME/config.toml` remains the sole owner of executable profile
+definitions, harnesses, concrete models, and command argv.
+
+Preflight the **complete intended create command** with `--dry-run --profile
+<selected>`. For the default, that means `--profile capable`. If an explicit caller
+profile is missing, stop rather than replace it. For the workflow default only, if
+`error.code == "unknown_profile"` and `error.expected` is empty, retry the dry-run
+without `--profile` to preserve a pre-profile installation's legacy behavior. If
+`error.expected` is non-empty but lacks `capable`, stop with the structured error;
+do not pick an arbitrary listed profile. Any other error stops before mutation. Make
+the real call with exactly the selector (or legacy omission) whose dry-run passed.
+Installations that define only `capable` therefore use it directly and predictably.
 
 ```
+# First issue this complete command with --dry-run; remove only --dry-run after it passes.
 taskfleet run create \
   --kind technical-decision \
   --title "<adr-slug>" \
   --task "<self-contained decision brief>" \
+  [--profile <selected-profile>] \
   [--source-branch <branch>] \
-  [--idempotency-key <key>]
+  [--idempotency-key <key>] \
+  [--dry-run]
 ```
 
 Same flag rules as `worktree-spinoff`. Output defaults to
@@ -255,10 +282,11 @@ when the ADR is independently complete and safe; disclose it in the full
 `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never a minimal auto-report.
 
-Requested completeness is a contract. A requested panel with a missing model
-section, truncation marker, malformed output, or missing expected artifact is
-incomplete, not representative consensus. A required incomplete lens panel
-cannot support an Accepted ADR. Retry only when existing workflow policy
+Requested completeness is a contract. When concrete trade-off risk made a panel
+required, a missing model section, truncation marker, malformed output, or missing
+expected artifact is incomplete, not representative consensus. A required incomplete
+lens panel cannot support an Accepted ADR. Do not launch a panel merely to create this
+requirement. Retry only when existing workflow policy
 authorizes a finite bound; if none does, do not retry. Record each attempt and
 its outcome, then take the required or optional path at exhaustion.
 

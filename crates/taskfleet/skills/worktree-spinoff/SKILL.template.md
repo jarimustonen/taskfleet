@@ -46,12 +46,14 @@ below assumes.
 3. Capture the **current branch** with `git rev-parse --abbrev-ref HEAD`
    — it becomes the spinoff's source/merge target by default.
 4. **Parse caller passthrough flags.** A driver (`/stint`, `/fan-out`,
-   `/worktree-bug-analysis`) may prefix the request with `--headless` or
-   `--tmux-session <name>` to request a detached window. Strip these from
-   the task text and forward them verbatim to `run create` in step 3.
+   `/worktree-bug-analysis`) may prefix the request with `--headless`,
+   `--tmux-session <name>`, or `--profile <name>`. Strip these from the task
+   text and forward placement flags verbatim; preserve the profile as the
+   caller's explicit selection. An explicit profile may escalate the default
+   routing below and is never silently downgraded.
    Note: **there is no `--review` flag.** A caller that wants the spinoff
    to review before merging says so in the task brief (the *quality bar*,
-   step 2.4) — a leading `--review` token, if present, is that same intent
+   step 2.5) — a leading `--review` token, if present, is that same intent
    expressed as a flag; fold it into the brief's quality bar, do not pass
    it to `run create` (which would reject it).
 
@@ -94,12 +96,17 @@ self-contained. Include:
    replace, remove, or modify the user's installed taskfleet or bundled
    skills by any mechanism, including any `cargo install`, `cargo uninstall`,
    Homebrew, manual-copy, or `skill install` variant.
-5. **Quality bar** — unless an explicit user, issue, repository, or caller mandate
-   selects a workflow, tell the worker to choose and explain proportionate review after
-   seeing the final diff. Focused review is enough for small, local, well-covered work;
-   security/privacy, destructive, concurrency-sensitive, architectural, broad,
-   hard-to-rollback, or weakly tested work needs stronger independent review. Reuse
-   adequate existing evidence unless the risk surface changed. `run create` prepends
+5. **Quality bar** — primary evidence comes first: relevant primary sources,
+   source-grounded scenarios, deterministic tests, repository green gates, and (when
+   relevant) local-bundle or user-environment behavior. For bounded implementation
+   from an accepted design, allow at most one focused final-diff review by default,
+   covering all relevant concerns in that pass. Mechanical, strongly tested refactors
+   or documentation generally need no model panel. Panels, repeated reviews, or a
+   broader independent review require a concrete security/privacy, destructive,
+   concurrency, architectural, breadth, rollback, weak-test, or unresolved-trade-off
+   rationale recorded in the brief or final report. Reuse adequate existing evidence
+   unless the risk surface changed; model review never substitutes for deterministic
+   validation. `run create` prepends
    generated run context to every worker brief, including custom `--prompt-file` input.
    That context carries the exact run id and the hard issue-filing boundary:
    worker-filed issues use `issuectl intake file`, are born unlaned, and review
@@ -125,24 +132,60 @@ If any of Goal / Context / Done criteria is genuinely missing from the
 user's request, ask the user **once** before spawning. A spinoff that
 misinterprets the task wastes a worktree and a merge cycle.
 
-### 3. Create the run
+### 3. Select the profile and create the run
+
+Choose a named profile from task capability and risk, not from a concrete model name:
+
+- `implementation` — bounded implementation from an accepted design (default for
+  ordinary feature/bug work).
+- `lightweight` — mechanical, strongly tested refactor or documentation.
+- `capable` — broad/high-risk design, uncertain or mixed scope, security/privacy,
+  destructive or concurrency-sensitive behavior, hard rollback, or weak tests.
+
+A caller's explicit `--profile <name>` wins. It may escalate a task; do not silently
+replace it. Otherwise use the matrix above and keep concrete model names and commands
+out of the issue brief.
+
+Before creating state, run the **complete intended command** with `--dry-run` and the
+selected `--profile`. If an explicit caller profile is unknown, stop rather than
+replacing it. For a workflow-recommended profile, on `error.code ==
+"unknown_profile"` only, retry the dry-run with `--profile capable`. If that is also
+`unknown_profile` and its `error.expected`
+list is empty, retry without `--profile` (the pre-profile legacy path). If profiles
+exist but neither the recommended profile nor `capable` exists, stop and surface the
+structured error; never select an arbitrary profile. Any other dry-run error also
+stops. The real call must use exactly the profile selector (or legacy omission) whose
+dry-run passed. Thus an installation defining only `capable` falls back before any
+mutation rather than failing midway.
+
+Driver-mode child creates reject `--dry-run` because parent publication cannot be
+truthfully previewed. When `--parent-run-id` is set, perform the profile preflight with
+both parent flags omitted, then add them back to the real call and use an
+`--idempotency-key` for safe retry. Profile resolution and the other create-time input
+checks run before the child dry-run refusal; the real call remains responsible for
+validating and publishing the parent relationship.
 
 ```
+# First issue this command with --dry-run; remove only --dry-run after it passes.
 # skill-example-ci: skip
 taskfleet run create \
   --kind spinoff \
   --title "<2–4 word title>" \
   --task "<self-contained brief>" \
+  [--profile <resolved-profile>] \
   [--source-branch <branch>] \
   [--headless | --tmux-session <name>] \
   [--notify <cmd>] \
   [--parent-run-id <id> --parent-node-id <id>] \
-  [--idempotency-key <key>]
+  [--idempotency-key <key>] \
+  [--dry-run]
 ```
 
 Flag rules:
 
 - `--kind spinoff` and `--title` are required.
+- `--profile` selects only a user-owned executable profile name. The skill owns the
+  routing policy; `$TASKFLEET_HOME/config.toml` owns its harness and command argv.
 - `--headless` places the agent's tmux window in a detached `headless`
   session instead of the foreground one, so a batch of spinoffs does not
   clutter the user's window list; attach later with `tmux attach -t

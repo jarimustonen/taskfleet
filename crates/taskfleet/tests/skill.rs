@@ -1162,6 +1162,22 @@ fn bundled_workflow_skills_render_the_bounded_stint_contract() {
         generic_spinoff.contains("worker chooses and explains review depth after the final diff")
     );
 
+    let overview = print_skill(&home, "taskfleet-overview");
+    for required in [
+        "Technical decision, ADR, broad or high-risk design | `capable`",
+        "Bounded implementation from an accepted design | `implementation`",
+        "Mechanical, strongly tested refactor or documentation | `lightweight`",
+        "complete intended `run create ... --dry-run --profile <recommended>`",
+        "retry the dry-run with `--profile capable`",
+        "error's `expected` list is empty",
+        "default review ceiling is one focused final-diff review",
+    ] {
+        assert!(
+            overview.contains(required),
+            "taskfleet-overview missing {required:?}"
+        );
+    }
+
     let spinoff = print_skill(&home, "worktree-spinoff");
     for required in [
         "a bug closes as `fixed`; a feature/task/improvement/chore closes as `done`",
@@ -1170,6 +1186,13 @@ fn bundled_workflow_skills_render_the_bounded_stint_contract() {
         "`stamped` or `already_present`",
         "commit that metadata in a separate commit",
         "Do not add a `Fixes-Issue` trailer or close an issue for a freeform run",
+        "`implementation` — bounded implementation from an accepted design",
+        "`lightweight` — mechanical, strongly tested refactor or documentation",
+        "If an explicit caller profile is unknown, stop rather than replacing it",
+        "retry the dry-run with `--profile capable`",
+        "Driver-mode child creates reject `--dry-run`",
+        "perform the profile preflight with both parent flags omitted",
+        "allow at most one focused final-diff review by default",
     ] {
         assert!(
             spinoff.contains(required),
@@ -1187,8 +1210,20 @@ fn bundled_workflow_skills_render_the_bounded_stint_contract() {
     assert!(research.contains("Freeform research has no issue trailer"));
 
     let decision = print_skill(&home, "worktree-technical-decision");
-    assert!(decision.contains("issuectl close <slug> --status done --stamp --as <agent> --json"));
-    assert!(decision.contains("A freeform decision has no issue trailer"));
+    for required in [
+        "issuectl close <slug> --status done --stamp --as <agent> --json",
+        "A freeform decision has no issue trailer",
+        "select the user-owned `capable` profile by default",
+        "Preflight the **complete intended create command** with `--dry-run --profile <selected>`",
+        "Use a panel only when the decision contains genuine unresolved trade-offs",
+        "`error.expected` is non-empty but lacks `capable`, stop with the structured error",
+        "repeated review/panels require a separate concrete risk",
+    ] {
+        assert!(
+            decision.contains(required),
+            "worktree-technical-decision missing {required:?}"
+        );
+    }
 
     let listed = bin(&home)
         .args(["skill", "list", "--output", "json"])

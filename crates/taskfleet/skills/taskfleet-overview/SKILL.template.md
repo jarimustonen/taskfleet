@@ -99,6 +99,50 @@ The flow every workflow follows:
    submits the report in one call. The orchestrator reads these via
    `node show`.
 
+## Worker profile routing
+
+Taskfleet keeps profile ownership in two layers:
+
+- User configuration owns executable definitions under `[profiles.<name>]`, including
+  harnesses and command argv. Repository configuration may select names but cannot
+  define executable commands.
+- Bundled workflow skills own the routing matrix and pass `--profile <name>` to
+  `run create`. Issue briefs describe capability and risk; they never hard-code a
+  concrete model or executable command.
+
+Use this default matrix unless the caller explicitly selects or escalates a profile:
+
+| Work | Recommended profile |
+| --- | --- |
+| Technical decision, ADR, broad or high-risk design | `capable` |
+| Bounded implementation from an accepted design | `implementation` |
+| Mechanical, strongly tested refactor or documentation | `lightweight` |
+
+Uncertain, mixed, security/privacy-sensitive, destructive, concurrency-sensitive,
+hard-to-rollback, or weakly tested work routes to `capable`. An explicit caller
+profile wins; escalation is allowed, silent downgrade is not.
+
+For a workflow-recommended profile (not an explicit caller selector), resolve
+compatibility **before mutation** with the complete intended `run create ... --dry-run
+--profile <recommended>` command and branch only on the machine-readable error code.
+If it returns `unknown_profile`, retry the dry-run with
+`--profile capable`. If `capable` is also unknown and the error's `expected` list is
+empty (no executable profiles are configured), retry the dry-run with no `--profile`
+to preserve the legacy built-in behavior. If profiles exist but neither requested nor
+`capable` is defined, stop with the structured error; never choose an arbitrary profile.
+After a successful dry-run, make the real create call with exactly the selector that
+passed. Child spawns are the one preflight exception: `--parent-run-id` cannot be
+truthfully dry-run, so omit both parent flags for profile preflight, restore them only
+on the idempotency-keyed real call, and let that call validate the relationship. This
+keeps installations with only `capable`, and pre-profile installations, working
+predictably without discovering profile incompatibility after state mutation.
+
+Profile choice is not correctness evidence. Start with primary sources,
+source-grounded scenarios, and deterministic tests. For a bounded implementation,
+the default review ceiling is one focused final-diff review covering all relevant
+concerns. Panels or repeated reviews require a concrete risk or unresolved-trade-off
+rationale; they are not workflow defaults.
+
 Two distinct fields, two distinct meanings — do not conflate them:
 
 - **`lifecycle`** carries the run's *classification*, derived from its

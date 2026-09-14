@@ -1111,6 +1111,7 @@ mod tests {
 
     #[test]
     fn real_private_tmux_expiry_preserves_unrelated_split_and_is_idempotent() {
+        let _env_lock = crate::harness::support::test_env::lock();
         if !tmux_available() {
             return;
         }
@@ -1139,7 +1140,10 @@ mod tests {
         .unwrap();
 
         assert!(Command::new("tmux")
+            .env_remove("HOMEBASE_TMUX_OWNER")
             .args([
+                "-f",
+                "/dev/null",
                 "-S",
                 socket_s,
                 "new-session",
@@ -1326,6 +1330,7 @@ mod tests {
 
     #[test]
     fn real_retention_archives_before_killing_only_owned_pane_and_keeps_active_worker() {
+        let _env_lock = crate::harness::support::test_env::lock();
         if !tmux_available() {
             return;
         }
@@ -1333,7 +1338,10 @@ mod tests {
         let socket = temp.path().join("tmux.sock");
         let socket_s = socket.to_str().unwrap();
         assert!(Command::new("tmux")
+            .env_remove("HOMEBASE_TMUX_OWNER")
             .args([
+                "-f",
+                "/dev/null",
                 "-S",
                 socket_s,
                 "new-session",

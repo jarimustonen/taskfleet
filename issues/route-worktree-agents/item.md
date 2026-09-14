@@ -2,9 +2,11 @@
 created: 2026-09-12
 updated: 2026-09-14
 type: improvement
-status: in-progress
+status: done
 priority: normal
 lane: agent-routing
+closed: 2026-09-14
+closed_by: pi
 ---
 
 # Route worktree agents by model capability

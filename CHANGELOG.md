@@ -14,6 +14,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.11.0] - 2026-09-14
+
+### Changed
+
+- Route worktree agents by model capability (`route-worktree-agents`).
+- Validate explicit source binding for archived historical run retirement (`historical-source-binding`).
+
+### Fixed
+
+- Salvage dry-run misses dirty target worktree (`intake-bug-taskfleet-e40877f4fb9f`).
+
 ## [0.10.0] - 2026-09-09
 
 ### Fixed

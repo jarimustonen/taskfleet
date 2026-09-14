@@ -1,12 +1,13 @@
 ---
 created: 2026-09-12
-updated: 2026-09-12
+updated: 2026-09-14
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:taskfleet-salvage-dry-run-dirty-target-20260911
+lane: run-merge
 ---
 
 # Salvage dry-run misses dirty target worktree

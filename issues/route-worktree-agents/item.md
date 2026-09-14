@@ -1,9 +1,10 @@
 ---
 created: 2026-09-12
-updated: 2026-09-12
+updated: 2026-09-14
 type: improvement
 status: open
 priority: normal
+lane: agent-routing
 ---
 
 # Route worktree agents by model capability

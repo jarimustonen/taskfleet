@@ -58,9 +58,9 @@ forward with a new patch.
 Before a release:
 
 - run `scripts/validate-local-release.sh` on the exact clean commit; it owns fmt,
-  clippy, release nextest, doctests, rustdoc, snapshots/identity, Rust 1.85,
-  dependency policy, shell protocol fixtures, package archives, Shipshape
-  readiness, and cargo-dist generation/plan validation;
+  clippy, release nextest, doctests, rustdoc, snapshots/identity, the current
+  stable Rust/Cargo channel, dependency policy, shell protocol fixtures, package
+  archives, Shipshape readiness, and cargo-dist generation/plan validation;
 - inspect the two package archives and generated cargo-dist plan when using the
   manual publication-inspection workflow;
 - verify the tree and remote `main` remain clean, synchronized, and equal to the

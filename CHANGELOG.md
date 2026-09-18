@@ -11,6 +11,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Build and release with the latest stable Rust/Cargo toolchain, without an untested MSRV declaration, and update `time` to a patched release (`remarkably-towering-leaf`).
+- Upgrade cargo-dist generation and release topology validation to 0.33.0 (`strikingly-equal-knife`).
+
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 

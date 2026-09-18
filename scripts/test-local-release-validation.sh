@@ -36,4 +36,11 @@ run_missing 'local release validation prerequisite missing: cargo-deny'
 ln -s "$(command -v cargo-deny)" "$tmp/bin/cargo-deny"
 run_missing 'local release validation prerequisite missing: cargo-dist 0.33.0'
 
+grep -F 'rustup run stable cargo --version' "$repo_root/scripts/validate-local-release.sh" >/dev/null
+grep -F 'export RUSTUP_TOOLCHAIN=stable' "$repo_root/scripts/validate-local-release.sh" >/dev/null
+if grep -Eq 'rustup run [0-9]' "$repo_root/scripts/validate-local-release.sh"; then
+  echo 'local release validation still selects a frozen Rust toolchain' >&2
+  exit 1
+fi
+
 echo 'local release validation prerequisite tests passed'

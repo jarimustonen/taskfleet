@@ -306,7 +306,7 @@ fn warn_timeout_rate_limited(socket: Option<&str>) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TIMEOUTS: AtomicU64 = AtomicU64::new(0);
     let n = TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-    if n % TIMEOUT_WARN_EVERY == 0 {
+    if n.is_multiple_of(TIMEOUT_WARN_EVERY) {
         tracing::warn!(
             socket = socket.unwrap_or("<default>"),
             timeout_secs = TMUX_PROBE_TIMEOUT.as_secs(),

@@ -956,11 +956,8 @@ mod tests {
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
         assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
-        assert_eq!(
-            parse_duration("2400sec").unwrap(),
-            Duration::from_secs(2400)
-        );
-        assert_eq!(parse_duration("40min").unwrap(), Duration::from_secs(2400));
+        assert_eq!(parse_duration("2400sec").unwrap(), Duration::from_mins(40));
+        assert_eq!(parse_duration("40min").unwrap(), Duration::from_mins(40));
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
     }
 
@@ -968,7 +965,7 @@ mod tests {
     fn parse_duration_bare_integer_is_seconds() {
         // The unit-less-integer trap: `--timeout 2400` now waits 2400 seconds
         // instead of erroring out and letting a backgrounded wait exit instantly.
-        assert_eq!(parse_duration("2400").unwrap(), Duration::from_secs(2400));
+        assert_eq!(parse_duration("2400").unwrap(), Duration::from_mins(40));
         assert_eq!(parse_duration("0").unwrap(), Duration::from_secs(0));
         // Leading zeros are decimal (not octal) and carry no unit ambiguity.
         assert_eq!(parse_duration("00030").unwrap(), Duration::from_secs(30));

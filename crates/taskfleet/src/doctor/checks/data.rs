@@ -17,7 +17,7 @@ use crate::supervise::pid_file;
 use super::Ctx;
 
 /// A dead PID file older than this is considered safe to auto-remove.
-const STALE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const STALE_AGE: Duration = Duration::from_hours(24);
 
 pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     let Some(root) = ctx.root.as_deref() else {

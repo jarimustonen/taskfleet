@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@stable
       - name: Require wrapper-authorized exact-main release tag
         shell: bash
         # This job exists only for tag pushes. Manual package inspection and
@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@stable
       - name: Verify canonical topology, pins, repository, and version
         shell: bash
         run: |
@@ -66,7 +66,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@stable
       - run: ./scripts/publish-crates.sh package
       - uses: actions/upload-artifact@v4
         with:
@@ -81,7 +81,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/publish-crates.sh publish taskfleet-core
         env:
@@ -99,7 +99,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/publish-crates.sh publish taskfleet
         env:

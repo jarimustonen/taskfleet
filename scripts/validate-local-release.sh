@@ -28,10 +28,13 @@ fi
   echo "local release validation requires cargo-dist 0.33.0: $dist_bin" >&2
   exit 2
 }
-rustup run 1.85 cargo --version >/dev/null 2>&1 || {
-  echo "local release validation prerequisite missing: Rust toolchain 1.85" >&2
+rustup run stable cargo --version >/dev/null 2>&1 || {
+  echo "local release validation prerequisite missing: stable Rust toolchain" >&2
   exit 2
 }
+# Pin every Rust/Cargo subprocess in this gate (including nested scripts and
+# cargo subcommands) to rustup's current stable channel.
+export RUSTUP_TOOLCHAIN=stable
 
 validated_head="$(git rev-parse --verify HEAD)"
 [[ "$validated_head" =~ ^[0-9a-f]{40}$ ]] || {
@@ -55,7 +58,7 @@ run cargo nextest run --locked --release --workspace
 run cargo test --locked --release --workspace --doc
 printf '\n==> cargo doc --locked --workspace --no-deps\n'
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
-run rustup run 1.85 cargo check --locked --workspace --all-targets
+run cargo check --locked --workspace --all-targets
 run cargo deny --locked check
 
 run ./scripts/check-version-snapshots.sh

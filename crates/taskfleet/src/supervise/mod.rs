@@ -215,7 +215,7 @@ const NO_WORKER_TICKS: u32 = 3;
 /// window (`--agent-startup-timeout` caps at 600s) so an in-flight creation is
 /// never clipped; the field-reported stuck runs were frozen for >1h, far past
 /// this. Overridable via `TASKFLEET_NO_WORKER_GRACE_SECS` (tests set `0`).
-const NO_WORKER_GRACE: Duration = Duration::from_secs(900);
+const NO_WORKER_GRACE: Duration = Duration::from_mins(15);
 
 /// Env override for [`NO_WORKER_GRACE`] (whole seconds; unparseable → default).
 const NO_WORKER_GRACE_ENV: &str = "TASKFLEET_NO_WORKER_GRACE_SECS";
@@ -1385,7 +1385,7 @@ pub fn dispatch(
             };
         }
 
-        std::thread::sleep(if iter % 2 == 0 {
+        std::thread::sleep(if iter.is_multiple_of(2) {
             TAIL_TICK
         } else {
             WATCHDOG_TICK

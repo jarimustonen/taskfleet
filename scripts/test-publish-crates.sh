@@ -46,12 +46,12 @@ cat >"$tmp/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$CARGO_LOG"
-if [[ "$1" == --version ]]; then echo 'cargo 1.85.0 (fixture)'; exit 0; fi
+if [[ "$1" == --version ]]; then echo 'cargo stable (fixture)'; exit 0; fi
 if [[ "$1" == metadata ]]; then
   target_dir="${CARGO_TARGET_DIR:-$FIXTURE_ROOT/target}"
   jq -n --arg root "$FIXTURE_ROOT" --arg target "$target_dir" '{target_directory:$target,packages:[
-    {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"core",dependencies:[]},
-    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
+    {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:null,description:"core",dependencies:[]},
+    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:null,description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
 
   ]}'
   exit 0
@@ -105,7 +105,7 @@ case "$url" in
     checksum="$(sha256sum "$archive" | awk '{print $1}')"
     description=cli; [[ "$REGISTRY_MODE" != metadata-mismatch ]] || description=wrong
     yanked=false; [[ "$REGISTRY_MODE" != yanked ]] || yanked=true
-    jq -n --arg checksum "$checksum" --arg description "$description" --argjson yanked "$yanked" '{version:{checksum:$checksum,yanked:$yanked,license:"MIT",rust_version:"1.85",repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",description:$description}}' >"$output"
+    jq -n --arg checksum "$checksum" --arg description "$description" --argjson yanked "$yanked" '{version:{checksum:$checksum,yanked:$yanked,license:"MIT",rust_version:null,repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",description:$description}}' >"$output"
     printf 200 ;;
   */crates/taskfleet/owners)
     if [[ "$REGISTRY_MODE" == secondary500 || "$REGISTRY_MODE" == secondary-after-publish ]]; then : >"$output"; printf 500; exit 0; fi

@@ -254,7 +254,7 @@ impl<Mode> Drop for RunLock<Mode> {
         if let Some(f) = self.file.take() {
             // Best-effort unlock — kernel releases on file close anyway.
             // Use the fs4 trait method explicitly to avoid clashing with
-            // `std::fs::File::unlock` (stable since 1.89, above our MSRV).
+            // `std::fs::File::unlock` (available on supported stable toolchains).
             let _ = <File as FileExt>::unlock(&f);
         }
     }

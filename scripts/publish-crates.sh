@@ -80,7 +80,7 @@ assert_local_metadata() {
   expected_repo="$(jq -r .repository "$topology")"
   jq -e --arg package "$package" --arg version "$version" --arg manifest "$repo_root/$manifest" --arg repo "https://github.com/$expected_repo" '
     [.packages[] | select(.name == $package and .version == $version and .manifest_path == $manifest and
-      .repository == $repo and .homepage == $repo and .license == "MIT" and .rust_version == "1.85")] | length == 1
+      .repository == $repo and .homepage == $repo and .license == "MIT" and .rust_version == null)] | length == 1
   ' "$metadata_file" >/dev/null || { echo "$package local package metadata does not match release topology" >&2; exit 2; }
   dependency="$(dependency_of "$package")"
   if [[ -n "$dependency" ]]; then

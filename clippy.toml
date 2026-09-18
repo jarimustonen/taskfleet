@@ -7,7 +7,3 @@
 # The public API is pre-1.0 and unstable; let clippy suggest signature-level
 # improvements (e.g. needless_pass_by_value) without treating breakage as a cost.
 avoid-breaking-exported-api = false
-
-# Match the workspace `rust-version`. Keeps clippy's MSRV-gated suggestions in
-# step with what the crates actually promise to compile on.
-msrv = "1.85"

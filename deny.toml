@@ -25,23 +25,10 @@ unsound = "all"
 # (EmbarkStudios/cargo-deny#611). Vulnerability advisories now always fail — there
 # is no warn/deny toggle — so RUSTSEC vulnerabilities are denied by default here.
 #
-# Scoped, time-boxed advisory ignores. Each entry names ONE RUSTSEC id with a
-# justification and a review-by trigger. Never blanket-ignore a class here.
-ignore = [
-    # RUSTSEC-2026-0009 — `time`: DoS via stack exhaustion while PARSING a
-    # crafted duration/format string. `time` is a purely transitive dep pulled
-    # ONLY by tracing-appender (log-file rotation timestamps); we never parse
-    # untrusted/attacker-controlled time input, so the advisory is not
-    # exploitable in our usage. The fixed `time` range (>=0.3.47) declares
-    # rust-version = 1.88, which exceeds this project's MSRV floor of 1.85
-    # (Cargo.toml rust-version = "1.85", enforced by the `msrv (1.85)` CI job).
-    # Bumping `time` to clear the advisory therefore breaks MSRV — the two are
-    # mutually exclusive for `time` today. We pin `time` under the 1.85 floor
-    # (0.3.41) and ignore the advisory instead.
-    # REVIEW-BY: re-evaluate when this project's MSRV moves to >= 1.88 (then drop
-    # this ignore and bump `time` to the fixed range).
-    "RUSTSEC-2026-0009",
-]
+# Advisory exceptions must be narrowly justified and time-boxed. There are no
+# active exceptions: the stable toolchain policy lets dependencies move to
+# patched releases instead of holding vulnerable versions for an old compiler.
+ignore = []
 
 [licenses]
 version = 2

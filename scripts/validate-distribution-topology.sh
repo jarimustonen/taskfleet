@@ -6,7 +6,7 @@ cd "$repo_root"
 
 jq -e '
   .schema_version == 1 and .activation == "ready" and
-  .cargo_dist.version == "0.28.2" and
+  .cargo_dist.version == "0.33.0" and
   .cargo_dist.apps == ["taskfleet"] and
   .cargo_dist.tap == "jarimustonen/homebrew-taskfleet" and
   .cargo_dist.trigger == "tag-push" and
@@ -14,7 +14,7 @@ jq -e '
   .source_repository.current == "jarimustonen/taskfleet"
 ' release/taskfleet-distribution.json >/dev/null
 
-grep -F 'cargo-dist-version = "0.28.2"' dist-workspace.toml >/dev/null
+grep -F 'cargo-dist-version = "0.33.0"' dist-workspace.toml >/dev/null
 grep -F 'pr-run-mode = "skip"' dist-workspace.toml >/dev/null
 grep -F 'dispatch-releases = false' dist-workspace.toml >/dev/null
 grep -F 'tap = "jarimustonen/homebrew-taskfleet"' dist-workspace.toml >/dev/null
@@ -41,7 +41,7 @@ if [[ $# -eq 1 ]]; then
   [[ -f "$plan" ]] || { echo "cargo-dist plan not found: $plan" >&2; exit 2; }
   version="$(awk -F'"' '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{print $2;exit}' Cargo.toml)"
   jq -e --arg version "$version" '
-    .dist_version == "0.28.2" and
+    .dist_version == "0.33.0" and
     .announcement_tag == ("v" + $version) and
     (.releases | length) == 1 and
     .releases[0].app_name == "taskfleet" and

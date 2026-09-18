@@ -2,7 +2,7 @@
   "schema_version": 1,
   "activation": "ready",
   "cargo_dist": {
-    "version": "0.28.2",
+    "version": "0.33.0",
     "config": "dist-workspace.toml",
     "workflow": ".github/workflows/release.yml",
     "trigger": "tag-push",

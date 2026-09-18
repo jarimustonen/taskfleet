@@ -24,7 +24,7 @@ check_workflow() {
   grep -A12 '^  build-local-artifacts:' "$workflow" | grep -F 'needs.plan.outputs.publishing == '\''true'\''' >/dev/null || return 1
   grep -A8 '^  build-global-artifacts:' "$workflow" | grep -F -- '- build-local-artifacts' >/dev/null || return 1
   grep -A12 '^  host:' "$workflow" | grep -F -- '- build-local-artifacts' >/dev/null || return 1
-  # Exact 0.28.2 still accepts a skipped local matrix. The validated plan must
+  # Exact 0.33.0 still accepts a skipped local matrix. The validated plan must
   # therefore retain non-null gated local jobs for every admitted release.
   grep -A12 '^  host:' "$workflow" | grep -F 'needs.build-local-artifacts.result == '\''skipped'\''' >/dev/null || return 1
 }

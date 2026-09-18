@@ -62,7 +62,7 @@ cat >"$tmp/bin/dist" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$DIST_STUB_LOG"
 case "$*" in
-  --version) printf '%s\n' 'cargo-dist 0.28.2' ;;
+  --version) printf '%s\n' 'cargo-dist 0.33.0' ;;
   'plan --output-format=json') printf '%s\n' '{"releases":[]}' ;;
   build) mkdir -p target/distrib ;;
   *) echo "dist fixture: unexpected arguments: $*" >&2; exit 96 ;;

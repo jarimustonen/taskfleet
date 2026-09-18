@@ -34,6 +34,6 @@ run_missing() {
 
 run_missing 'local release validation prerequisite missing: cargo-deny'
 ln -s "$(command -v cargo-deny)" "$tmp/bin/cargo-deny"
-run_missing 'local release validation prerequisite missing: cargo-dist 0.28.2'
+run_missing 'local release validation prerequisite missing: cargo-dist 0.33.0'
 
 echo 'local release validation prerequisite tests passed'

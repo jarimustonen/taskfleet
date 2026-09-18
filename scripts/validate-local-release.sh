@@ -21,11 +21,11 @@ if [[ -z "$dist_bin" ]]; then
   dist_bin="$(command -v dist || true)"
 fi
 [[ -n "$dist_bin" && -x "$dist_bin" ]] || {
-  echo "local release validation prerequisite missing: cargo-dist 0.28.2 (set DIST_BIN to its dist executable)" >&2
+  echo "local release validation prerequisite missing: cargo-dist 0.33.0 (set DIST_BIN to its dist executable)" >&2
   exit 2
 }
-[[ "$("$dist_bin" --version)" == "cargo-dist 0.28.2" ]] || {
-  echo "local release validation requires cargo-dist 0.28.2: $dist_bin" >&2
+[[ "$("$dist_bin" --version)" == "cargo-dist 0.33.0" ]] || {
+  echo "local release validation requires cargo-dist 0.33.0: $dist_bin" >&2
   exit 2
 }
 rustup run 1.85 cargo --version >/dev/null 2>&1 || {

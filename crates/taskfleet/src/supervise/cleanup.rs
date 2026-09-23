@@ -488,8 +488,12 @@ fn cleanup_node_after_evidence(paths: &RunPaths, n: &Node, tmux: &str, git: &str
         .is_some_and(|policy| policy.persistent);
     if persistent {
         match crate::session::retain_completed_display(paths, n, tmux) {
-            crate::session::Retention::Retained | crate::session::Retention::Unavailable => {}
-            crate::session::Retention::NotApplicable => close_tmux_window(paths, n, tmux),
+            crate::session::Retention::Retained | crate::session::Retention::Unavailable => {
+                crate::session::close_original_workmux_window(paths, n, tmux);
+            }
+            crate::session::Retention::NotApplicable => {
+                crate::session::close_persistent_non_pi(paths, n, tmux);
+            }
             crate::session::Retention::Retry => return,
         }
     } else {

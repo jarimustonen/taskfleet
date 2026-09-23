@@ -82,8 +82,13 @@ The create-time policy and exact socket/server-PID/start-marker/window/pane
 identity are recorded. `supervise::evidence` completes first, then
 `session::retain_completed_display` removes only the owned worker pane (leaving
 unrelated split panes), creates one dead `remain-on-exit` display in the
-surviving source repo, and records its option marker. Names show repo + short run
-+ purpose but confer no authority. `taskfleet session maintain --output json`
+surviving source repo, and records its option marker. The original Workmux
+companion shell is bound to the exact run while the worker pane is present;
+after the worker is removed its window closes only if the sole surviving pane
+still has that marker, its original prompt/screen, empty history, unchanged
+worktree cwd and shell command, and the recorded server/window identities match.
+Modified/shared windows are left alone, including on non-Pi persistent runs.
+Names show repo + short run + purpose but confer no authority. `taskfleet session maintain --output json`
 scans canonical state without `$TMUX` or repo cwd, rechecks each run under its
 shared lock and every exact tmux identity/marker, and applies TTL/count bounds.
 It never starts a missing server and never removes archives or Git-preserved

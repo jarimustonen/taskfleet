@@ -25,6 +25,8 @@ use crate::proc::{run_with_timeout, TimedOutcome};
 const TMUX_TIMEOUT: Duration = Duration::from_secs(3);
 const OUTPUT_CAP: usize = 256 * 1024;
 const OWNER_OPTION: &str = "@taskfleet_retained_id";
+const ORIGINAL_SHELL_OPTION: &str = "@taskfleet_original_shell";
+const ORIGINAL_SCREEN_OPTION: &str = "@taskfleet_original_screen";
 
 #[derive(Subcommand, Debug)]
 pub enum SessionAction {
@@ -506,6 +508,15 @@ pub(crate) fn retain_completed_display(paths: &RunPaths, node: &Node, tmux: &str
         return Retention::Retry;
     }
     let marker = ownership_marker(paths, node);
+    // Bind the Workmux-created companion while the worker still proves the
+    // original window's ownership. The marker survives removal/crash retries.
+    mark_original_shell(
+        tmux,
+        identity,
+        pane_id,
+        node.worktree_path.as_deref(),
+        &marker,
+    );
     let retained_at = node.updated_at;
     let Some(expires_at) = expiry_at(retained_at, policy.completed_window_ttl_secs) else {
         return Retention::Retry;
@@ -628,6 +639,299 @@ pub(crate) fn retain_completed_display(paths: &RunPaths, node: &Node, tmux: &str
         // this exact window with the original terminal timestamp and TTL.
         Retention::Retry
     }
+}
+
+/// Workmux's configured second pane is a default shell (empty start command).
+/// The marker is installed only while both the recorded worker and exactly one
+/// companion are present. Never adopt an unmarked lone pane by name or cwd.
+fn mark_original_shell(
+    tmux: &str,
+    identity: &taskfleet_core::TmuxIdentity,
+    worker: &str,
+    worktree: Option<&str>,
+    marker: &str,
+) {
+    let (Some(socket), Some(worktree)) = (identity.socket.as_deref(), worktree) else {
+        return;
+    };
+    let (Some(pid), Some(start)) = (identity.server_pid, identity.server_pid_start_secs) else {
+        return;
+    };
+    if !matches!(
+        server_identity(
+            tmux,
+            socket,
+            &identity.session,
+            pid,
+            start,
+            identity.server_marker.as_deref().unwrap_or(""),
+            None
+        ),
+        IdentityCheck::Exact
+    ) {
+        return;
+    }
+    if !window_ids(tmux, socket, &identity.session)
+        .is_ok_and(|ids| ids.contains(&identity.window_id))
+    {
+        return;
+    }
+    let Some(rows) = original_rows(tmux, socket, &identity.window_id) else {
+        return;
+    };
+    if rows.len() != 2 || !rows.iter().any(|r| r.pane == worker) {
+        return;
+    }
+    let Some(shell) = rows.iter().find(|r| r.pane != worker) else {
+        return;
+    };
+    if !idle_original_shell(shell, worktree) || (!shell.marker.is_empty() && shell.marker != marker)
+    {
+        return;
+    }
+    if shell.marker.is_empty() {
+        let Some(raw) = tmux_text_bin(
+            tmux,
+            Some(socket),
+            &["capture-pane", "-p", "-t", &shell.pane],
+        ) else {
+            return;
+        };
+        // A shell process alone does not prove it is at its prompt: typed
+        // input (including a pending builtin) can still show `bash` as the
+        // current command. Bind only an unambiguous ordinary prompt.
+        if !raw
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .is_some_and(|line| {
+                matches!(line.trim_end().chars().last(), Some('$' | '#' | '%' | '>'))
+            })
+        {
+            return;
+        }
+        let Some(screen) = shell_screen(tmux, socket, &shell.pane) else {
+            return;
+        };
+        // Hash the complete visible pane at binding time: pending input and
+        // shell output after binding invalidate the idle-shell proof.
+        if !tmux_ok_bin(
+            tmux,
+            Some(socket),
+            &[
+                "set-option",
+                "-p",
+                "-t",
+                &shell.pane,
+                ORIGINAL_SCREEN_OPTION,
+                &screen,
+            ],
+        ) {
+            return;
+        }
+        let _ = tmux_ok_bin(
+            tmux,
+            Some(socket),
+            &[
+                "set-option",
+                "-p",
+                "-t",
+                &shell.pane,
+                ORIGINAL_SHELL_OPTION,
+                marker,
+            ],
+        );
+    }
+}
+
+struct OriginalRow {
+    pane: String,
+    path: String,
+    start: String,
+    current: String,
+    marker: String,
+    history: String,
+    mode: String,
+    dead: String,
+    screen: String,
+}
+
+fn original_rows(tmux: &str, socket: &str, window: &str) -> Option<Vec<OriginalRow>> {
+    let format = format!("#{{pane_id}}\t#{{pane_current_path}}\t#{{pane_start_command}}\t#{{pane_current_command}}\t#{{{ORIGINAL_SHELL_OPTION}}}\t#{{history_size}}\t#{{pane_in_mode}}\t#{{pane_dead}}\t#{{{ORIGINAL_SCREEN_OPTION}}}");
+    let text = tmux_text_bin(
+        tmux,
+        Some(socket),
+        &["list-panes", "-t", window, "-F", &format],
+    )?;
+    text.lines()
+        .map(|line| {
+            let fields: Vec<_> = line.split('\t').collect();
+            (fields.len() == 9).then(|| OriginalRow {
+                pane: fields[0].into(),
+                path: fields[1].into(),
+                start: fields[2].into(),
+                current: fields[3].into(),
+                marker: fields[4].into(),
+                history: fields[5].into(),
+                mode: fields[6].into(),
+                dead: fields[7].into(),
+                screen: fields[8].into(),
+            })
+        })
+        .collect()
+}
+
+fn shell_screen(tmux: &str, socket: &str, pane: &str) -> Option<String> {
+    use sha2::Digest as _;
+    let text = tmux_text_bin(tmux, Some(socket), &["capture-pane", "-p", "-t", pane])?;
+    // A split collapsing changes blank rows and right-padding, not shell
+    // content. Ignore that layout-only noise while retaining every nonblank
+    // character (including pending input).
+    let visible = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("{:x}", sha2::Sha256::digest(visible.as_bytes())))
+}
+
+fn idle_original_shell(row: &OriginalRow, worktree: &str) -> bool {
+    row.path == worktree
+        && row.start.is_empty()
+        && row.dead == "0"
+        && row.mode == "0"
+        && row.history == "0"
+        && matches!(row.current.as_str(), "bash" | "zsh" | "sh" | "fish")
+}
+
+/// Close only a marked, still-idle Workmux companion after the worker pane is
+/// gone. A shared/modified window is never killed; no path/name fallback.
+pub(crate) fn close_original_workmux_window(paths: &RunPaths, node: &Node, tmux: &str) {
+    let Some(identity) = node.tmux_identity.as_ref() else {
+        return;
+    };
+    let (Some(socket), Some(worktree), Some(pid), Some(start), Some(worker)) = (
+        identity.socket.as_deref(),
+        node.worktree_path.as_deref(),
+        identity.server_pid,
+        identity.server_pid_start_secs,
+        identity.pane_id.as_deref(),
+    ) else {
+        return;
+    };
+    mark_original_shell(
+        tmux,
+        identity,
+        worker,
+        Some(worktree),
+        &ownership_marker(paths, node),
+    );
+    if !matches!(
+        server_identity(
+            tmux,
+            socket,
+            &identity.session,
+            pid,
+            start,
+            identity.server_marker.as_deref().unwrap_or(""),
+            None
+        ),
+        IdentityCheck::Exact
+    ) {
+        return;
+    }
+    if !window_ids(tmux, socket, &identity.session)
+        .is_ok_and(|ids| ids.contains(&identity.window_id))
+    {
+        return;
+    }
+    let Some(rows) = original_rows(tmux, socket, &identity.window_id) else {
+        return;
+    };
+    if rows.len() != 1 {
+        return;
+    }
+    let shell = &rows[0];
+    if shell.pane == worker
+        || shell.marker != ownership_marker(paths, node)
+        || !idle_original_shell(shell, worktree)
+        || shell.screen.is_empty()
+        || shell_screen(tmux, socket, &shell.pane).as_deref() != Some(&shell.screen)
+    {
+        return;
+    }
+    // Recheck immediately before the exact window kill; tmux does not offer a
+    // conditional kill, so a concurrent pane mutation remains a small race.
+    if !original_rows(tmux, socket, &identity.window_id).is_some_and(|again| {
+        again.len() == 1
+            && again[0].pane == shell.pane
+            && again[0].marker == shell.marker
+            && again[0].screen == shell.screen
+            && idle_original_shell(&again[0], worktree)
+            && shell_screen(tmux, socket, &again[0].pane).as_deref() == Some(&shell.screen)
+    }) {
+        return;
+    }
+    if !matches!(
+        server_identity(
+            tmux,
+            socket,
+            &identity.session,
+            pid,
+            start,
+            identity.server_marker.as_deref().unwrap_or(""),
+            None
+        ),
+        IdentityCheck::Exact
+    ) {
+        return;
+    }
+    let _ = tmux_ok_bin(
+        tmux,
+        Some(socket),
+        &["kill-window", "-t", &identity.window_id],
+    );
+}
+
+/// Non-Pi persistent runs have no retained display. Remove the exact worker
+/// pane, then close only a proven Workmux companion; never kill shared windows.
+pub(crate) fn close_persistent_non_pi(paths: &RunPaths, node: &Node, tmux: &str) {
+    let Some(identity) = node.tmux_identity.as_ref() else {
+        return;
+    };
+    let (Some(socket), Some(worker)) = (identity.socket.as_deref(), identity.pane_id.as_deref())
+    else {
+        return;
+    };
+    let marker = ownership_marker(paths, node);
+    mark_original_shell(
+        tmux,
+        identity,
+        worker,
+        node.worktree_path.as_deref(),
+        &marker,
+    );
+    let Some(rows) = original_rows(tmux, socket, &identity.window_id) else {
+        return;
+    };
+    // An unrecognized extra pane is user-owned: leave the entire window alone.
+    if rows.len() > 2
+        || (rows.len() == 2
+            && !rows.iter().any(|r| {
+                r.pane != worker
+                    && r.marker == marker
+                    && node
+                        .worktree_path
+                        .as_deref()
+                        .is_some_and(|path| idle_original_shell(r, path))
+            }))
+    {
+        return;
+    }
+    if rows.iter().any(|r| r.pane == worker) && !dispose_original_pane(tmux, identity, worker) {
+        return;
+    }
+    close_original_workmux_window(paths, node, tmux);
 }
 
 fn expiry_at(retained_at: chrono::DateTime<Utc>, ttl_secs: u64) -> Option<chrono::DateTime<Utc>> {
@@ -1493,6 +1797,311 @@ mod tests {
         let _ = Command::new("tmux")
             .args(["-S", socket_s, "kill-server"])
             .status();
+    }
+
+    #[test]
+    fn private_workmux_shell_closes_only_when_exact_and_idle() {
+        let _env_lock = crate::harness::support::test_env::lock();
+        if !tmux_available() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("socket");
+        let _server = PrivateTmuxServer(socket.clone());
+        let socket = socket.to_str().unwrap();
+        let wt = temp.path().join("worktree");
+        std::fs::create_dir(&wt).unwrap();
+        let run_id = RunId::parse_str("01jxsnap333333333333333333").unwrap();
+        let dir = temp.path().join("runs").join(run_id.as_str());
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::from_validated(&dir, run_id).unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind":"spinoff", "lifecycle":"autonomous", "title":"shell test"
+            }),
+        )
+        .unwrap();
+        let id = NodeId::parse_str("n-0001").unwrap();
+        let made = Command::new("tmux")
+            .env_remove("HOMEBASE_TMUX_OWNER")
+            .args([
+                "-f",
+                "/dev/null",
+                "-S",
+                socket,
+                "new-session",
+                "-d",
+                "-s",
+                "agents",
+                "-c",
+                wt.to_str().unwrap(),
+                "-n",
+                "worker",
+                "-P",
+                "-F",
+                "#{window_id}\t#{pane_id}\t#{pid}",
+                "sleep 60",
+            ])
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        let made = String::from_utf8(made.stdout).unwrap();
+        let fields: Vec<_> = made.trim().split('\t').collect();
+        let (window, worker, pid) = (fields[0], fields[1], fields[2].parse::<u32>().unwrap());
+        assert!(Command::new("tmux")
+            .args(["-S", socket, "set-option", "-g", "default-shell", "/bin/sh"])
+            .status()
+            .unwrap()
+            .success());
+        let split = Command::new("tmux")
+            .args([
+                "-S",
+                socket,
+                "split-window",
+                "-d",
+                "-c",
+                wt.to_str().unwrap(),
+                "-t",
+                window,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            split.status.success(),
+            "{}",
+            String::from_utf8_lossy(&split.stderr)
+        );
+        let identity = taskfleet_core::TmuxIdentity {
+            socket: Some(socket.into()),
+            session: "agents".into(),
+            window_id: window.into(),
+            pane_id: Some(worker.into()),
+            server_pid: Some(pid),
+            server_pid_start_secs: crate::supervise::watchdog::pid_start_time(pid),
+            server_marker: Some(String::new()),
+        };
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&id),
+            None,
+            json!({
+                "kind":"spinoff", "attempt":0, "worktree_path":wt,
+                "tmux_socket":socket, "tmux_session":"agents", "tmux_window_id":window,
+                "tmux_pane_id":worker, "tmux_server_pid":pid,
+                "tmux_server_pid_start_secs":identity.server_pid_start_secs,
+            }),
+        )
+        .unwrap();
+        let node = taskfleet_core::read_node_opt(&paths, &id).unwrap().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !original_rows("tmux", socket, window)
+            .is_some_and(|rows| rows.iter().any(|r| r.pane != worker && r.current == "sh"))
+        {
+            assert!(Instant::now() < deadline, "shell never became idle");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        mark_original_shell(
+            "tmux",
+            &identity,
+            worker,
+            node.worktree_path.as_deref(),
+            &ownership_marker(&paths, &node),
+        );
+        let rows = original_rows("tmux", socket, window).unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r.pane != worker && r.marker == ownership_marker(&paths, &node)),
+            "shell {:?}",
+            rows.iter()
+                .map(|r| (&r.pane, &r.start, &r.current, &r.history, &r.path, &r.screen))
+                .collect::<Vec<_>>()
+        );
+        // Two-pane window is never killed while the worker is still there.
+        close_original_workmux_window(&paths, &node, "tmux");
+        assert!(window_ids("tmux", socket, "agents")
+            .unwrap()
+            .contains(&window.to_string()));
+        assert!(tmux_text(
+            Some(socket),
+            &[
+                "new-window",
+                "-d",
+                "-t",
+                "agents",
+                "-n",
+                "sentinel",
+                "sleep 60"
+            ]
+        )
+        .is_some());
+        assert!(
+            dispose_original_pane("tmux", &identity, worker),
+            "{:?} {:?}",
+            inspect_original_pane("tmux", &identity, worker),
+            original_rows("tmux", socket, window).map(|rows| rows
+                .iter()
+                .map(|r| (r.pane.clone(), r.path.clone(), r.marker.clone()))
+                .collect::<Vec<_>>())
+        );
+        let rows = original_rows("tmux", socket, window).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].screen,
+            shell_screen("tmux", socket, &rows[0].pane).unwrap(),
+            "pane screen changed across split collapse"
+        );
+        close_original_workmux_window(&paths, &node, "tmux");
+        close_original_workmux_window(&paths, &node, "tmux"); // crash retry
+        assert!(!window_ids("tmux", socket, "agents")
+            .unwrap_or_default()
+            .contains(&window.to_string()));
+
+        for changed in ["input", "extra-pane", "drift"] {
+            let made = tmux_text(
+                Some(socket),
+                &[
+                    "new-window",
+                    "-d",
+                    "-t",
+                    "agents",
+                    "-c",
+                    wt.to_str().unwrap(),
+                    "-P",
+                    "-F",
+                    "#{window_id}\t#{pane_id}",
+                    "sleep 60",
+                ],
+            )
+            .unwrap();
+            let ids: Vec<_> = made.trim().split('\t').collect();
+            let mut other = identity.clone();
+            other.window_id = ids[0].into();
+            other.pane_id = Some(ids[1].into());
+            assert!(tmux_text(
+                Some(socket),
+                &[
+                    "split-window",
+                    "-d",
+                    "-c",
+                    wt.to_str().unwrap(),
+                    "-t",
+                    ids[0]
+                ]
+            )
+            .is_some());
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !original_rows("tmux", socket, ids[0])
+                .is_some_and(|rows| rows.iter().any(|r| r.pane != ids[1] && r.current == "sh"))
+            {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            mark_original_shell(
+                "tmux",
+                &other,
+                ids[1],
+                node.worktree_path.as_deref(),
+                &ownership_marker(&paths, &node),
+            );
+            let shell = original_rows("tmux", socket, ids[0])
+                .unwrap()
+                .into_iter()
+                .find(|r| r.pane != ids[1])
+                .unwrap();
+            assert_eq!(shell.marker, ownership_marker(&paths, &node));
+            match changed {
+                "input" => {
+                    assert!(tmux_text(
+                        Some(socket),
+                        &["send-keys", "-t", &shell.pane, "echo user-input"]
+                    )
+                    .is_some());
+                }
+                "extra-pane" => {
+                    assert!(tmux_text(
+                        Some(socket),
+                        &["split-window", "-d", "-t", ids[0], "sleep 60"]
+                    )
+                    .is_some());
+                }
+                _ => {
+                    assert!(tmux_text(
+                        Some(socket),
+                        &[
+                            "set-option",
+                            "-p",
+                            "-t",
+                            &shell.pane,
+                            ORIGINAL_SHELL_OPTION,
+                            "someone-else"
+                        ]
+                    )
+                    .is_some());
+                }
+            }
+            assert!(dispose_original_pane("tmux", &other, ids[1]));
+            close_original_workmux_window(&paths, &node, "tmux"); // recorded window differs
+            let mut changed_node = node.clone();
+            changed_node.tmux_identity = Some(Box::new(other));
+            close_original_workmux_window(&paths, &changed_node, "tmux");
+            assert!(
+                window_ids("tmux", socket, "agents")
+                    .unwrap()
+                    .contains(&ids[0].to_string()),
+                "{changed} pane was not preserved"
+            );
+        }
+        let made = tmux_text(
+            Some(socket),
+            &[
+                "new-window",
+                "-d",
+                "-t",
+                "agents",
+                "-c",
+                wt.to_str().unwrap(),
+                "-P",
+                "-F",
+                "#{window_id}\t#{pane_id}",
+                "sleep 60",
+            ],
+        )
+        .unwrap();
+        let ids: Vec<_> = made.trim().split('\t').collect();
+        let mut non_pi = node.clone();
+        let mut non_pi_identity = identity.clone();
+        non_pi_identity.window_id = ids[0].into();
+        non_pi_identity.pane_id = Some(ids[1].into());
+        non_pi.tmux_identity = Some(Box::new(non_pi_identity));
+        assert!(tmux_text(
+            Some(socket),
+            &[
+                "split-window",
+                "-d",
+                "-c",
+                wt.to_str().unwrap(),
+                "-t",
+                ids[0]
+            ]
+        )
+        .is_some());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !original_rows("tmux", socket, ids[0])
+            .is_some_and(|rows| rows.iter().any(|r| r.pane != ids[1] && r.current == "sh"))
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        close_persistent_non_pi(&paths, &non_pi, "tmux");
+        close_persistent_non_pi(&paths, &non_pi, "tmux");
+        assert!(!window_ids("tmux", socket, "agents")
+            .unwrap()
+            .contains(&ids[0].to_string()));
     }
 
     #[test]

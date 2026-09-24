@@ -2,9 +2,13 @@
 created: 2026-09-24
 updated: 2026-09-24
 type: bug
-status: in-progress
+status: fixed
 priority: high
 lane: run-lifecycle
+closed: 2026-09-24
+commits:
+- hash: e3e8880e
+  summary: Surface retained resources in done runs and grade report-only holds
 ---
 
 # Done run retains unmerged worktree invisibly
@@ -35,3 +39,8 @@ Implementation staged in worker branch; focused and workspace tests plus clippy 
 
 Repository-local release binary reproduced both reported Done runs as preserved_work (one row, two unmerged commits each); run wait --fail-on-error returned 3 and report_only=true for both. Committed implementation at 1d2a0f52. Gate remains blocked by missing cargo-deny; no release or install performed.
 
+## Resolution
+
+### 2026-09-24T15:16:48Z · @issuectl
+
+Recovered and reviewed the preserved commits; full scripts/validate-local-release.sh passed with disposable cargo-deny 0.20.2 and cargo-dist 0.33.0. Done report-only runs now expose retained resources and fail --fail-on-error when resources remain; no release or installed tool changed.

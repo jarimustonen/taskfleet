@@ -30,3 +30,8 @@ Taskfleet 0.11.1 treats an agent-authored `node.report {success:true}` without `
 ### 2026-09-24T15:04:52Z · @agent
 
 Implementation staged in worker branch; focused and workspace tests plus clippy pass. Required scripts/validate-local-release.sh is blocked at preflight: cargo-deny is unavailable on this host. Issue remains in-progress until the full gate can pass on the recovered branch.
+
+### 2026-09-24T15:05:29Z · @agent
+
+Repository-local release binary reproduced both reported Done runs as preserved_work (one row, two unmerged commits each); run wait --fail-on-error returned 3 and report_only=true for both. Committed implementation at 1d2a0f52. Gate remains blocked by missing cargo-deny; no release or install performed.
+

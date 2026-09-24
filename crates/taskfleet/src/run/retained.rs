@@ -18,6 +18,8 @@ pub(crate) struct PreservedWork {
     pub cleanliness: &'static str,
     pub unmerged_commits: Option<u64>,
     pub verification: &'static str,
+    /// Why this resource needs an operator's attention; observation, not a merge verdict.
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -37,13 +39,27 @@ impl RetainedObservation {
     }
 }
 
-/// Observe one terminal node. Returns `None` only when the node is outside the
-/// failed/cancelled ownership scope or both recorded resources are verifiably
-/// absent. Unknown Git state remains visible as an unverifiable row.
+/// Discard-scoped observation. Only failed/cancelled nodes are eligible for
+/// discard. Unknown Git state remains visible as an unverifiable row.
 pub(crate) fn observe(manifest: &Manifest, node: &Node, git: &Git) -> Option<RetainedObservation> {
     if !matches!(manifest.status, Status::Failed | Status::Cancelled)
         || !matches!(node.status, Status::Failed | Status::Cancelled)
     {
+        return None;
+    }
+    observe_terminal(manifest, node, git)
+}
+
+/// Read-only inventory for all terminal nodes, including historical Done runs.
+/// Returns `None` only when outside terminal scope or both recorded resources
+/// are verifiably absent. Unknown Git state remains visible as unverifiable.
+/// Never used as discard authorization or as evidence of a successful merge.
+pub(crate) fn observe_terminal(
+    manifest: &Manifest,
+    node: &Node,
+    git: &Git,
+) -> Option<RetainedObservation> {
+    if !manifest.status.is_terminal() || !node.status.is_terminal() {
         return None;
     }
     let worktree_path = node.worktree_path.clone();
@@ -167,6 +183,17 @@ pub(crate) fn observe(manifest: &Manifest, node: &Node, git: &Git) -> Option<Ret
             cleanliness,
             unmerged_commits,
             verification: if verified { "verified" } else { "unverifiable" },
+            reason: if matches!(manifest.status, Status::Done) {
+                if unmerged_commits.is_some_and(|n| n > 0) {
+                    "done-with-unmerged-work"
+                } else if !verified {
+                    "done-with-unverifiable-retained-work"
+                } else {
+                    "done-with-retained-resources"
+                }
+            } else {
+                "terminal-work-preserved"
+            },
         },
         source_repo: manifest.source_repo.clone(),
         verified,

@@ -84,13 +84,19 @@ an unmigrated or incompatible project rather than falling back to prose.
    present in the conversation, treat session worker ownership as clear; do not infer it
    from a global list or repository membership. Every session-owned live, awaiting-input,
    recoverable, or otherwise resumable worker must have landed or relinquished ownership.
-   For every session-owned failed/cancelled run, read the always-present
-   `.data.preserved_work` array from `run show`. A
+   For every session-owned terminal run, including `done`, read the always-present
+   `.data.preserved_work` array from `run show`. A `done` report-only run
+   (`run wait` `.data.runs[].report_only: true`) is not a recorded merge: an
+   external delivery may be legitimate, but inspect its report and independently
+   acknowledge that delivery; do not claim it landed in source. A
    terminal status or a repeated cancel alone is not relinquishment. An empty array confirms
    no retained worktree/branch. A non-empty array blocks handoff until the operator chooses
-   salvage/manual harvest or explicitly authorizes `taskfleet run discard <id> --reason
-   <text>` (use `--dry-run --output json` first, `--node` for multiple rows, and `--force`
-   only for reviewed verified-dirty content). Never raw-Git-delete or auto-discard it. If
+   salvage/manual harvest. `run discard` applies only to failed/cancelled runs: for those,
+   the operator may explicitly authorize `taskfleet run discard <id> --reason <text>`
+   (use `--dry-run --output json` first, `--node` for multiple rows, and `--force`
+   only for reviewed verified-dirty content). For `done`, reconcile the delivery
+   and retained branch/worktree manually; never suggest `run discard` for it.
+   Never raw-Git-delete or auto-discard it. If
    ownership stays unresolved, mark handoff blocked and skip
    schedule verification, but continue through steps 2–3 so current-turn answers and that
    owned run ID, slug, and preserved-work fact are recorded. Then stop before `/wrap-up`
@@ -101,10 +107,11 @@ an unmigrated or incompatible project rather than falling back to prose.
 1. **Read the live schedule without adopting foreign work.** After preflight proves there
    are no session-owned holds, inspect the global Taskfleet list for same-repository runs
    that may still own resources: live, awaiting-input, attention-required, recoverable, or
-   terminal candidates. `preserved_work` is show-only: run `taskfleet run show <id>
+   terminal candidates. `run show` exposes the full retained-resource inventory
+   (`run wait` also carries it per settled run): run `taskfleet run show <id>
    --output json` for relevant terminal candidates and treat only a non-empty
-   `.data.preserved_work` as a retained-resource hold. Never read that field from `run list`
-   or adopt/manage a foreign run merely to inspect it. Convert every mappable run to the
+   `.data.preserved_work` as a retained-resource hold, including for `done` runs.
+   Never read that field from `run list` or adopt/manage a foreign run merely to inspect it. Convert every mappable run to the
    exact issuectl hold array shape, one object per run: `[{"lane":"backend","collision":["hot-token"]}]`.
    Values are copied from issue metadata; never infer them. Do not wait for, adopt, or
    manage those runs. Run `issuectl dag --json --reservations '<foreign-holds-json>'`

@@ -99,7 +99,12 @@ fall back to a prose schedule.
   correct after you rebase local `main`. The companion `landed_method` tells you the evidence:
   `git-verified` (git decided), `report-marker` (git could not run — branch already torn
   down — so the durable `run merge` marker decided), or `unverified`. Settled ≠ landed; the
-  `landed` flag is the landed signal.
+  `landed` flag is the landed signal. A `done` run can instead be `report_only:
+  true` (agent-reported success without `run merge`): this is valid for an
+  external delivery, but never assert source landing from `done`. Inspect the
+  report and acknowledge that delivery explicitly. Check `run show`'s
+  `preserved_work` even for `done`; any retained worktree or branch is a hold,
+  not a completed handoff. `run wait --fail-on-error` exits 3 on that hold.
   - **⚠️ Do NOT git-verify with `git merge-base --is-ancestor <worker-branch> <target>`.**
     In a busy repo you rebase local `main` onto `origin/main` every round; that **replays
     the worker's merge under a new hash** while the worker **branch ref stays at its

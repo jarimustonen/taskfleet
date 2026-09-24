@@ -257,9 +257,15 @@ fn all_happy_path_two_done_runs_exit_zero() {
         assert_eq!(r["landed"], true);
         assert_eq!(r["landed_method"], "report-marker");
         assert!(r["summary"].as_str().unwrap().starts_with("did "));
-        assert!(r.get("error").is_none(), "done run has no error: {r}");
+        // This stubbed merge has no source repo, so the recorded branch cannot
+        // be verified absent. A real merged run with a source can prove teardown.
+        assert_eq!(r["preserved_work"][0]["verification"], "unverifiable");
+        assert_eq!(r["report_only"], false);
     }
     assert!(v["data"]["waited_ms"].is_number());
+    // Confirmed merge must not fail a wait merely because supervisor teardown
+    // has not yet run (or, in this stub, source Git is unavailable).
+    run_ok(bin(&home).args(["--output", "json", "run", "wait", &a, "--fail-on-error"]));
 }
 
 #[test]

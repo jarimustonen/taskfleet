@@ -2,7 +2,7 @@
 created: 2026-09-24
 updated: 2026-09-24
 type: bug
-status: open
+status: in-progress
 priority: high
 lane: run-lifecycle
 ---
@@ -24,3 +24,9 @@ Taskfleet 0.11.1 treats an agent-authored `node.report {success:true}` without `
 ## Evidence
 
 `crates/taskfleet-core/src/reducer.rs::report_terminal_status` maps any `success:true` to Done; `crates/taskfleet/src/supervise/cleanup.rs` preserves unmerged commits; `crates/taskfleet/src/run/retained.rs::observe` excludes Done. Recent explicit-merge runs do tear down normally.
+
+## Comments
+
+### 2026-09-24T15:04:52Z · @agent
+
+Implementation staged in worker branch; focused and workspace tests plus clippy pass. Required scripts/validate-local-release.sh is blocked at preflight: cargo-deny is unavailable on this host. Issue remains in-progress until the full gate can pass on the recovered branch.

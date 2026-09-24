@@ -96,7 +96,9 @@ impl Fixture {
             json!({"kind":"spinoff", "worktree_path":worktree, "branch":"wt/retained"}),
         )
         .unwrap();
-        let report = if status == "cancelled" {
+        let report = if status == "done" {
+            json!({"success":true,"summary":"external delivery complete"})
+        } else if status == "cancelled" {
             json!({"success":false,"cancelled":true,"reason":"cancelled","summary":"cancelled"})
         } else {
             let mut report = json!({"success":false,"summary":"failed"});
@@ -126,10 +128,55 @@ impl Fixture {
 }
 
 #[test]
+fn done_report_only_retained_work_is_visible_and_wait_grades_it() {
+    let f = Fixture::terminal("done", "report-only");
+    std::fs::write(f.worktree.join("delivery"), "delivered\n").unwrap();
+    git(&f.worktree, &["add", "delivery"]);
+    git(&f.worktree, &["commit", "-qm", "delivery"]);
+    let shown = f.show();
+    let retained = &shown["data"]["preserved_work"][0];
+    assert_eq!(shown["data"]["status"], "done");
+    assert_eq!(shown["data"]["landed"], false);
+    assert_eq!(retained["unmerged_commits"], 1);
+    assert_eq!(retained["reason"], "done-with-unmerged-work");
+    let out = command(&f.home, &["run", "wait", &f.run_id, "--fail-on-error"]);
+    assert_eq!(out.status.code(), Some(3));
+    let wait: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = &wait["data"]["runs"][0];
+    assert_eq!(row["report_only"], true);
+    assert_eq!(row["merged"], false);
+    assert_eq!(
+        row["preserved_work"][0]["reason"],
+        "done-with-unmerged-work"
+    );
+}
+
+#[test]
+fn done_report_only_without_remaining_resources_is_acknowledged_without_error() {
+    // The origin-less success report is also a legacy replay fixture.
+    let f = Fixture::terminal("done", "no-work");
+    git(
+        f.source.path(),
+        &["worktree", "remove", f.worktree.to_str().unwrap()],
+    );
+    git(f.source.path(), &["branch", "-d", "--", "wt/retained"]);
+    assert_eq!(f.show()["data"]["preserved_work"], json!([]));
+    let out = command(&f.home, &["run", "wait", &f.run_id, "--fail-on-error"]);
+    assert!(out.status.success());
+    let wait: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(wait["data"]["runs"][0]["report_only"], true);
+    assert_eq!(wait["data"]["runs"][0]["preserved_work"], json!([]));
+}
+
+#[test]
 fn show_reports_clean_dirty_and_absent_current_resources() {
     let f = Fixture::failed();
     let clean = f.show();
     assert_eq!(clean["data"]["preserved_work"][0]["cleanliness"], "clean");
+    assert_eq!(
+        clean["data"]["preserved_work"][0]["reason"],
+        "terminal-work-preserved"
+    );
     assert_eq!(
         clean["data"]["preserved_work"][0]["verification"],
         "verified"

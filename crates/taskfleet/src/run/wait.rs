@@ -151,6 +151,11 @@ struct RunOutcome {
     /// [`Self::landed`], which is git-verified and robust to a caller-side
     /// rebase (issue `landing-signal-reliable-after-rebase`).
     merged: bool,
+    /// Done via a success report rather than a recorded run merge. This can be
+    /// intentional (external delivery); it is not proof of landing in source.
+    report_only: bool,
+    /// Current retained resources, including those owned by a Done run.
+    preserved_work: Vec<crate::run::retained::PreservedWork>,
     /// Rebase-robust landing signal: true when the worker's committed work has
     /// landed in the target, confirmed by patch-id equivalence against the
     /// *current* target tip (`git cherry`) — NOT by branch-ref ancestry, which a
@@ -581,7 +586,14 @@ fn read_outcome(
     let git_inputs = RunLock::with_shared_lock(&paths.lock(), || {
         let manifest = read_manifest_opt(paths)?;
         let node = read_node_opt(paths, &node_id)?;
+        let retained_nodes = if manifest.as_ref().is_some_and(|m| m.status.is_terminal()) {
+            crate::run::retained::read_nodes(paths, crate::run::retained::MissingNodesDir::Empty)?
+        } else {
+            Vec::new()
+        };
         Ok(GitInputs {
+            retained_manifest: manifest.clone(),
+            retained_nodes,
             status: manifest.as_ref().map(|m| m.status),
             source_repo: manifest.as_ref().and_then(|m| m.source_repo.clone()),
             source_branch: manifest.as_ref().and_then(|m| m.source_branch.clone()),
@@ -607,6 +619,18 @@ fn read_outcome(
         )
     })?;
     let report = git_inputs.report.clone();
+    let git = crate::git::repo::Git::with_bin(crate::supervise::cleanup::git_bin());
+    let preserved_work = git_inputs
+        .retained_manifest
+        .as_ref()
+        .map_or_else(Vec::new, |manifest| {
+            git_inputs
+                .retained_nodes
+                .iter()
+                .filter_map(|node| crate::run::retained::observe_terminal(manifest, node, &git))
+                .map(|observation| observation.view)
+                .collect()
+        });
 
     // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`): the
     // rebase-robust signal the caller should trust instead of hand-rolling
@@ -672,7 +696,13 @@ fn read_outcome(
     // kind — so a JSON grader can tell "supervisor never started" from
     // "supervisor died mid-run" from "worker skipped run merge" without
     // re-deriving it.
-    let error = if attention_required {
+    let report_only = status == Status::Done && !merged;
+    let error = if report_only && !preserved_work.is_empty() {
+        Some(
+            "done run still owns worktree or branch; inspect preserved_work in run show/wait"
+                .to_string(),
+        )
+    } else if attention_required {
         Some(crate::run::attention::ATTENTION_REASON.to_string())
     } else if let Some(kind) = stall {
         Some(stall_reason(kind).to_string())
@@ -730,6 +760,8 @@ fn read_outcome(
         run_id: run_id.to_string(),
         status: status_kebab(status),
         merged,
+        report_only,
+        preserved_work,
         landed: signal.landed,
         landed_method: signal.method.wire(),
         stalled,
@@ -760,6 +792,8 @@ fn stall_reason(kind: StallKind) -> &'static str {
 /// computing `landed` outside it. Bundling them keeps the single consistent
 /// snapshot (invariant 3) explicit and lets the git shell-out run lock-free.
 struct GitInputs {
+    retained_manifest: Option<taskfleet_core::Manifest>,
+    retained_nodes: Vec<taskfleet_core::Node>,
     status: Option<Status>,
     source_repo: Option<String>,
     source_branch: Option<String>,
@@ -788,6 +822,9 @@ fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
             || o.stalled
             || o.attention_required
             || o.settled_awaiting_input
+            // A confirmed merge may still be in the supervisor's teardown window.
+            // A report-only success has no merge authority and must be reviewed.
+            || (o.report_only && !o.preserved_work.is_empty())
     })
 }
 
@@ -856,8 +893,14 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("waited_ms:  {}", data.waited_ms);
             for r in &data.runs {
                 print!(
-                    "{}  status={} landed={} ({}) merged={}",
-                    r.run_id, r.status, r.landed, r.landed_method, r.merged
+                    "{}  status={} landed={} ({}) merged={} report_only={} retained={}",
+                    r.run_id,
+                    r.status,
+                    r.landed,
+                    r.landed_method,
+                    r.merged,
+                    r.report_only,
+                    r.preserved_work.len()
                 );
                 if r.stalled {
                     // A remediation hint only; the specific per-kind reason is
@@ -897,6 +940,12 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                             id = r.run_id
                         ),
                     }
+                }
+                if !r.preserved_work.is_empty() {
+                    print!(
+                        "  retained work: inspect `run show {}` before handoff",
+                        r.run_id
+                    );
                 }
                 if let Some(s) = &r.summary {
                     print!("  summary={}", output::escape_one_line(s));
@@ -1010,6 +1059,8 @@ mod tests {
             run_id: "r".into(),
             status,
             merged: false,
+            report_only: false,
+            preserved_work: vec![],
             landed: false,
             landed_method: "unverified",
             stalled: false,

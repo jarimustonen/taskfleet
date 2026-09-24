@@ -61,7 +61,7 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
-    /// Current retained worktree/branch inventory for failed or cancelled nodes.
+    /// Current retained worktree/branch inventory for terminal nodes, including Done.
     /// Always present and never inferred from historical cleanup events.
     preserved_work: Vec<crate::run::retained::PreservedWork>,
     /// Suspected *false-failed* run (issue `raw-git-selfmerge-false-failed`):
@@ -262,7 +262,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     let git = crate::git::repo::Git::with_bin(crate::supervise::cleanup::git_bin());
     let mut preserved_work: Vec<_> = nodes
         .iter()
-        .filter_map(|node| crate::run::retained::observe(&manifest, node, &git))
+        .filter_map(|node| crate::run::retained::observe_terminal(&manifest, node, &git))
         .map(|observation| observation.view)
         .collect();
     preserved_work.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -505,7 +505,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             }
             for preserved in &payload.preserved_work {
                 println!(
-                    "preserved:     {} worktree={} ({}) branch={} ({}) cleanliness={} unmerged={} verification={}",
+                    "preserved:     {} worktree={} ({}) branch={} ({}) cleanliness={} unmerged={} verification={} reason={}",
                     preserved.node_id,
                     preserved.worktree_path.as_deref().unwrap_or("(none)"),
                     if preserved.worktree_present { "present" } else { "absent" },
@@ -514,6 +514,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     preserved.cleanliness,
                     preserved.unmerged_commits.map_or_else(|| "?".to_string(), |n| n.to_string()),
                     preserved.verification,
+                    preserved.reason,
                 );
             }
             output::emit_text_warnings(&output_warnings);

@@ -1,6 +1,6 @@
 ---
 name: worktree-technical-decision
-description: Spawn an autonomous worktree via `taskfleet run create --kind technical-decision` to drive ONE architectural / technical decision to a recorded ADR and self-merge. Use when the user says "decide whether we should use X or Y", "make the architectural call on Z", "settle the trade-off between A and B", or links an issue tagged decision/architecture. Do NOT use for opinions (`/llm-consult`), design ideation (`/llm-workshop`), plan review (`/llm-panel`), survey/research (`/worktree-research`), or archaeology ("why did we choose X" — historical, not a forward decision).
+description: Spawn an autonomous worktree via `taskfleet run create --kind technical-decision` that drives ONE architectural or technical choice to a recorded ADR (architecture decision record) and merges itself back. Use when the user says "decide whether we should use X or Y", "make the architectural call on Z", "settle the trade-off between A and B", or points at an issue tagged decision/architecture. Not for an opinion (`/llm-consult`), design ideation (`/llm-workshop`), plan review (`/llm-panel`), an open survey with no chosen path (`/worktree-research`), or archaeology ("why did we choose X" is answered from past ADRs and the log, not by spawning).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -8,285 +8,234 @@ schema_version: 1
 
 # worktree-technical-decision
 
-A **technical-decision worktree** is one autonomous agent whose
-deliverable is a **recorded ADR** (architecture decision record) in the
-repo — usually `docs/adr/<NNNN>-<slug>.md` or the project's equivalent
-location. It investigates options, weighs trade-offs across required
-expert lenses, picks one, records the decision with rationale and
-explicit rejected alternatives, and merges itself back — same
-self-merge contract as `worktree-spinoff`.
+A technical-decision worktree is one autonomous agent whose deliverable is a
+recorded ADR in the repository: it investigates the options, weighs them
+through the lenses the decision needs, picks one, writes down the decision with
+its rationale and the alternatives it rejected, commits the file, and merges
+itself back with `taskfleet run merge`. Nobody reviews it interactively and it
+cannot ask you anything: the brief you write is the whole conversation, and the
+terminal report it submits is all you hear back. Your work is deciding that the
+request is a decision, pinning the question so it cannot drift, writing a brief
+the worker can finish alone, creating the run, and telling the caller honestly
+how they will learn the outcome.
 
-Read `taskfleet-overview` first; read `worktree-spinoff` for the
-shared autonomous-merge contract; read `worktree-research` for the
-contrast — research surveys an open space, technical-decision picks
-one path and records the call.
+The run mechanics are shared with `worktree-spinoff`: placement and PTY
+limits, driver flags, profiles, `--notify`, `run wait`, the `landed` flag, the
+awaiting-input signal, and the error codes are documented there and not
+repeated here. If the run / supervisor / node vocabulary is new to you, read
+`taskfleet-overview` first.
 
-## When to use
+## Is this a decision?
 
-- ✅ "Decide whether we should use X or Y".
-- ✅ "Make the architectural call on Z".
-- ✅ "Settle the trade-off between A and B".
-- ✅ Issue tagged `decision` / `architecture` and the user says "drive
-  this to an ADR".
-- ❌ "What do you think of X" → `/llm-consult` (opinion, no record).
-- ❌ "Design a system for X" → `/llm-workshop` (ideation, multi-LLM).
-- ❌ "Review my plan" → `/llm-panel` (role panel, no merged ADR).
-- ❌ "Compare A vs B vs C in depth" → `/worktree-research` (sourced
-  report, no chosen path).
-- ❌ "Why did we choose X" → archaeology; read past ADRs and the
-  commit log, do not spawn anything.
+It is when the user wants one path chosen and the choice written down so that
+nobody re-litigates it: "decide whether X or Y", "make the architectural call
+on Z", "settle the trade-off", or an issue tagged `decision` / `architecture`
+that they want driven to an ADR. The product is a commitment with reasons.
 
-## Workflow
+It is not a decision when the user wants an opinion in the conversation
+(`/llm-consult`), a design session (`/llm-workshop`), a review of a plan
+(`/llm-panel`), or a survey of a space they will read and decide on later
+(`/worktree-research`, which deliberately stops short of choosing; a decision
+sent there comes back with the question unanswered, and a survey sent here
+comes back with a choice nobody asked for). "Why did we choose X" is history:
+read the existing ADRs and the commit log and answer inline.
 
-### 0. Validate context
+## What is at stake
 
-1. Working directory must be a git repo with a clean current branch.
-2. ADR target directory must exist (typically `docs/adr/`). If it does
-   not, ask the user where the ADR should land and create the
-   directory in the worktree.
-3. `taskfleet version --output json` to confirm
-   `{{CLI_VERSION}}`.
-4. Parse an optional caller `--profile <name>` as an explicit escalation or
-   selection. Strip it from the decision question and preserve it for `run create`;
-   never hard-code a concrete model name or command into the brief.
+**The question.** Decisions fail when the question drifts. A worker given
+"look at our storage options" will answer some question competently; the user
+wanted a specific one. So the brief carries the question as one forward-looking
+sentence, the constraints that are not negotiable (existing technology,
+deadlines, team skills, regulation), the options genuinely on the table, and
+what would make one answer better than another. If the request does not say
+which choice is being made or what bounds it, one question to the user before
+spawning is cheaper than the run it would misdirect. Everything else, the
+title, the ADR path where the repository has a convention, the lenses, the
+profile, is a routine call: make it, say what you chose, and continue.
 
-### 1. Pin the decision question
+**The record.** An ADR outlives the run by years and is read as the reason a
+thing is the way it is; in this repository, `AGENTS.md` cites ADRs as the
+grounds for not resurrecting deleted designs. A confident ADR built on a weak
+comparison misleads every later reader, which is why the rejected alternatives
+and their reasons are part of the deliverable, why evidence comes before
+opinion, and why a decision the evidence cannot make is reported as blocked
+rather than settled by a coin flip.
 
-Decisions fail when the **question** drifts. Lock it down before
-spawning:
+**The source branch.** `run merge` rebases the worker's branch onto the run's
+recorded source branch and merges it there; the branch checked out when you run
+`run create` is the default, and the caller should hear which one it was. The
+merge is also taskfleet's only success signal: a worker that finishes and skips
+it has delivered nothing the caller can see.
 
-- **Question** — one sentence, posed as a forward choice ("Should we
-  use X or Y for Z?").
-- **Constraints** — non-negotiable bounds (existing tech, deadlines,
-  team skills, regulatory).
-- **Options to consider** — at least two; the agent may add more if
-  the space genuinely contains them but should not invent strawmen.
-- **Expert lenses required** — typically architect + maintainability +
-  security; add perf / cost / ergonomics as relevant.
-- **Deliverable location** — ADR path.
+**The worker's report.** Preserving unmerged work is the supervisor's job: a
+blocked report, a failure, or a cancel keeps the branch and worktree for a human
+to harvest. The real loss is a run that never terminalizes. It stays alive, the
+worktree dangles, and anyone waiting on it waits forever. That is why the brief
+ends with exactly one terminal path, and why the report's field names are
+exact: they are an interface the supervisor and the caller parse.
 
-If any of the above is missing, ask **once** before spawning.
+**The user's installed taskfleet.** When the repository is taskfleet itself, a
+worker may `cargo build --release` and run `./target/release/taskfleet …` from
+its worktree, but it never installs, replaces, or removes the user's installed
+binary or bundled skills, by `cargo install`, Homebrew, a manual copy, or any
+`skill install` variant. The installed release is the user's production tool
+and legitimately differs from source `HEAD`.
 
-### 2. Build the prompt
+## Pinning the decision
 
-1. Pinned decision question + constraints.
-2. Options to consider.
-3. **Evidence and lenses** — begin with primary sources, repository evidence,
-   deterministic checks, and source-grounded scenarios. Apply the relevant
-   architecture, maintainability, security, and topic-specific lenses directly.
-   Use a panel only when the decision contains genuine unresolved trade-offs for
-   which independent role perspectives add evidence; record that rationale in the
-   brief. A panel is not a default ritual, and repeated review/panels require a
-   separate concrete risk or unresolved-trade-off rationale.
-4. **ADR structure** — Title / Status (Accepted) / Context / Decision
-   / Consequences (including explicitly-rejected alternatives with
-   reasons) / Date / Authors. Project-specific ADR templates take
-   precedence if present.
-5. **Done criteria** — ADR file exists at the agreed path, committed,
-   merged back. No code changes unless the ADR mandates them (and
-   even then, prefer a follow-up bugfix / code worktree to keep the
-   ADR commit clean).
-6. **Repository-local tool safety** — if evidence gathering requires building
-   taskfleet, use `cargo build --release` and invoke
-   `./target/release/taskfleet …` explicitly. During repository work,
-   neither workers nor the orchestrator may create, replace, remove, or modify
-   the user's installed taskfleet or bundled skills by any mechanism,
-   including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
-   `skill install` variant.
-7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
-   into the brief. If a panel was explicitly required for a genuine trade-off,
-   an incomplete panel blocks the decision; surviving responses cannot stand in
-   for the requested panel.
+Write down, before anything else: the question as one sentence posed as a
+forward choice ("Should we use X or Y for Z?"); the constraints; the options to
+weigh, at least two, with the worker free to add a real one it finds but not to
+invent strawmen that make the favourite look good; the lenses the decision
+needs, usually architecture, maintainability, and security, plus performance,
+cost, or ergonomics where they actually bear on it; and where the ADR lands.
 
-### 3. Select the profile and create the run
+Find the ADR location from the repository, not from habit. Check for an
+existing ADR directory (`docs/decisions/`, `docs/adr/`, or whatever
+`AGENTS.md` names), its README or template, and the numbering of the files
+already there; the worker gets the exact path and the next number. This
+repository keeps ADRs at `docs/decisions/<NNNN>-<slug>.md` with a header of
+Status / Date / Decider / Issue bullets followed by Context, Decision, and
+Consequences. A repository with no ADR convention gets that same layout under
+`docs/decisions/`, and the caller hears that you chose it.
 
-Technical decisions, ADRs, and broad/high-risk design select the user-owned
-`capable` profile by default. A caller's explicit `--profile <name>` wins and may
-escalate this choice; do not silently downgrade it. The skill selects only the
-name. `$TASKFLEET_HOME/config.toml` remains the sole owner of executable profile
-definitions, harnesses, concrete models, and command argv.
+## The brief
 
-Preflight the **complete intended create command** with `--dry-run --profile
-<selected>`. For the default, that means `--profile capable`. If an explicit caller
-profile is missing, stop rather than replace it. For the workflow default only, if
-`error.code == "unknown_profile"` and `error.expected` is empty, retry the dry-run
-without `--profile` to preserve a pre-profile installation's legacy behavior. If
-`error.expected` is non-empty but lacks `capable`, stop with the structured error;
-do not pick an arbitrary listed profile. Any other error stops before mutation. Make
-the real call with exactly the selector (or legacy omission) whose dry-run passed.
-Installations that define only `capable` therefore use it directly and predictably.
+`run create` prepends generated run context to every worker prompt, including
+a custom `--prompt-file`: the exact run id, the `run show --current` ownership
+resolver, and the issue-filing boundary (issues a worker files go through
+`issuectl intake file` and are born unlaned). That generated text is
+authoritative over the brief, so do not restate or weaken it. Only a pi
+*research* worker gets a closing recipe in its preamble; a technical-decision
+worker gets none, so the brief carries the closing recipe and the
+failure-disclosure contract below in full. What the worker still needs from
+you:
 
-```
-# First issue this complete command with --dry-run; remove only --dry-run after it passes.
-taskfleet run create \
-  --kind technical-decision \
-  --title "<adr-slug>" \
-  --task "<self-contained decision brief>" \
-  [--profile <selected-profile>] \
-  [--source-branch <branch>] \
-  [--idempotency-key <key>] \
-  [--dry-run]
-```
+- **The pinned question, constraints, options, lenses, and ADR path** from
+  above.
+- **The evidence bar.** Primary sources, the repository's own code and history,
+  deterministic checks, and source-grounded scenarios come first; the worker
+  applies the required lenses itself against that evidence. A model panel is
+  worth running only where the decision holds a genuine unresolved trade-off
+  on which independent perspectives add evidence, and the brief or the ADR says
+  why it was run. A panel that was not needed adds cost and a false sense of
+  consensus; a panel that was needed and came back incomplete cannot support an
+  Accepted ADR, because the missing voice may be the dissent.
+- **The ADR shape:** title; status `Accepted`; context; the decision; its
+  consequences, including each rejected alternative with the reason it lost;
+  date and deciders. The repository's own template wins where one exists.
+- **Done criteria:** the ADR exists at the agreed path, is committed, and is
+  merged back through `run merge`. No code changes ride along; if the decision
+  implies implementation, the ADR says so and the report proposes a spinoff,
+  which keeps the decision commit reviewable on its own.
+- **Repository-local build safety**, the installed-taskfleet rule above, when
+  the target repository is taskfleet.
+- **What a tie means.** If the worker has a lean, that is the decision, and the
+  ADR records how close it was. If the evidence genuinely cannot separate two
+  options, the choice belongs to the user: the worker records the fork as an
+  awaiting-input signal (the recipe is in `worktree-spinoff`) in case someone is
+  watching, and otherwise closes blocked with the unresolved trade-off in
+  `discussion_items[]`, leaving the branch with its draft and evidence for the
+  user to break the tie and re-spawn or harvest.
+- **The closing recipe and the failure-disclosure contract** from the two
+  sections below, copied in.
 
-Same flag rules as `worktree-spinoff`. Output defaults to
-`--output jsonl`.
+A brief longer than about 2 KB, or one with awkward shell quoting, goes in a
+temp file passed as `--prompt-file`; the CLI copies it into the run directory,
+so remove the temp file once `run create` returns.
 
-### 4. Success envelope
+### How the worker closes
 
-```json
+The worker takes exactly one terminal path. A decision made and its ADR
+committed goes through `run merge`, which rebases and merges the branch and
+submits the terminal report stamped `via: "explicit-merge"` in the same call.
+A decision that is blocked, by a tie or by a required step that failed, does
+not merge; it submits a direct `success: false` report. Taking neither leaves
+the run alive; taking both confuses the record.
+
+The worker's run id is in its generated preamble. If a recipe has to recover
+it, `taskfleet run show --current --output json` returns `.data.run_id` from
+the durable ownership record and fails closed on missing, duplicate, stale, or
+malformed evidence; the branch name's short fragment is display metadata that
+can repeat, so it is never used as the id.
+
+Once the ADR is committed, the worker writes the terminal report. These field
+names are what the supervisor and the caller read; an unknown key such as
+`discuss` or `wrap_up` passes validation and is never read.
+
+```bash
+cat > /tmp/node-report-${run_id}.json <<'JSON'
 {
-  "schema_version": 1,
-  "data": {
-    "run_id": "01HZ...",
-    "supervisor": 12345,
-    "kind": "technical-decision",
-    "lifecycle": "autonomous",
-    "tmux_window": "<workmux-reported-window-name>",
-    "branch": "wt/<adr-slug>"
-  }
+  "success": true,
+  "summary": "<one-line outcome>",
+  "discussion_items": [],
+  "spinoff_proposals": [],
+  "wrap_up_recommendations": []
 }
+JSON
 ```
 
-### 5. Report to the caller
+`success` is the one required field. `discussion_items[]` carries decisions
+that genuinely needed a human (`{"topic": "<non-empty>", "severity":
+"discuss|critical|info", "options": ["…"]}`); `spinoff_proposals[]` carries
+follow-up work worth spawning, such as the implementation an ADR mandates
+(`{"proposed_title": "<non-empty>", "proposed_kind":
+"spinoff|research|technical-decision|fan-out", "rationale": "<why>"}`, and
+only those four kinds exist: `run merge` drops a proposal naming any other kind
+with a warning, and `node report` rejects the whole file);
+`wrap_up_recommendations[]` is an array of strings for the caller. The per-run
+path matters because two concurrent workers writing a shared
+`/tmp/node-report.json` clobber each other.
 
-Tell the user:
+Then merge and report in one call:
 
-- Run id, branch, tmux window, expected ADR path.
-- That the worktree self-merges once the ADR is committed.
-- How to follow: `run show <run-id>` for a one-shot snapshot, `event
-  tail <run-id> --follow` for the streaming log, or `run wait <run-id>`
-  to block until the run is terminal (`done | failed | cancelled`)
-  instead of hand-rolling a poll loop.
+```bash
+taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+```
 
-## Terminal report (mandatory)
+The file is validated before the merge runs. `run merge` defaults to node
+`n-0001`, the only node a technical-decision run has, and merges into the
+recorded source branch unless `--source <branch>` says otherwise. The
+supervisor then tears down the worktree, tmux window, and branch within a
+second or two and the worker's session ends as its window closes; the worker
+does not run `tmux kill-window`, `git worktree remove`, or `git branch -d`
+itself. On `error.code: "merge_failed"` no report was submitted and the node
+stays live: resolve the conflict (or `/complex-rebase` for a deeply diverged
+branch), commit, and re-run the same `run merge` command; the report file is
+still on disk.
 
-The merge and the terminal `node report` are now **one call**. The run
-stays alive until a terminal `node report` lands; until then the per-run
-supervisor keeps polling, `taskfleet run show` reads `status:
-pending` forever, and the tmux window never closes — the user sees a
-worktree that looks stuck when the work is actually done.
+The blocked path submits the same file, with `success: false` and the
+unresolved trade-off or failure in `discussion_items[]`, directly:
 
-There are two closing paths, and the brief MUST instruct the agent to take
-exactly one terminal path, never both, before its session ends:
+```bash
+taskfleet node report "$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json
+```
 
-- **Decision made + ADR committed → close with `run merge`.** A single
-  `taskfleet run merge` rebases + merges the worktree branch into
-  its source branch **and** submits the terminal `node report` for you
-  (stamped `via: "explicit-merge"`). Pass your §7.3 payload with
-  `--report-file` so the rich `discussion_items` / `spinoff_proposals` /
-  `wrap_up_recommendations` ride along in the same call. There is no
-  separate `node report` step on this path, and no `/worktree-merge`.
-- **Genuinely blocked / needs the user → `node report` with
-  `success: false`, no merge.** A real lens tie (see Errors) does NOT
-  merge; it stops and submits a direct `node report` carrying the
-  unresolved trade-off. The branch stays unmerged until the user breaks
-  the tie and re-spawns.
-
-1. **Resolve the exact owning run id and node id** from inside the
-   worktree. Use the durable node ownership record, never the branch's display
-   identifier, which is a lossy bounded fragment that can repeat, not ownership:
-
-   ```bash
-   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
-     echo "failed to resolve exact owning run id" >&2
-     exit 1
-   }
-   node_id="n-0001"   # a single-worker kind always has exactly one node
-   ```
-
-   This fails closed on missing, duplicate, stale, or malformed ownership
-   evidence. If it fails, stop and report the error; do not guess a run id.
-
-2. **Write the §7.3 payload** to a temp file. These exact field names are
-   what the supervisor consumes — do NOT use `discuss`,
-   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
-   validation, but its contents are silently dropped.
-
-   ```bash
-   cat > /tmp/node-report-${run_id}.json <<'JSON'
-   {
-     "success": true,
-     "summary": "<one-line outcome>",
-     "discussion_items": [],
-     "spinoff_proposals": [],
-     "wrap_up_recommendations": []
-   }
-   JSON
-   ```
-
-   - `success` — **required** boolean. `true` when the work merged
-     cleanly; `false` when reporting a blocked or failed outcome.
-   - `summary` — optional one-line human-readable result.
-   - `discussion_items[]` — decisions that genuinely needed a human
-     call. Each: `{"topic": "<non-empty>", "severity":
-     "discuss|critical|info", "options": ["…"]}`.
-   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
-     `{"proposed_title": "<non-empty>", "proposed_kind":
-     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
-     "rationale": "<why>"}`.
-   - `wrap_up_recommendations[]` — array of strings; advice for the
-     caller (further reviews, doc updates, additional siblings).
-
-   Even a clean, no-follow-up run submits `{"success": true}` with the
-   arrays empty — the call itself is what releases the supervisor.
-
-3. **Close the run.**
-
-   **Success path — ADR committed, ready to land.** One call merges and
-   reports; the `--report-file` payload is validated *before* the merge:
-
-   ```bash
-   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
-   ```
-
-   `run merge` rebases + merges the branch into the run's recorded
-   `source_branch` (override with `--source <branch>`; it auto-detects
-   main/master if none is recorded), then submits the §7.3 report it
-   was handed. On a clean merge the per-run supervisor winds the run
-   down and tears down the worktree, tmux window, and branch
-   automatically — do **not** manually run tmux/git cleanup, and do not
-   call `node report` yourself on this path. A merge conflict/failure
-   exits non-zero with `error.code: "merge_failed"` and submits **no**
-   report (the node stays live); resolve the conflict (or
-   `/complex-rebase`) and re-run `run merge`.
-
-   **Blocked path — needs the user, no merge.** Submit the report
-   directly, with `success: false` and a populated `discussion_items[]`:
-
-   ```bash
-   taskfleet node report "$run_id" "$node_id" --from-file /tmp/node-report-${run_id}.json
-   ```
-
-   This records the node terminal without merging — `taskfleet
-   node show <run-id> <node-id>` reports `status: done` with your report
-   attached. The supervisor still winds the run down, but the branch is
-   left unmerged for the user.
-
-This step is **not optional**. A successful merge needs the report in
-the same `run merge` call; a blocked run needs the direct `node report`.
-Either way, no terminal report leaves the run dangling with no
-structured outcome for the caller to read.
+A `success: false` report makes the node and the run `failed`; that is what a
+blocked decision looks like in `run show`, and it is correct: the supervisor
+winds the run down but preserves the branch and worktree, which `run show`
+lists under `preserved_work`, so the draft and evidence are there for the user.
 
 ## Tool and sub-workflow failure disclosure
 
 Before closing, inventory every failed or detectably incomplete tool, command,
 external service, review, panel, or delegated workflow.
 
-A step **required** by the brief or done criteria that remains failed or
+A step **required** by the brief or the done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
-existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `taskfleet node report "$run_id"
-n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
-in this single-worker run). An **optional/advisory** failure may continue only
-when the ADR is independently complete and safe; disclose it in the full
-`success: true` report passed to `taskfleet run merge "$run_id"
---report-file /tmp/node-report-${run_id}.json`, never a minimal auto-report.
+report payload from "How the worker closes" to `/tmp/node-report-${run_id}.json`
+with top-level `success: false`, then submit it with `taskfleet node report
+"$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the
+sole node in this single-worker run). An **optional/advisory** failure may
+continue only when the ADR is independently complete and safe; disclose it in
+the full `success: true` report passed to `taskfleet run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
-Requested completeness is a contract. When concrete trade-off risk made a panel
-required, a missing model section, truncation marker, malformed output, or missing
-expected artifact is incomplete, not representative consensus. A required incomplete
-lens panel cannot support an Accepted ADR. Do not launch a panel merely to create this
-requirement. Retry only when existing workflow policy
+Requested completeness is a contract. When a concrete trade-off made a panel
+required, a missing model section, truncation marker, malformed output, or
+missing expected artifact is incomplete, not representative consensus, and an
+incomplete required panel cannot support an Accepted ADR. Do not launch a panel
+merely to create this requirement. Retry only when existing workflow policy
 authorizes a finite bound; if none does, do not retry. Record each attempt and
 its outcome, then take the required or optional path at exhaustion.
 
@@ -303,37 +252,110 @@ data, environment dumps, or unbounded logs. Set top-level `summary` and
 discussion item. Existing prose fields suffice, so do not add a schema or
 supervisor state.
 
-## Issue Management
+## Choosing a profile and creating the run
 
-If issue-driven, make and validate the final ADR commit, then before `run merge`:
+You need a git repository and a compatible binary (see "Install or upgrade"
+below). Capture the current branch; it is the default source and merge target.
+`run create` runs inside tmux or with `--headless` / `--tmux-session <name>`.
 
-1. Run `issuectl close <slug> --status done --stamp --as <agent> --json`.
-2. Require `.data.stamp.status` to be `stamped` or `already_present`; otherwise do not
-   merge. The ADR commit now carries `Fixes-Issue: @<slug>`.
-3. Commit the exact issue closure metadata path separately and require a clean tree.
+The routing matrix in `taskfleet-overview` sends technical decisions to the
+`capable` profile, because a weak comparison becomes a durable record. A
+profile is a capability tier the user's `config.toml` maps to a harness and
+argv, so the brief never names a concrete model or command. An explicit caller
+`--profile` (a driver may prefix the request with one; strip it from the
+question text) is their selection and may escalate; do not downgrade it.
+Profile names are user-owned, so find out that the one you intend exists before
+creating state: run the complete intended command with `--dry-run`. On
+`unknown_profile` for the workflow default, an empty `expected` list means the
+installation predates profiles and the real call omits `--profile`; a non-empty
+list without `capable` means you stop and surface the structured error rather
+than pick another name. An unknown profile the caller chose explicitly is theirs
+to fix. Any other dry-run error also stops. The real call uses exactly the
+selector whose dry-run passed.
 
-A freeform decision has no issue trailer or issue mutation.
+```
+# First issue this command with --dry-run; remove only --dry-run after it passes.
+taskfleet run create \
+  --kind technical-decision \
+  --title "<adr-slug>" \
+  --task "<self-contained decision brief>" \
+  [--profile <selected-profile>] \
+  [--source-branch <branch>] \
+  [--headless] \
+  [--notify <cmd>] \
+  [--idempotency-key <key>] \
+  [--dry-run]
+```
+
+Exactly one of `--task` and `--prompt-file`. `--idempotency-key` makes a retry
+after a transient error return the original run instead of spawning a second
+one. Output defaults to `--output jsonl`.
+
+## What comes back
+
+The success envelope has the same shape as a spinoff's: `data.run_id` is the
+handle for everything that follows, and `data.supervisor` is the supervisor's
+pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`, or
+`delegated-to-parent-supervisor` for a run created with the parent flags)
+explains why none was spawned; anything else non-numeric means nothing is
+driving the worker, which the user needs to hear. `data.branch`,
+`data.worktree_path`, and `data.tmux_window` name what was created.
+
+Tell the user the run id, the source branch, the tmux window and the session it
+is in, the path the ADR will land at, and that the run merges and reports
+itself, so no `/worktree-merge` is needed from them. Be precise about how
+completion reaches them: the run is out of band and nothing re-invokes this
+session by itself. Promise "I'll tell you when it's done" only if you wired
+`--notify` or started a background `taskfleet run wait <run-id>` through a
+harness facility that re-invokes you; otherwise say plainly that they check
+`taskfleet run show <run-id>` or ask you to wait on it. `run wait` blocks until
+the run is terminal without a hand-rolled poll loop, and `taskfleet event tail
+<run-id> --follow` streams the log. Settled is not landed: read the `landed`
+flag from `run wait` or `run show` rather than checking git ancestry yourself.
+A `failed` run whose report carries a tie is the blocked path working as
+designed, not a crash; the branch is preserved and the user breaks the tie. The
+report persists on the node and `run show` exposes it as `data.report`, so a
+late `run show` still answers after teardown.
+
+## Issue-driven decisions
+
+A run spawned by a driver with the parent flags leaves the issue to the driver.
+Otherwise, when the decision came from an issue, the ADR is that issue's
+deliverable and the worker closes it. Write the concrete slug into the brief and
+have the ADR name it. After the final validated ADR commit and before
+`run merge`, the worker runs `issuectl close <slug> --status done --stamp --as
+<agent> --json`. The stamp rewrites the ADR commit's message with a
+`Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog
+reads; `.data.stamp.status` has to be `stamped` or `already_present`, because
+`skipped` (detached HEAD, merge commit, signed, mid rebase) means the landing
+commit would be invisible to the changelog, and that blocks the merge. The
+closure metadata path issuectl returns is committed separately, and the tree is
+clean before `run merge`. A blocked decision leaves the issue open.
+
+A freeform decision adds no trailer and touches no issue.
 
 ## Errors
 
-Same envelope and codes as `worktree-spinoff`. One technical-decision
-specific behavior: if the lens panel returns a genuine tie, the agent
-does NOT pick randomly — it does **not** merge; it stops and submits a
-direct `node report` with `success: false` plus a `discussion_items[]`
-entry naming the unresolved trade-off (see "Terminal report (mandatory)"
-for the payload shape). The user breaks the tie and re-spawns. A decision
-that *is* resolved (ADR committed) lands the other way — via `run merge`,
-which merges and reports in one call.
+`run create` fails with the same envelope and codes as `worktree-spinoff`
+(`invalid_arguments`, `no_tmux_session`, `base_ref_not_found`,
+`workmux_add_failed`, `unknown_profile`, `supervisor_spawn_failed`, and the
+rest); branch on `error.code`, the message is prose. Nothing in the create path
+is decision-specific.
 
 ## Install or upgrade `taskfleet`
 
-This skill was installed for `taskfleet {{CLI_VERSION}}`. Compare
-`.data.version` from `taskfleet version --output json` to
-`{{CLI_VERSION}}`:
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
+first invocation in a session, run
+`taskfleet version --output json`, compare `.data.version` to
+`{{CLI_VERSION}}`, and:
 
 - **Missing**: tell the user to install through a published distribution channel
   outside this repository workflow, then stop.
-- **Older**: ask the user to upgrade; stop.
+- **Older**: tell the user the skill expects `{{CLI_VERSION}}` and suggest
+  upgrading via the channel they originally used
+  (`brew upgrade jarimustonen/taskfleet/taskfleet` or the shell installer),
+  then stop; the `run create --kind technical-decision` surface may have
+  changed.
 - **Newer**: tell the user the installed skill is stale and stop. Refreshing
   installed bundled instructions is published-tool maintenance outside
   repository work; never run `skill install` as part of this workflow.

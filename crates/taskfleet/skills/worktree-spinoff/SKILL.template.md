@@ -75,7 +75,8 @@ the default source and merge target, and the caller should hear which branch tha
 was.
 
 `run create` must run inside tmux or be given `--headless` / `--tmux-session`;
-otherwise it refuses with `no_tmux_session`. `--headless` puts the worker's window
+otherwise, unless a configured default session applies, it refuses with
+`no_tmux_session`. `--headless` puts the worker's window
 in a detached `headless` session (attach with `tmux attach -t headless`), which
 also matters on macOS: the system runs out of pseudo-terminals around five or six
 foreground spawns, and a batch then fails mid-way with `workmux_add_failed`. Use
@@ -91,7 +92,7 @@ as the caller's explicit selection. A leading `--review` token is not a
 into the brief.
 
 The task comes from one of two places. An issue reference (`#NN`, `issuectl:slug`,
-or a bare slug that `issuectl --json show` recognises) means the issue's title and
+or a bare slug that `issuectl show --json` recognises) means the issue's title and
 body are the brief; prefer the bare slug or `issuectl:<slug>` for hyphenated
 slugs, which are not guaranteed to parse behind `#`. Otherwise the user's prompt
 is the brief, and you distil a 2–4 word `--title` from it. When both parent flags
@@ -167,7 +168,8 @@ For the completed path, once the work is committed:
 
 2. Write the report. These field names are what the supervisor and the caller
    read; an unknown key such as `discuss` or `wrap_up` passes validation and is
-   silently dropped, and a malformed element drops that whole element:
+   never read, and `run merge` drops a malformed element with a warning while
+   `node report` rejects the whole file:
 
    ```bash
    cat > /tmp/node-report-${run_id}.json <<'JSON'
@@ -361,8 +363,10 @@ the supervisor's pid when one was spawned; a string instead
 explains why not, and outside those expected cases means nothing is driving the
 worker, which the user needs to hear.
 
-Tell the user the run id, the source branch, and the tmux window name (they can
-select it in the reported session; do not guess a session name); that the spinoff
+Tell the user the run id, the source branch, and the tmux window name together
+with the session you placed it in (`headless`, your `--tmux-session` name, a
+configured `[tmux]` default, or else the session `run create` ran in; the
+envelope does not report the session, so do not guess one); that the spinoff
 merges and reports itself, so no `/worktree-merge` is needed from them; and how
 to follow it (`taskfleet run show <run-id>`). Be precise about how completion
 reaches them: a spinoff runs out of band and nothing re-invokes this session by
@@ -379,7 +383,8 @@ the backoff, the terminal set (`done | failed | cancelled`), and the rule to
 branch on `manifest.status` rather than `lifecycle` (which is a fixed category
 and never matches a terminal value) all live inside it. It exits `0` when the
 run settles, `2` on `--timeout`, and `3` under `--fail-on-error` when the settled
-run failed or was cancelled. Several ids block until all settle, `--any` until
+run failed, was cancelled, stalled, or needs attention. Several ids block until
+all settle, `--any` until
 the first. Its envelope is multi-run, so read `data.runs[]` (for example
 `jq '.data.runs[] | {run_id, status, summary}'`), not `data.status`.
 
@@ -435,7 +440,7 @@ tree. After the final validated implementation commit and before `run merge`, it
 runs `issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json`.
 The stamp rewrites the implementation commit's message with a
 `Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog reads,
-without touching its tree; `.data.stamp.status` has to be `stamped` or
+without touching its tree; the top-level `.stamp.status` has to be `stamped` or
 `already_present`, since `skipped` (detached HEAD, merge commit, signed, or mid
 rebase) or a missing stamp means the landing commit would be invisible to the
 changelog, and that blocks the merge. The closure metadata path issuectl returns

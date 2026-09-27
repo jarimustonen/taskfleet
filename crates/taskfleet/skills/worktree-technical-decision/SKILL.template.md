@@ -137,8 +137,8 @@ you:
   watching, and otherwise closes blocked with the unresolved trade-off in
   `discussion_items[]`, leaving the branch with its draft and evidence for the
   user to break the tie and re-spawn or harvest.
-- **The closing recipe and the failure-disclosure contract** from the two
-  sections below, copied in.
+- **The closing recipe and the failure-disclosure contract.** Copy the closing
+  recipe and copy the disclosure contract below into the brief in full.
 
 A brief longer than about 2 KB, or one with awkward shell quoting, goes in a
 temp file passed as `--prompt-file`; the CLI copies it into the run directory,
@@ -226,9 +226,9 @@ incomplete always blocks this attempt. Do not call `run merge`. Write the
 report payload from "How the worker closes" to `/tmp/node-report-${run_id}.json`
 with top-level `success: false`, then submit it with `taskfleet node report
 "$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the
-sole node in this single-worker run). An **optional/advisory** failure may
-continue only when the ADR is independently complete and safe; disclose it in
-the full `success: true` report passed to `taskfleet run merge "$run_id"
+sole node in this single-worker run). An **optional/advisory** failure
+may continue only when the ADR is independently complete and safe; disclose it
+in the full `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
 Requested completeness is a contract. When a concrete trade-off made a panel
@@ -326,11 +326,11 @@ have the ADR name it. After the final validated ADR commit and before
 `run merge`, the worker runs `issuectl close <slug> --status done --stamp --as
 <agent> --json`. The stamp rewrites the ADR commit's message with a
 `Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog
-reads; `.data.stamp.status` has to be `stamped` or `already_present`, because
-`skipped` (detached HEAD, merge commit, signed, mid rebase) means the landing
-commit would be invisible to the changelog, and that blocks the merge. The
-closure metadata path issuectl returns is committed separately, and the tree is
-clean before `run merge`. A blocked decision leaves the issue open.
+reads; the top-level `.stamp.status` has to be `stamped` or `already_present`,
+because `skipped` (detached HEAD, merge commit, signed, mid rebase) means the
+landing commit would be invisible to the changelog, and that blocks the merge.
+The closure metadata path issuectl returns is committed separately, and the
+tree is clean before `run merge`. A blocked decision leaves the issue open.
 
 A freeform decision adds no trailer and touches no issue.
 

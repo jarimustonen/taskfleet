@@ -8,162 +8,293 @@ schema_version: 1
 
 # worktree-spinoff
 
-A **spinoff** is one autonomous agent running in its own git worktree,
-doing one well-scoped task, and merging itself back to the source branch
-when done. No interactive review. The canonical way to launch one is via
-`taskfleet`, which owns the run state under
-`~/.taskfleet/runs/<run-id>/` — never hand-craft branches or invoke
-`workmux`/`create.sh` directly.
+A spinoff is one autonomous agent in its own git worktree, doing one well-scoped
+task and merging itself back to the source branch with `taskfleet run merge`.
+Nobody reviews it interactively. The brief you write is the only conversation it
+will ever have with you, and the terminal report it submits is the only thing you
+will hear back. Your job is therefore mostly writing: decide that the task is
+spinoff-shaped, write a brief the worker can finish alone, create the run through
+`taskfleet`, and tell the caller honestly how they will learn the outcome.
 
-If you have not yet read it, read the `taskfleet-overview` skill
-first — it defines the run / supervisor / node vocabulary every step
-below assumes.
+`taskfleet` owns the run state under `~/.taskfleet/runs/<run-id>/`. A worktree
+made by hand, or by calling `workmux` / `create.sh` directly, has no supervisor:
+nothing tears it down, nothing reports it, and `run wait` / `run show` never see
+it. If the run / supervisor / node vocabulary is new to you, read
+`taskfleet-overview` first.
 
-## When to use
+## Is this a spinoff?
 
-- ✅ User said `/worktree-spinoff <task>`.
-- ✅ User asked to spawn a "background", "fire-and-forget", or
-  "spinoff" worktree for a focused task.
-- ✅ The `/fan-out` driver needs to spawn one autonomous unit and pass
-  `--parent-run-id` + `--parent-node-id`.
-- ❌ User wants a hands-on, human-driven worktree → spawn with `taskfleet run create --interactive` (the supervisor never auto-terminalizes; the human finalizes with `run merge`/`run cancel`). A default spinoff is always headless + autonomous.
-- ❌ N≥5 similar independent units → `/fan-out`.
-- ❌ Heterogeneous dependency-ordered features → schedule bounded waves through
-  `/stint-start` and the issuectl DAG.
-- ❌ Substantial research / ADR → use `/worktree-research` or
-  `/worktree-technical-decision`. Bug fixes use this spinoff skill with the existing issue
-  slug.
+It is when the user says `/worktree-spinoff <task>`, asks for a "background" or
+"fire-and-forget" worktree for a focused task, or a driver such as `/fan-out`
+needs one autonomous unit with `--parent-run-id` + `--parent-node-id`. A bug fix
+is a spinoff driven by its existing issue slug; there is no separate bugfix kind.
 
-## Workflow
+It is not a spinoff when the user wants to review the work hands-on: create the
+run with `--interactive` instead, and the supervisor then never auto-terminalizes
+but waits for an explicit `run merge` or `run cancel`. Five or more similar
+independent units are `/fan-out`. Several features that depend on each other are
+scheduled as bounded waves through `/stint-start` and the issuectl DAG; taskfleet
+has no integration orchestrator. Research and architectural decisions have their
+own kinds (`/worktree-research`, `/worktree-technical-decision`).
 
-### 0. Validate context
+## What is at stake
 
-1. If the working directory is not a git repo, abort with a clear
-   message — the spinoff needs a source branch.
-2. `taskfleet version --output json` once per session. Compare
-   `.data.version` to `{{CLI_VERSION}}` (see "Install or upgrade"
-   below). Refuse to proceed on a major-version mismatch.
-3. Capture the **current branch** with `git rev-parse --abbrev-ref HEAD`
-   — it becomes the spinoff's source/merge target by default.
-4. **Parse caller passthrough flags.** A driver (`/stint`, `/fan-out`,
-   `/worktree-bug-analysis`) may prefix the request with `--headless`,
-   `--tmux-session <name>`, or `--profile <name>`. Strip these from the task
-   text and forward placement flags verbatim; preserve the profile as the
-   caller's explicit selection. An explicit profile may escalate the default
-   routing below and is never silently downgraded.
-   Note: **there is no `--review` flag.** A caller that wants the spinoff
-   to review before merging says so in the task brief (the *quality bar*,
-   step 2.5) — a leading `--review` token, if present, is that same intent
-   expressed as a flag; fold it into the brief's quality bar, do not pass
-   it to `run create` (which would reject it).
+**The source branch.** `run merge` rebases the worker's branch onto the run's
+recorded source branch and merges it there. Whatever branch you spawn from is the
+branch that gets modified; the default is the branch checked out when you run
+`run create`. `run merge` is also the only success truth: a worker that finishes
+and skips it has delivered nothing as far as the caller can tell.
 
-### 1. Identify task source
+**The worker's work.** Preserving work is the supervisor's job, not the worker's:
+a blocked report, a failure, or a cancel leaves the branch and worktree in place
+so a human can harvest them. The real loss is a run that never terminalizes at
+all. It stays alive, the worktree dangles, and a driver waiting on it waits
+forever. That is why the brief has to end with exactly one terminal path.
 
-- **Issue-driven**: the user's prompt contains an issue reference
-  (`#NN`, `issuectl:slug`, or a bare slug recognised by `issuectl
-  --json show`). Read the issue via `issuectl --json show <ref>` and
-  use its title + body as the task brief.
-- **Freeform**: the user's prompt IS the task brief. Distill a 2–4 word
-  title from it for `--title`.
+**The user's installed taskfleet.** Inside the taskfleet repository a worker may
+`cargo build --release` and run `./target/release/taskfleet …` from its worktree,
+but it never installs, replaces, or removes the user's installed binary or
+bundled skills, by `cargo install`, Homebrew, a manual copy, or any
+`skill install` variant. The installed release is the user's production tool; it
+legitimately differs from source `HEAD`, and upgrading it is a separate
+distribution-channel step, never part of a worker's task.
 
-Skip issue-driven detection when both `--parent-run-id` and
-`--parent-node-id` are set (driver mode). An orchestrator fanning out
-N spinoffs that all reference the same issue would otherwise update
-and close that issue N times.
+**The user's attention.** The worker cannot ask follow-up questions, so a brief
+that misreads the task costs a worktree and a merge cycle. If the goal, the
+context, or what "done" means is genuinely missing from the request, one question
+before spawning is cheaper than that. Everything else, the title, the profile,
+the placement, is a routine call: make it, say what you chose, and continue.
 
-### 2. Build the prompt
+## Before you spawn
 
-The spinoff cannot ask follow-up questions. The `--task` string must be
-self-contained. Include:
+You need a git repository (the spinoff needs a source branch) and a compatible
+binary: run `taskfleet version --output json` once per session and compare
+`.data.version` with `{{CLI_VERSION}}` as described under "Install or upgrade"
+below. Capture the current branch with `git rev-parse --abbrev-ref HEAD`; it is
+the default source and merge target, and the caller should hear which branch that
+was.
 
-1. **Goal** — one sentence on what to deliver.
-2. **Context** — files, modules, constraints. Quote relative paths.
-3. **Done criteria** — concrete and verifiable. Copy the repository's exact
-   green-gate commands from its `AGENTS.md`; never substitute a debug build or a
-   looser warning policy. In taskfleet itself the worker runs `cargo fmt
-   --all --check`, `cargo clippy --locked --workspace --all-targets -- -D
-   warnings`, `cargo nextest run --locked --release --workspace`, `cargo test
-   --locked --release --workspace --doc`, and `RUSTDOCFLAGS="-D warnings" cargo
-   doc --locked --workspace --no-deps`. Nextest and doctests are separate because
-   nextest does not run doctests. The orchestrator or machine setup provisions
-   nextest with `cargo install cargo-nextest --locked`; a worker reports it
-   missing rather than installing globally. Treat ambient `tmux`, harness binaries, and
-   other local tools as suspect; approximate a bare CI runner with a stripped
-   `PATH` for tool-sensitive tests.
-4. **Repository-local build safety** — a worker may run `cargo build --release`
-   and exercise `./target/release/taskfleet …` from its own worktree.
-   During repository work, neither workers nor the orchestrator may create,
-   replace, remove, or modify the user's installed taskfleet or bundled
-   skills by any mechanism, including any `cargo install`, `cargo uninstall`,
-   Homebrew, manual-copy, or `skill install` variant.
-5. **Quality bar** — primary evidence comes first: relevant primary sources,
-   source-grounded scenarios, deterministic tests, repository green gates, and (when
-   relevant) local-bundle or user-environment behavior. For bounded implementation
-   from an accepted design, allow at most one focused final-diff review by default,
-   covering all relevant concerns in that pass. Mechanical, strongly tested refactors
-   or documentation generally need no model panel. Panels, repeated reviews, or a
-   broader independent review require a concrete security/privacy, destructive,
-   concurrency, architectural, breadth, rollback, weak-test, or unresolved-trade-off
-   rationale recorded in the brief or final report. Reuse adequate existing evidence
-   unless the risk surface changed; model review never substitutes for deterministic
-   validation. `run create` prepends
-   generated run context to every worker brief, including custom `--prompt-file` input.
-   That context carries the exact run id and the hard issue-filing boundary:
-   worker-filed issues use `issuectl intake file`, are born unlaned, and review
-   findings carry machine-visible AI-review provenance plus available metadata.
-   Do not weaken that rule or tell a worker to execute an `/assess-findings`-
-   staged `issuectl create` command verbatim.
-6. **Tool/sub-workflow failure policy** — copy the disclosure contract below
-   into the brief. A required failed or detectably incomplete step cannot be
-   claimed complete; an optional failure may continue only when safe and must
-   still be disclosed in the terminal report.
-7. **Terminal report** — the brief MUST end with exactly one terminal path
-   (see "Terminal report (mandatory)" below): completed work merges and reports
-   through `taskfleet run merge`; work blocked by a required failure does
-   not merge and submits a direct `success: false` report. Taking neither path
-   leaves the run unterminated and the worktree dangling.
+`run create` must run inside tmux or be given `--headless` / `--tmux-session`;
+otherwise it refuses with `no_tmux_session`. `--headless` puts the worker's window
+in a detached `headless` session (attach with `tmux attach -t headless`), which
+also matters on macOS: the system runs out of pseudo-terminals around five or six
+foreground spawns, and a batch then fails mid-way with `workmux_add_failed`. Use
+headless placement for any parallel batch larger than three. A user `[tmux]`
+config section may name a default session for autonomous workers; explicit
+placement flags still win.
 
-If the prompt is longer than ~2 KB or contains characters that complicate
-shell quoting, write it to a temp file and pass `--prompt-file
-<path>` instead of `--task <string>`. Use `mktemp -t
-spinoff-prompt-XXXXXX.md` and clean up after the call returns.
+Drivers (`/stint-start`, `/fan-out`, `/worktree-bug-analysis`) may prefix the
+request with `--headless`, `--tmux-session <name>`, or `--profile <name>`. Strip
+them from the task text, forward placement flags verbatim, and treat the profile
+as the caller's explicit selection. A leading `--review` token is not a
+`run create` flag (it would be rejected); it expresses the quality bar, so fold it
+into the brief.
 
-If any of Goal / Context / Done criteria is genuinely missing from the
-user's request, ask the user **once** before spawning. A spinoff that
-misinterprets the task wastes a worktree and a merge cycle.
+The task comes from one of two places. An issue reference (`#NN`, `issuectl:slug`,
+or a bare slug that `issuectl --json show` recognises) means the issue's title and
+body are the brief; prefer the bare slug or `issuectl:<slug>` for hyphenated
+slugs, which are not guaranteed to parse behind `#`. Otherwise the user's prompt
+is the brief, and you distil a 2–4 word `--title` from it. When both parent flags
+are set you are in driver mode: skip issue detection and the issue-closing
+contract below, because a driver fanning out N children from one issue would
+otherwise have that issue updated and closed N times.
 
-### 3. Select the profile and create the run
+## The brief
 
-Choose a named profile from task capability and risk, not from a concrete model name:
+`run create` prepends generated run context to every worker prompt, including a
+custom `--prompt-file`: the exact run id, the `run show --current` ownership
+resolver, and the issue-filing boundary (worker-filed issues go through
+`issuectl intake file`, are born unlaned, and review findings carry
+machine-visible `ai-review` provenance). That generated policy is authoritative
+over later brief text, so do not restate it, weaken it, or tell the worker to
+execute an `/assess-findings`-staged `issuectl create` command verbatim.
+Everything else the worker needs is yours to supply:
 
-- `implementation` — bounded implementation from an accepted design (default for
-  ordinary feature/bug work).
-- `lightweight` — mechanical, strongly tested refactor or documentation.
-- `capable` — broad/high-risk design, uncertain or mixed scope, security/privacy,
-  destructive or concurrency-sensitive behavior, hard rollback, or weak tests.
+- **Goal.** One sentence on what to deliver.
+- **Context.** Files, modules, constraints, relative paths.
+- **Done criteria**, concrete and verifiable. Copy the repository's exact
+  green-gate commands from its `AGENTS.md` rather than paraphrasing: a debug build
+  or a looser warning policy passes in the worktree and turns `main` red. A
+  missing prerequisite such as `cargo-nextest` is something the worker reports,
+  not something it installs globally. A developer machine is not a bare CI
+  runner, so tool-sensitive tests are exercised with a stripped `PATH`, not
+  trusted because the fully equipped host passed them.
+- **Repository-local build safety**, the installed-taskfleet rule above, when the
+  target repository is taskfleet.
+- **Quality bar.** Primary evidence comes first: sources, source-grounded
+  scenarios, deterministic tests, the repository gates, and where relevant the
+  behaviour of a local bundle. For bounded implementation from an accepted
+  design, one focused final-diff review covering every relevant concern is the
+  default ceiling; mechanical, well-tested refactors and documentation usually
+  need no model review at all. Panels, repeated reviews, or a broader
+  independent review are justified by a concrete reason recorded in the brief or
+  the report: security or privacy, destructive or concurrency-sensitive
+  behaviour, architectural breadth, hard rollback, weak tests, or an unresolved
+  trade-off. Adequate existing evidence is reused unless the risk surface
+  changed, and model review never substitutes for deterministic validation.
+- **The failure-disclosure contract and the closing recipe** from the two
+  sections below, copied in. The report shape is an interface the supervisor and
+  the caller parse, so it has to be exact.
 
-A caller's explicit `--profile <name>` wins. It may escalate a task; do not silently
-replace it. Otherwise use the matrix above and keep concrete model names and commands
-out of the issue brief.
+A brief longer than about 2 KB, or one with awkward shell quoting, goes in a
+temp file (`mktemp -t spinoff-prompt-XXXXXX.md`) passed as `--prompt-file`;
+remove the file once `run create` returns, since the CLI copies it into the run
+directory.
 
-Before creating state, run the **complete intended command** with `--dry-run` and the
-selected `--profile`. If an explicit caller profile is unknown, stop rather than
-replacing it. For a workflow-recommended profile, on `error.code ==
-"unknown_profile"` only, retry the dry-run with `--profile capable`. If that is also
-`unknown_profile` and its `error.expected`
-list is empty, retry without `--profile` (the pre-profile legacy path). If profiles
-exist but neither the recommended profile nor `capable` exists, stop and surface the
-structured error; never select an arbitrary profile. Any other dry-run error also
-stops. The real call must use exactly the profile selector (or legacy omission) whose
-dry-run passed. Thus an installation defining only `capable` falls back before any
-mutation rather than failing midway.
+### How the worker closes
 
-Driver-mode child creates reject `--dry-run` because parent publication cannot be
-truthfully previewed. When `--parent-run-id` is set, perform the profile preflight with
-both parent flags omitted, then add them back to the real call and use an
-`--idempotency-key` for safe retry. Profile resolution and the other create-time input
-checks run before the child dry-run refusal; the real call remains responsible for
-validating and publishing the parent relationship.
+The worker takes exactly one terminal path. Completed, mergeable work goes
+through `run merge`, which rebases and merges the branch and submits the terminal
+report stamped `via: "explicit-merge"` in the same call. Work blocked by a
+required failure does not merge; it submits a direct `success: false` report.
+Taking neither leaves the run alive and the worktree dangling; taking both
+confuses the record.
+
+For the completed path, once the work is committed:
+
+1. Resolve the owning run id from the durable ownership record, never from the
+   branch name, whose short fragment is display metadata that can repeat:
+
+   ```bash
+   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
+     echo "failed to resolve exact owning run id" >&2
+     exit 1
+   }
+   ```
+
+   This fails closed on missing, duplicate, stale, or malformed evidence. If it
+   fails, report the error rather than guess.
+
+2. Write the report. These field names are what the supervisor and the caller
+   read; an unknown key such as `discuss` or `wrap_up` passes validation and is
+   silently dropped, and a malformed element drops that whole element:
+
+   ```bash
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
+   {
+     "success": true,
+     "summary": "<one-line outcome>",
+     "discussion_items": [],
+     "spinoff_proposals": [],
+     "wrap_up_recommendations": []
+   }
+   JSON
+   ```
+
+   `success` is the one required field. `discussion_items[]` carries decisions
+   that genuinely needed a human (`{"topic": "<non-empty>", "severity":
+   "discuss|critical|info", "options": ["…"]}`); `spinoff_proposals[]` carries
+   follow-up work worth spawning (`{"proposed_title": "<non-empty>",
+   "proposed_kind": "spinoff|research|technical-decision|fan-out", "rationale":
+   "<why>"}`, and only those four kinds exist); `wrap_up_recommendations[]` is
+   an array of strings for the caller. The per-run path matters: a shared
+   `/tmp/node-report.json` lets two concurrent spinoffs clobber each other.
+
+3. Merge and report in one call:
+
+   ```bash
+   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+   ```
+
+   The file is validated before the merge runs. `run merge` defaults to node
+   `n-0001`, the only node a spinoff has. A worker with nothing structured to say
+   may skip the file and run `taskfleet run merge "$run_id"`, which submits a
+   minimal `{success, summary}` report; a worker disclosing an optional failure
+   uses the full report.
+
+   The supervisor then tears down the worktree, tmux window, and branch within a
+   second or two and the worker's session ends as the window closes. The worker
+   does not run `tmux kill-window`, `git worktree remove`, or `git branch -d`
+   itself, and does not resubmit because `run show` still reads `pending` for a
+   moment. On `error.code: "merge_failed"` no report was submitted and the node
+   stays live: resolve the conflict (or `/complex-rebase` for a deeply diverged
+   branch) and re-run the same `run merge` command.
+
+A worker that hits a genuine human decision does not stop at an interactive
+prompt; nobody is watching, and a blocked prompt looks exactly like a hung run.
+It records the fork as durable run state instead. Write report-shaped discussion
+items (`topic`, non-empty string `options`, `recommended_default`) to a file
+shaped `{"discussion_items":[…]}` and open the signal:
+
+```bash
+taskfleet event create "$run_id" --kind node.awaiting_input --node-id n-0001 \
+  --from-file /tmp/awaiting-input-${run_id}.json \
+  --idempotency-key "awaiting-input:${run_id}:<short-topic>"
+request_seq="$(taskfleet run show "$run_id" --output json | jq -r '.data.awaiting_input_detail.event_seq')"
+```
+
+`run show` and `run list` show it immediately; after three minutes
+(`TASKFLEET_AWAITING_INPUT_GRACE_SECS` overrides) `run wait` settles and a
+registered `--notify` hook fires with `TASKFLEET_STATUS=awaiting-input`. The
+worker then either waits at most five minutes and proceeds on its recommended
+default, closing the signal with the generation it opened:
+
+```bash
+printf '{"event_seq":%s}\n' "$request_seq" > /tmp/input-resolved-${run_id}.json
+taskfleet event create "$run_id" --kind node.input_resolved --node-id n-0001 \
+  --from-file /tmp/input-resolved-${run_id}.json
+```
+
+or submits a terminal blocked report (`success: false`, the same
+`discussion_items`) through `node report`, which preserves the branch and
+worktree for the human. A fork resolved by other evidence is closed the same way
+before continuing.
+
+### Tool and sub-workflow failure disclosure
+
+Before closing, the worker inventories every failed or detectably incomplete
+tool, command, external service, review, panel, or delegated workflow.
+
+A step the brief or the done criteria required, still failed or incomplete,
+blocks this attempt: no `run merge`, but a `success: false` report written to
+`/tmp/node-report-${run_id}.json` and submitted with `taskfleet node report
+"$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json`. An optional or
+advisory failure may continue only when the deliverable is independently
+complete and safe, and is then disclosed in the full `success: true` report
+passed to `run merge`, never hidden behind the minimal auto-report.
+
+Requested completeness is a contract: a panel with a missing model section, a
+truncation marker, malformed output, or a missing artifact is incomplete, not
+consensus. The worker retries only within a bound an existing workflow policy
+grants, records each attempt, and takes the required or optional path at
+exhaustion.
+
+Every distinct failure goes into one aggregate `discussion_items[]` entry whose
+`topic` starts `Tool/sub-workflow failure —`, coalescing repeated attempts of the
+same one: tool and purpose, expected completeness, observed error, attempts,
+affected step, whether work continued and why that was safe, suggested bug
+surface, and a stable artifact or log path when there is one. Actionable
+retry/recover/accept/file steps go in the item's `options`. The whole entry stays
+under 2 KiB with only a short redacted excerpt, never secrets, credentials,
+personal data, environment dumps, or unbounded logs. Top-level `summary` and
+`success` say whether the run is blocked or completed; they do not move into the
+item, and no new schema or terminal state is invented.
+
+## Choosing a profile and creating the run
+
+A profile is a capability tier, not a model name: `implementation` for bounded
+work from an accepted design (the ordinary feature or bug fix), `lightweight` for
+a mechanical, strongly tested refactor or documentation, `capable` for broad or
+high-risk design, uncertain or mixed scope, security or privacy, destructive or
+concurrency-sensitive behaviour, hard rollback, or weak tests. The full matrix and
+the reasoning live in `taskfleet-overview`. An explicit caller profile wins and
+may escalate; do not silently downgrade it. Concrete model names and commands stay
+out of the issue brief, because the user's `config.toml` owns which harness and
+argv a name means.
+
+Profile names are user-owned, so an installation may not define the one you
+recommend. Find that out before creating state: run the complete intended command
+with `--dry-run`. If a workflow-recommended profile returns `unknown_profile`, try
+`capable`; if that is also unknown and the error's `expected` list is empty, the
+installation predates profiles and the real call omits `--profile`. If profiles
+exist but neither is defined, stop and surface the structured error rather than
+pick an arbitrary one. An unknown profile the caller chose explicitly is theirs
+to fix, not yours to substitute. Any other dry-run error also stops. The real
+call uses exactly the selector whose dry-run passed. Child creates refuse
+`--dry-run` (`dry_run_unsupported`) because parent publication cannot be
+previewed truthfully, so in driver mode preflight with both parent flags omitted,
+add them back for the real call, and give that call an `--idempotency-key` so a
+retry is safe.
 
 ```
 # First issue this command with --dry-run; remove only --dry-run after it passes.
@@ -181,52 +312,31 @@ taskfleet run create \
   [--dry-run]
 ```
 
-Flag rules:
+What the flags do that `--help` does not tell you:
 
-- `--kind spinoff` and `--title` are required.
-- `--profile` selects only a user-owned executable profile name. The skill owns the
-  routing policy; `$TASKFLEET_HOME/config.toml` owns its harness and command argv.
-- `--headless` places the agent's tmux window in a detached `headless`
-  session instead of the foreground one, so a batch of spinoffs does not
-  clutter the user's window list; attach later with `tmux attach -t
-  headless`. `--tmux-session <name>` overrides the default session name
-  (and implies headless). Auto-cleanup still closes the window on
-  terminal. Example: `taskfleet run create --kind spinoff
-  --headless --title fix-lint --task "..."`.
-- `--task` OR `--prompt-file` (exactly one). Empty/whitespace-only
-  strings are rejected upstream — do not strip silently.
-- `--source-branch` defaults to the current branch captured in step 0.
-- `--parent-run-id` and `--parent-node-id` are mutually required; pass
-  both or neither. The `/fan-out` driver passes them; a user-initiated
-  `/worktree-spinoff` does not.
-- `--idempotency-key` makes the call safe to retry on transient errors
-  (network blip, disk full). Use the same key on retry and the CLI
-  returns the original run without spawning twice.
-- `--notify <cmd>` registers a completion hook the supervisor runs when
-  the run reaches a terminal state (`done | failed | cancelled`), before
-  teardown — the push signal that tells this session the spinoff finished
-  without you polling. The command runs via `sh -c` with `TASKFLEET_RUN_ID`,
-  `TASKFLEET_STATUS`, `TASKFLEET_SUMMARY`, `TASKFLEET_RUN_KIND`, and `TASKFLEET_RUN_TITLE` in
-  its environment. It also fires for an unresolved `node.awaiting_input` after
-  the grace window with `TASKFLEET_STATUS=awaiting-input`, `TASKFLEET_AWAITING_INPUT=1`,
-  and the discussion array in `TASKFLEET_AWAITING_INPUT_JSON`. Delivery is
-  **at-least-once**: the healthy path fires
-  once, but a supervisor crash mid-fire can re-fire on restart, so write a
-  command that tolerates running more than once (an idempotent file
-  write / notification, not something that double-counts). Pass it **only
-  if you have a real sink** the harness watches — e.g. appending a line to
-  a file (`--notify 'printf "%s %s\n" "$TASKFLEET_RUN_ID" "$TASKFLEET_STATUS" >>
-  ~/.taskfleet-completions'`) or a desktop toast (`--notify 'terminal-notifier
-  -message "$TASKFLEET_SUMMARY"'` / `notify-send`). Without such a sink, do
-  **not** promise the user a notification; use the `run wait` approach
-  under "Following progress" instead. See "Reporting completion back to
-  this session" below. Note the command runs in the **supervisor's**
-  environment (a long-lived detached process), not your login shell — a
-  desktop-toast hook may need the session's `DISPLAY` /
-  `DBUS_SESSION_BUS_ADDRESS`; a file/FIFO sink is the robust choice.
-- Output defaults to `--output jsonl` — one compact envelope per line.
+- Exactly one of `--task` and `--prompt-file`; empty or whitespace-only text is
+  rejected, so do not strip it silently. `--parent-run-id` and
+  `--parent-node-id` come together or not at all.
+- `--idempotency-key` makes the call safe to repeat after a transient error: the
+  same key returns the original run, with `idempotent_replay: true` in the
+  envelope, instead of spawning twice.
+- `--notify <cmd>` is the push signal: the supervisor runs it via `sh -c` on the
+  terminal transition, before teardown, with `TASKFLEET_RUN_ID`,
+  `TASKFLEET_STATUS`, `TASKFLEET_SUMMARY`, `TASKFLEET_RUN_KIND`, and
+  `TASKFLEET_RUN_TITLE` in the environment, and again for an unresolved
+  `node.awaiting_input` after the grace window with
+  `TASKFLEET_STATUS=awaiting-input`, `TASKFLEET_AWAITING_INPUT=1`, and the
+  discussion array in `TASKFLEET_AWAITING_INPUT_JSON`. Delivery is at least
+  once: a supervisor crash between firing and recording its marker re-fires on
+  restart, because a missed completion is worse than a duplicate, so the command
+  should tolerate running twice (an appended line, a toast; nothing that
+  double-counts). It runs in the supervisor's environment, a long-lived detached
+  process, not your login shell, so a desktop toast may lack `DISPLAY` or
+  `DBUS_SESSION_BUS_ADDRESS`; a file or FIFO append the harness watches is the
+  robust sink. Pass it only when such a sink exists.
+- Output defaults to `--output jsonl`, one compact envelope per line.
 
-### 4. Success envelope
+## What comes back
 
 ```json
 {
@@ -237,312 +347,65 @@ Flag rules:
     "supervisor": 12345,
     "kind": "spinoff",
     "lifecycle": "autonomous",
-    "node_id": "n-...",
+    "node_id": "n-0001",
     "tmux_window": "<workmux-reported-window-name>",
     "worktree_path": "$HOME/repos/<repo>/worktrees/<title>",
-    "branch": "wt/<title>"
+    "branch": "wt/<id>-<title>"
   }
 }
 ```
 
-Read `data.run_id` — that is the handle for every follow-up
-(`run show`, `node list`, `discussion list`). Read `data.supervisor` to
-confirm the per-run supervisor process is alive; if it is `null` or the
-field is `{"note": "..."}`, surface the note to the user and stop —
-something blocked the supervisor spawn.
+`data.run_id` is the handle for everything that follows. `data.supervisor` is
+the supervisor's pid when one was spawned; a string instead
+(`not-spawned-dry-run`, `recorded-on-prior-run`, `delegated-to-parent-supervisor`)
+explains why not, and outside those expected cases means nothing is driving the
+worker, which the user needs to hear.
 
-### 5. Report to the caller
+Tell the user the run id, the source branch, and the tmux window name (they can
+select it in the reported session; do not guess a session name); that the spinoff
+merges and reports itself, so no `/worktree-merge` is needed from them; and how
+to follow it (`taskfleet run show <run-id>`). Be precise about how completion
+reaches them: a spinoff runs out of band and nothing re-invokes this session by
+itself, so promise "I'll tell you when it's done" only if you wired one of the
+mechanisms in the next section. Otherwise say plainly that they check
+`run show <run-id>` or ask you to wait on it. A driver gets the structured
+payload (run id, node id, branch, tmux window) instead of a human summary; it
+needs the ids to poll.
 
-Tell the user:
+## Following the run and reading the outcome
 
-- Run id, kind (`spinoff`), source/merge branch.
-- Tmux window name (so they can attach to the reported tmux session and
-  select that window if curious; do not guess a session name).
-- That the spinoff merges-and-reports itself via `taskfleet run
-  merge` — no `/worktree-merge` handoff from them.
-- How to follow progress: `taskfleet run show <run-id>` (or
-  `--output jsonl` for one-line summaries).
-- **How completion reaches them.** The spinoff runs out-of-band; nothing
-  re-invokes this session by itself. Do **not** claim you will "let them
-  know when it's done" unless you have actually wired one of the two
-  mechanisms in "Reporting completion back to this session" below.
-  Otherwise state plainly that they should check `run show <run-id>`, or
-  ask you to wait on it.
+To wait, use `taskfleet run wait "$run_id"` rather than a hand-rolled poll loop:
+the backoff, the terminal set (`done | failed | cancelled`), and the rule to
+branch on `manifest.status` rather than `lifecycle` (which is a fixed category
+and never matches a terminal value) all live inside it. It exits `0` when the
+run settles, `2` on `--timeout`, and `3` under `--fail-on-error` when the settled
+run failed or was cancelled. Several ids block until all settle, `--any` until
+the first. Its envelope is multi-run, so read `data.runs[]` (for example
+`jq '.data.runs[] | {run_id, status, summary}'`), not `data.status`.
 
-When invoked from a driver, return the structured payload (run id, node
-id, branch, tmux window) to the calling skill instead of a human
-summary — the driver needs the IDs to poll completion.
+Two mechanisms deliver completion to this session without polling: `--notify`
+at spawn time, or a background `taskfleet run wait "$run_id"` started at spawn
+time through a harness facility that re-invokes you when a background task exits.
+A run you never waited on has no watcher. Everything persists after teardown
+(the run directory, terminal `manifest.status`, the node's report), so a late
+`run show` still answers.
 
-## Genuine decision forks: signal, never prompt
+Settled is not landed. `run wait` and `run show` both carry a `landed` boolean
+with a `landed_method` (`git-verified` | `report-marker` | `unverified`), and
+that flag is the landing signal. Do not verify with
+`git merge-base --is-ancestor <worker-branch> <target>`: if you rebased local
+`main` meanwhile, routine on a busy repo, the merge was replayed under a new hash
+while the branch ref stayed put and the ancestry check reports a false "not
+landed". The CLI's check is patch-id based against the current target tip and
+survives that; when git cannot run because the branch is gone it falls back to
+the durable `run merge` marker. `landed: false` with method `unverified` means
+"could not confirm", so verify by content on the actual target before concluding
+the work is missing. `run show` also lists `preserved_work` (retained worktrees or
+branches, including on a `done` run) and, on a failed run, `recoverable_work`
+from the report.
 
-An autonomous worker MUST NOT stop at an interactive stdin prompt. If a genuine
-human decision is unavoidable, write one or more report-shaped discussion items
-(`topic`, non-empty string `options`, and `recommended_default`) to JSON and
-open durable run state:
-
-```bash
-taskfleet event create "$run_id" --kind node.awaiting_input --node-id n-0001 \
-  --from-file /tmp/awaiting-input-${run_id}.json \
-  --idempotency-key "awaiting-input:${run_id}:<short-topic>"
-request_seq="$(taskfleet --output json run show "$run_id" | \
-  jq -r '.data.awaiting_input_detail.event_seq')"
-```
-
-The file shape is
-`{"discussion_items":[{"topic":"…","options":["…"],"recommended_default":"…"}]}`.
-This makes `run show` / `run list` observable immediately; after three minutes
-(unless `TASKFLEET_AWAITING_INPUT_GRACE_SECS` overrides it), `run wait` settles and a
-registered `--notify` hook fires with `TASKFLEET_STATUS=awaiting-input` and
-`TASKFLEET_AWAITING_INPUT_JSON`.
-
-Do not wait indefinitely. Either (a) wait at most five minutes without opening
-an interactive prompt, then emit `node.input_resolved` with
-`{"event_seq":$request_seq}` and proceed on the stated recommended default:
-
-```bash
-printf '{"event_seq":%s}\n' "$request_seq" > /tmp/input-resolved-${run_id}.json
-taskfleet event create "$run_id" --kind node.input_resolved --node-id n-0001 \
-  --from-file /tmp/input-resolved-${run_id}.json
-```
-
-Alternatively, (b) immediately submit a terminal blocked
-report with `success:false` and the same `discussion_items` via
-`taskfleet node report "$run_id" n-0001 --from-file <report>`. The blocked
-path preserves the branch and worktree for the human. If the fork resolves by
-other evidence before the timeout, emit the same generation-fenced
-`node.input_resolved` before continuing.
-
-## Terminal report (mandatory)
-
-A spinoff MUST take exactly one terminal path, never both. Completed,
-mergeable work uses `taskfleet run merge`, which rebases + merges the
-branch and submits the terminal `node report` stamped `via: "explicit-merge"`.
-Work blocked by a required failed or incomplete step does **not** call `run
-merge`; it submits a direct `success: false` report as specified in "Tool and
-sub-workflow failure disclosure" below. Omitting both paths leaves the run
-alive and the worktree dangling.
-
-For the completed path, the brief instructs the spinoff to run the following
-once the work is committed and ready to land, before its session ends:
-
-1. **Resolve the exact owning run id** from inside the worktree. Use the
-   durable node ownership record, never the branch's display identifier (it is a
-   lossy bounded fragment that can repeat, not ownership):
-
-   ```bash
-   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
-     echo "failed to resolve exact owning run id" >&2
-     exit 1
-   }
-   ```
-
-   This fails closed on missing, duplicate, stale, or malformed ownership
-   evidence. If it fails, stop and report the error; do not guess a run id.
-
-2. **Write the §7.3 payload** to a temp file. These exact field names are
-   what the supervisor consumes — do NOT use `discuss`,
-   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
-   validation, but its contents are silently dropped.
-
-   ```bash
-   cat > /tmp/node-report-${run_id}.json <<'JSON'
-   {
-     "success": true,
-     "summary": "<one-line outcome>",
-     "discussion_items": [],
-     "spinoff_proposals": [],
-     "wrap_up_recommendations": []
-   }
-   JSON
-   ```
-
-   - `success` — **required** boolean. `true` when the work merged
-     cleanly; `false` when reporting a blocked or failed outcome.
-   - `summary` — optional one-line human-readable result.
-   - `discussion_items[]` — decisions that genuinely needed a human
-     call. Each: `{"topic": "<non-empty>", "severity":
-     "discuss|critical|info", "options": ["…"]}`.
-   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
-     `{"proposed_title": "<non-empty>", "proposed_kind":
-     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
-     "rationale": "<why>"}`.
-   - `wrap_up_recommendations[]` — array of strings; advice for the
-     caller (further reviews, doc updates, additional siblings).
-
-3. **Merge and report in one call** by passing that payload to
-   `run merge` via `--report-file`. The file is validated *before* the
-   merge runs, and the rich §7.3 fields are carried in the same call:
-
-   ```bash
-   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
-   ```
-
-   `run merge` defaults to node `n-0001` (a single-worker kind always
-   has exactly one node), so the node id is no longer needed. A spinoff
-   with **no** follow-up items (empty discussion_items / spinoff_proposals
-   / wrap_up_recommendations) may skip the temp file entirely and submit a
-   minimal auto-report:
-
-   ```bash
-   taskfleet run merge "$run_id"
-   ```
-
-   This rebases + merges the worktree branch into its recorded source
-   branch and submits a minimal `{success, summary}` report. The call
-   itself is what releases the supervisor.
-
-   On a clean merge the supervisor winds the run down and tears down the
-   worktree, tmux window, and branch automatically within a second or
-   two — the agent's session ends as the window closes. Do **not** run
-   `tmux kill-window`, `git worktree remove`, or `git branch -d`
-   yourself, and do not re-verify or re-submit if `run show` still reads
-   `pending` for a moment.
-
-   **Conflict path:** if `run merge` exits non-zero with
-   `error.code: "merge_failed"` it does **not** submit a report and the
-   node stays live — resolve the conflict (or run `/complex-rebase` for
-   deeply-diverged branches) and re-run `taskfleet run merge
-   "$run_id" --report-file /tmp/node-report-${run_id}.json`.
-
-A terminal report is **not optional**. Completed work with no `run merge`, or
-blocked work with no direct `node report`, leaves the run dangling with no
-structured outcome for the caller to read.
-
-## Tool and sub-workflow failure disclosure
-
-Before closing, inventory every failed or detectably incomplete tool, command,
-external service, review, panel, or delegated workflow.
-
-A step **required** by the brief or done criteria that remains failed or
-incomplete always blocks this attempt. Do not call `run merge`. Write the
-existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `taskfleet node report "$run_id"
-n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
-in this single-worker run). An **optional/advisory** failure may continue only
-when the deliverable is independently complete and safe; disclose it in the
-full `success: true` report passed to `taskfleet run merge "$run_id"
---report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
-
-Requested completeness is a contract. A requested panel with a missing model
-section, truncation marker, malformed output, or missing expected artifact is
-incomplete, not representative consensus. Retry only when existing workflow
-policy authorizes a finite bound; if none does, do not retry. Record each attempt
-and its outcome, then take the required or optional path at exhaustion.
-
-Create one aggregate `discussion_items[]` entry for the run whose `topic` starts
-`Tool/sub-workflow failure —`. Cover every distinct failure, coalescing repeated
-attempts of the same one: tool/workflow and purpose; expected completeness;
-observed exit/error/incompleteness; attempts; affected step; whether work
-continued and why safe; suggested bug surface; and a stable artifact/log path
-when available. Put actionable retry/recover/accept/file steps in item-level
-`options`. Keep the complete entry, including options, at most 2 KiB. Include
-only a short redacted excerpt; never copy secrets, credentials, personal data,
-environment dumps, or unbounded logs. Set top-level `summary` and `success` to
-distinguish blocked from completed; do not put them inside the discussion item.
-Existing prose fields suffice, so do not add a schema or terminal state.
-
-## Issue Management
-
-Skip this section in driver mode (`--parent-run-id` set). The driver
-owns issue interaction.
-
-When issue-driven and not in driver mode, resolve the issue type while building the brief:
-a bug closes as `fixed`; a feature/task/improvement/chore closes as `done`. If the
-repository customizes types or delivery statuses and no single valid status follows from
-its schema, stop before implementation rather than guess. Put the **concrete** slug,
-status, and agent identity—not the metavariables below—into this closing contract:
-
-1. Mark work begun with `issuectl update <slug> --status in-progress --json`. Stage and
-   commit only that issue metadata path, then require a clean tree before implementation.
-2. Make and validate the final implementation commit. Before `run merge`, run
-   `issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json`.
-3. Require `.data.stamp.status` to be `stamped` or `already_present`; `skipped` or a
-   missing stamp blocks the merge. The stamp rewrites the implementation commit with
-   `Fixes-Issue: @<slug>` without changing its tree.
-4. Stage the exact closure metadata path returned by issuectl, commit that metadata in a
-   separate commit, and require a clean tree before `taskfleet run merge`.
-
-Do not add a `Fixes-Issue` trailer or close an issue for a freeform run. Driver mode keeps
-issue interaction with the driver. The worker performs these calls itself; the spawning
-skill must not race it.
-
-## Errors
-
-Failures print a JSON envelope to **stderr** with non-zero exit:
-
-```json
-{"schema_version": 1, "error": {"code": "<code>", "message": "..."}}
-```
-
-Always branch on `error.code`; the message is human prose.
-
-Likely codes:
-
-- `invalid_arguments` — missing/empty `--title` or `--task`, both
-  `--task` and `--prompt-file` set, or `--parent-run-id` /
-  `--parent-node-id` mismatched.
-- `branch_not_found` — `--source-branch` does not exist locally. Fetch
-  or correct the name; do not auto-create.
-- `worktree_create_failed` — git refused (dirty working tree on the
-  source branch, conflicting worktree path, locked branch). Report to
-  the user; the source branch likely has uncommitted changes that must
-  be committed or stashed first.
-- `idempotent_replay` — informational; the `--idempotency-key` matched
-  a prior run. The returned envelope describes that prior run; no new
-  spawn happened.
-- `supervisor_spawn_failed` — the supervisor process could not be
-  started. The run dir exists but no one is driving the worker. Tell
-  the user to inspect `<dir>/supervisor.stderr.log` and consider
-  `taskfleet run reattach <run-id>`.
-
-If `--dry-run` is set, the CLI validates inputs and emits a
-`dry_run: true` envelope without materializing anything.
-
-## Following progress
-
-The spinoff runs asynchronously. To inspect status **once**:
-
-- `taskfleet run show <run-id>` — current status, node states,
-  recent events.
-- `taskfleet event tail <run-id> --follow` — streaming
-  event log.
-- `taskfleet node list <run-id>` — per-unit detail (a
-  spinoff has exactly one worker node).
-- `taskfleet node show <run-id> n-0001` — the structured terminal
-  report `taskfleet run merge` submits as it merges the branch (see
-  "Terminal report (mandatory)").
-
-**Completion: block with `run wait`.** To wait until the run settles,
-use the binary's blocking primitive instead of a hand-rolled poll loop —
-the correct backoff, the terminal set (**`done | failed | cancelled`**),
-and the "branch on `manifest.status`, never `lifecycle`" rule all live
-inside `run wait`:
-
-```bash
-# Block until the run reaches a terminal state (exit 0 = settled).
-taskfleet run wait "$run_id"
-```
-
-`run wait` exits `0` once the run is terminal, `2` if `--timeout`
-elapsed first, and `3` under `--fail-on-error` when the settled run was
-`failed`/`cancelled`. Its JSON folds the terminal report `summary` in,
-so you rarely need a follow-up `run show`. Pass several run-ids to block
-until **all** settle (add `--any` to return on the first). This
-supersedes the old `while … run show … case` snippet, which broke under
-zsh word-splitting and routinely polled the wrong field.
-
-**Settled ≠ landed — read the `landed` flag, not `merge-base --is-ancestor`.**
-Both `run wait` and `run show` surface a `landed` boolean plus a `landed_method`
-(`git-verified` | `report-marker` | `unverified`). Trust it as the landing
-signal.
-
-### Reading a worker report back
-
-The terminal report is persisted: it is **not** under a projection field named
-`report`. `node show` preserves the projection-native `data.last_report` and
-also exposes the consumer-facing `data.report` alias. For a single-worker
-spinoff, `run show` exposes the same report at `data.report`; multi-node runs
-must read each worker with `node show`:
+The terminal report persists on the node as `last_report`. For a single-worker
+spinoff `run show` exposes it as `data.report`; `node show` exposes both names:
 
 ```bash
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
@@ -553,51 +416,61 @@ taskfleet node show "$run_id" n-0001 --output json |
   jq '.data.report // .data.last_report'
 ```
 
-`run wait` deliberately has a different envelope because it can wait for many
-runs: read outcomes from `data.runs[]` (for example,
-`jq '.data.runs[] | {run_id, status, summary}'`), not `data.status`. Use
-`run show` or `node show` above when you need all four report fields
-(`summary`, `discussion_items`, `spinoff_proposals`, and
-`wrap_up_recommendations`). Do **not** git-verify a landing with
-`git merge-base --is-ancestor <worker-branch> <target>`: if the caller rebased
-local `main` (routine on a busy repo), the worker's merge is replayed under a new
-hash while the branch ref stays put, so `--is-ancestor` returns a **false "not
-landed"** even though the work is fully merged. The CLI's `landed` flag is
-git-verified against the *current* target tip (patch-id equivalence plus an
-ancestry net) and stays correct across that rebase; when git cannot run (the
-branch was already torn down) it falls back to the durable `run merge` marker and
-reports `landed_method: report-marker`. A `landed: false` with method
-`unverified` means "could not confirm", not "confirmed missing" — verify by
-**content on the actual target** (expected files/symbols, or the intended diff),
-never by the worker branch ref, before concluding the work did not land.
+`run wait` folds in only the `summary`; the full `discussion_items`,
+`spinoff_proposals`, and `wrap_up_recommendations` come from `run show` or
+`node show`.
 
-## Reporting completion back to this session
+## Issue-driven runs: closing the issue
 
-A spinoff is fire-and-forget: `run create` returns immediately and the
-supervisor tears the run down out-of-band, so **nothing re-invokes this
-conversation when it finishes** unless you arrange it. If you told the
-user "I'll tell you when it's done", wire one of these at spawn time —
-otherwise you cannot deliver it:
+For an issue-driven run outside driver mode the worker owns the issue lifecycle;
+you resolve the closing contract while building the brief and write the concrete
+slug, status, and agent identity into it rather than metavariables. A bug closes
+as `fixed`, a feature, task, improvement, or chore as `done`; if the repository
+customises types or delivery statuses and no single valid status follows from its
+schema, the brief says to stop before implementation rather than guess.
 
-1. **`--notify <cmd>` (push).** Registered at `run create` (see step 3),
-   the supervisor runs the command once on the terminal transition with
-   `TASKFLEET_RUN_ID` / `TASKFLEET_STATUS` / `TASKFLEET_SUMMARY` (and `TASKFLEET_RUN_KIND` /
-   `TASKFLEET_RUN_TITLE`) in its environment. Point it at a sink your harness
-   observes — a file/FIFO append the harness tails, or a desktop
-   notification. Best for true fire-and-forget: no watcher process has to
-   stay alive.
-2. **Background `run wait` (pull, harness re-invoke).** If your harness
-   re-invokes the agent when a launched background task exits, run
-   `taskfleet run wait "$run_id"` as that background task at spawn
-   time. The harness wakes you with its terminal summary. Only works if
-   you background it **at spawn** — a fire-and-forget spinoff you never
-   waited on has no watcher.
+The worker marks work begun with `issuectl update <slug> --status in-progress
+--json`, commits only that metadata path, and starts implementation from a clean
+tree. After the final validated implementation commit and before `run merge`, it
+runs `issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json`.
+The stamp rewrites the implementation commit's message with a
+`Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog reads,
+without touching its tree; `.data.stamp.status` has to be `stamped` or
+`already_present`, since `skipped` (detached HEAD, merge commit, signed, or mid
+rebase) or a missing stamp means the landing commit would be invisible to the
+changelog, and that blocks the merge. The closure metadata path issuectl returns
+is committed separately, and the tree is clean before `run merge`. A freeform run
+adds no trailer and closes no issue; in driver mode the driver owns the issue and
+the spawning skill never races the worker on it.
 
-If you wire neither, be honest with the user: the run proceeds on its
-own and they (or a later explicit `run wait` / `run show <run-id>`) must
-check it — the run dir, its terminal `manifest.status`, and the node's
-terminal report all persist after teardown, so a late `run show` still
-answers.
+## Errors
+
+Failures print a JSON envelope to stderr with a non-zero exit:
+
+```json
+{"schema_version": 1, "error": {"code": "<code>", "message": "..."}}
+```
+
+Branch on `error.code`; the message is prose. Codes you are likely to meet:
+
+- `invalid_arguments` — missing or empty `--title` / `--task`, both `--task` and
+  `--prompt-file`, or mismatched parent flags.
+- `prompt_file_not_found` / `prompt_file_not_readable`.
+- `no_tmux_session` — not inside tmux and no `--headless` / `--tmux-session`.
+- `base_ref_not_found` — `--source-branch` does not resolve locally. Fetch or
+  correct the name; do not create it.
+- `workmux_add_failed` — workmux refused (uncommitted changes on the source
+  branch, a conflicting worktree path, or macOS PTY exhaustion mid-batch, which
+  headless placement avoids). Materialization is rolled back.
+- `unknown_profile` / `profile_required` — see the preflight above.
+- `dry_run_unsupported` — `--dry-run` on a child create.
+- `parent_not_found` — the driver's run id does not name a run.
+- `supervisor_spawn_failed` — the run directory exists but no one drives the
+  worker. Inspect `<dir>/supervisor.stderr.log` and consider
+  `taskfleet run reattach <run-id>`.
+
+`--dry-run` validates inputs and emits a `dry_run: true` envelope without
+materializing anything.
 
 ## Install or upgrade `taskfleet`
 
@@ -626,8 +499,8 @@ first invocation in a session, run
 # Freeform spinoff
 /worktree-spinoff Process receipts batch 2026-05 with vision OCR
 
-# Issue-driven (skill reads issue NN, builds task brief from it)
-/worktree-spinoff #142
+# Issue-driven (skill reads the issue, builds the task brief from it)
+/worktree-spinoff extremely-quiet-otter
 
 # Driver mode — /fan-out passes these
 taskfleet run create --kind spinoff \

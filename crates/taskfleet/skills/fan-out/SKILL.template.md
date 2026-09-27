@@ -59,11 +59,12 @@ land as they come and the source worktree is quiet; the driver then has
 nothing to merge and closes with a direct report.
 
 **The units' work.** Preserving work is the supervisor's job: a child that
-fails, reports blocked, or is cancelled keeps its branch and worktree for a
-human. The loss that nobody recovers from is a unit that never terminalizes,
-because a child that neither merges nor reports stays alive forever, and the
-driver run cannot complete while any child is live. Every unit brief therefore
-ends with exactly one terminal path.
+fails or reports blocked keeps its branch and worktree for a human, and a
+cancelled child keeps them whenever they hold commits or changes that are not
+in the source. The loss that nobody recovers from is a unit that never
+terminalizes, because a child that neither merges nor reports stays alive
+forever, and the driver run cannot complete while any child is live. Every
+unit brief therefore ends with exactly one terminal path.
 
 **The machine.** Each child is an agent process, a tmux window, and a git
 worktree. Ten at once is a reasonable default; more only when the units are
@@ -99,9 +100,12 @@ Facts about the binary that the briefs rely on:
 - **The driver run is a worker.** `run create --kind fan-out` materializes a
   worktree, a branch, a tmux window, node `n-0001`, and a supervisor, exactly
   like a spinoff. The kind is a label; it carries no special merge policy and
-  no unit ledger. Enumeration, concurrency, and unit state are the driver
-  agent's job, and the durable record of what exists is the source branch
-  itself: the outputs that are committed are the units that are done.
+  no unit ledger. The one thing the supervisor withholds from it, and from
+  every parent-pointed child, is the bounded auto-retry a spinoff gets when
+  its agent dies: a child whose agent dies settles as `failed` and the driver's
+  retry budget re-spawns it. Enumeration, concurrency, and unit state are the
+  driver agent's job, and the durable record of what exists is the source
+  branch itself: the outputs that are committed are the units that are done.
 - **Children are runs with a parent pointer.** A `run create` with
   `--parent-run-id <driver-run-id> --parent-node-id n-0001` writes a
   `child.spawned` event on the driver's log (with `child_run_id`,
@@ -125,8 +129,9 @@ Facts about the binary that the briefs rely on:
   children finish together, the first through the lock lands and each one
   queued behind it exits with `merge_source_moved`. Nothing was merged and no
   report was submitted; re-running the same `run merge` records a fresh
-  expectation and lands. `merge_in_progress` is the lock timeout (600 s by
-  default) and is retried the same way.
+  expectation and lands. `merge_in_progress` is either the lock timeout (600 s
+  by default) or a second `run merge` already driving the same node, and is
+  retried the same way.
 - **Idempotency keys return the existing run, whatever its state.** A key
   makes a spawn safe to repeat after a transient error (`idempotent_replay:
   true` in the envelope). It also means a retry of a failed unit needs a new
@@ -213,8 +218,9 @@ Each child gets a self-contained brief with one unit interpolated:
 - **Silence.** A successful unit surfaces nothing: no discussion items, no
   spin-off proposals. A failed or incomplete tool is the one exception and
   follows the disclosure contract below.
-- **The disclosure contract and the closing recipe**, copied in verbatim.
-  The report shape is an interface the supervisor and the driver parse.
+- **The disclosure contract and the closing recipe.** Copy the disclosure
+  contract below and the closing recipe into the brief verbatim; the report
+  shape is an interface the supervisor and the driver parse.
 
 ## How a child closes
 
@@ -252,11 +258,12 @@ missing target worktree, or a real conflict); resolve it (or `/complex-rebase`
 for a deeply diverged branch) and re-run. After a clean merge the supervisor
 tears down the window, worktree, and branch within a second or two; the
 worker does not touch tmux or git itself and does not resubmit because
-`run show` still reads `pending` for a moment.
+`run show` still reads a non-terminal status for a moment.
 
 A unit that must disclose an optional failure uses the full report instead.
 These field names are read by the supervisor and the driver; an unknown key
-passes validation and is never read:
+passes validation and is never read, and the `via` and `origin` provenance
+keys are stamped by the binary, never taken from the file:
 
 ```bash
 cat > /tmp/node-report-${run_id}.json <<'JSON'
@@ -283,34 +290,37 @@ before the merge runs. The per-field shapes of the advisory arrays are in
 Before closing, the unit inventories every failed or detectably incomplete
 tool, command, external service, review, or delegated workflow.
 
-A step the brief or the done criteria required, still failed or incomplete,
-blocks this attempt: no `run merge`, but a `success: false` report written to
-`/tmp/node-report-${run_id}.json` and submitted with
+A step the brief or the done criteria **required**, still failed or
+incomplete, blocks this attempt. Do not call `run merge`; write a
+`success: false` report to `/tmp/node-report-${run_id}.json` and submit it
+with
 
 ```bash
 taskfleet node report "$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json
 ```
 
-(`n-0001` is the only node a child has). An optional or advisory failure may
-continue only when the unit's output is independently complete and safe, and
-is then disclosed in the full `success: true` report passed to `run merge`,
+(`n-0001` is the only node a child has). An **optional/advisory** failure
+may continue only when the unit's output is independently complete and safe,
+and is then disclosed in the full `success: true` report passed to
+`taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json`,
 never hidden behind the minimal auto-report.
 
 Requested completeness is a contract: a missing command result, source, or
-artifact is incomplete, not done. The unit retries only within a bound its
-brief grants, records each attempt, and takes the required or optional path
-at exhaustion; whole-unit retries belong to the driver.
+artifact is incomplete, not done. Retry only within a finite bound the brief
+grants, record each attempt, and take the required or optional path at
+exhaustion; whole-unit retries belong to the driver.
 
 Every distinct failure goes into one aggregate `discussion_items[]` entry
 whose `topic` starts `Tool/sub-workflow failure —`, coalescing repeated
 attempts of the same one: tool and purpose, expected completeness, observed
 error, attempts, affected step, whether work continued and why that was safe,
-suggested bug surface, and a stable artifact or log path when there is one.
+suggested bug surface, and a stable artifact/log path when there is one.
 Actionable retry/recover/accept/file steps go in the item's `options`. The
-entry stays under 2 KiB with only a short redacted excerpt, never secrets,
-credentials, personal data, environment dumps, or unbounded logs. Top-level
-`summary` and `success` say whether the attempt is blocked or completed; they
-do not move into the item, and no new schema or state is invented.
+entry stays under 2 KiB with only a short redacted excerpt, never
+secrets, credentials, personal data, environment dumps, or unbounded logs.
+Top-level `summary` and `success` say whether the attempt is blocked or
+completed; do not put them inside the item, and do not add a schema or
+supervisor state.
 
 ## How the driver closes
 
@@ -335,12 +345,13 @@ closes with a direct report whose `success` says whether the batch is whole.
 ## What the caller hears
 
 `run create --kind fan-out` returns the usual envelope: `data.run_id`,
-`data.branch` (the integration branch), `data.tmux_window`,
-`data.worktree_path`, and `data.supervisor` (a pid; a string there outside
-`--dry-run` means nothing is driving the batch and the user needs to know).
-Tell the user the driver run id, the unit count and concurrency, the branch
-the units merge into and the branch the batch finally lands on, the tmux
-session you placed it in, and an estimate if the per-unit cost is known.
+`data.branch` (the integration branch), `data.tmux_window`
+(`<workmux-reported-window-name>`), `data.worktree_path`, and
+`data.supervisor` (a pid; a string there outside `--dry-run` and an
+idempotent replay means nothing is driving the batch and the user needs to
+know). Tell the user the driver run id, the unit count and concurrency, the
+branch the units merge into and the branch the batch finally lands on, the
+tmux session you placed it in, and an estimate if the per-unit cost is known.
 
 Be precise about how completion reaches them: the batch runs out of band and
 nothing re-invokes this session by itself. Promise "I'll tell you when it's
@@ -367,22 +378,25 @@ to wait.
   taskfleet node show <driver-run-id> n-0001 --output json | jq '.data.children'
   ```
 
-  Each entry is `{run_id, node_id}`; `run show <child-run-id>` or
-  `node show <child-run-id> n-0001` gives that unit's status, `landed` flag,
-  and terminal report at `data.report`.
+  Each entry is `{run_id, node_id}`; `run show <child-run-id>` gives that
+  unit's status, `landed` flag, and terminal report at `data.report`, and
+  `node show <child-run-id> n-0001` gives the node's status and the same
+  report.
 - `taskfleet run wait <driver-run-id>` — blocks until the whole batch has
   settled, exits `2` on timeout and `3` under `--fail-on-error` for a failed
   driver. Read `data.runs[]`, never a top-level `data.status`, and branch on
   `status`, not `lifecycle`, which is a fixed category that never matches a
   terminal value.
 - `taskfleet run cancel <child-run-id>` — unblocks one stuck unit without
-  killing the batch; the child's branch and worktree are preserved. The driver
-  sees it settle as `cancelled` and treats it as a failed attempt.
+  killing the batch; the child's branch and worktree are preserved when they
+  hold unmerged commits or uncommitted changes. The driver sees it settle as
+  `cancelled` and treats it as a failed attempt.
 - `taskfleet run reattach <driver-run-id>` — restarts the driver's
-  supervisor, which re-forks supervisors for the children. It does not
-  restart the driver agent: a driver whose agent died rolls up as `failed`
-  once the children finish, and the batch is completed by a new driver from
-  the same enumeration, since committed outputs are the resume state.
+  supervisor, which adopts the children's surviving supervisors and re-forks
+  the dead ones. It does not restart the driver agent: a driver whose agent
+  died rolls up as `failed` once the children finish, and the batch is
+  completed by a new driver from the same enumeration, since committed
+  outputs are the resume state.
 
 ## Errors
 
@@ -399,6 +413,9 @@ spinoff codes in `worktree-spinoff`, a fan-out is likely to meet:
   failed attempt and continues; one git refusal does not abort the batch.
 - `merge_source_moved` / `merge_in_progress` — a sibling landed first;
   re-run `run merge`.
+- `invalid_merge_report` — a `--report-file` handed to `run merge` set
+  `success: false` or `cancelled: true`; a blocked unit reports through
+  `node report` instead.
 - `supervisor_spawn_failed` on the driver — the run exists but nothing
   drives it; inspect `<dir>/supervisor.stderr.log` and `run reattach`.
 

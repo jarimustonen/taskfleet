@@ -3,11 +3,13 @@ created: 2026-09-24
 updated: 2026-09-27
 type: bug
 reporter: jari
-status: open
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:homebase-wrapup-taskfleet-gate-tmpfs-2026-09-23
 lane: release-gate
+closed: 2026-09-27
+closed_by: agent
 ---
 
 # Release gate exhausts tmpfs on Haapa

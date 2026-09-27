@@ -3,10 +3,12 @@ created: 2026-09-25
 updated: 2026-09-27
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-ops
 source_ref: agent:homebase-ops/reporter:jari/id:taskfleet-macos-dist-runner-36021035698
+closed: 2026-09-27
+closed_by: agent
 ---
 
 # Self-hosted macOS release installs cargo-dist in persistent Cargo bin
@@ -43,3 +45,9 @@ This leaves an unmanaged executable in the runner's shared persistent Cargo bin,
 Apply a matrix-specific install/invocation override for macOS: install cargo-dist into a unique directory under `RUNNER_TEMP`, expose or invoke that exact executable for the build, and leave non-macOS generated behavior unchanged. Make the change at the cargo-dist generation/configuration source or otherwise ensure regeneration reproduces it. Add a workflow fixture/assertion for the override, verify `command -v dist` resolves to the temporary copy on macOS, and compare the persistent Cargo-bin contents against a baseline around the job. A real Taskfleet release with before/after inventory is required to establish that the self-hosted runner no longer accumulates cargo-dist residue; do not infer resolution solely from a generated-workflow test.
 
 <!-- intakectl:analysis:end job:66205476-8299-4e4f-aacd-9f7e2fffa4f1 generation:0 -->
+
+## Comments
+
+### 2026-09-27T06:10:00Z · @agent
+
+Local release gate passed on d3d3a74c (fmt, clippy, release nextest, doctests, rustdoc, snapshots, shell fixtures, Shipshape, package, cargo-dist generation and plan). The self-hosted macOS local-artifact row now uses an atomic private RUNNER_TEMP install, verifies its dist resolution, and compares the persistent dist/cargo-dist entrypoints before and after even on failure; Linux rows, plan/cache, and artifact targets are unchanged. Generated-workflow comparison and hermetic concurrent, installer-failure, fallback, and persistent-drift tests passed. No local installed binaries were changed and no tag, publish, or tap operation was performed. Rollback: revert the implementation commits and regenerate the workflow using the pinned 0.33.0 generator before a release (do not hand-edit the generated file). The next real tag on main must be observed by the release operator with a Hauis persistent-bin before/after inventory; local validation cannot establish that runner-side proof.

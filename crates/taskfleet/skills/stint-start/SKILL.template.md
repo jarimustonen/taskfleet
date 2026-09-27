@@ -84,13 +84,15 @@ the JSON fields below are unavailable, the project is unmigrated or incompatible
 that and stop rather than fall back to a prose schedule. Read `.data.lanes[]` for ordered
 issues with their dependency, `collision`, and Boolean `spawnable` fields and each lane's
 computed head, `.data.unscheduled` for rows without an executable lane, and numeric
-`.data.spawnable_heads`. A command failure, a malformed envelope, a missing blocker, a
-self-dependency, or a cycle makes the whole schedule invalid; select nothing from it. A
-dependency is satisfied only by a delivering terminal status: in the default schema
-`fixed` and `done` deliver, while `untriaged`, `deferred`, `wontfix`, `obsolete`,
-`cannot-reproduce`, and `duplicate` do not; a project that customizes statuses names its
-own equivalents. An `in-progress` head is resumable, not excluded: `in-progress` means
-started, and duplicate work is prevented by reservations, not by status.
+`.data.spawnable_heads`. A command failure, a malformed envelope, a missing blocker (a
+non-empty `blockers_missing`), a self-dependency, or a cycle (`dag` renders one without
+flagging it; `issuectl doctor` reports it) makes the whole schedule invalid; select
+nothing from it. A dependency is satisfied only by a delivering terminal status: in the
+default schema `fixed` and `done` deliver, while `untriaged`, `deferred`, `wontfix`,
+`obsolete`, `cannot-reproduce`, and `duplicate` do not; a project that customizes
+statuses names its own equivalents. An `in-progress` head is resumable, not excluded:
+`in-progress` means started, and duplicate work is prevented by reservations, not by
+status.
 
 **Triage state is not scheduling state.** A row in `.data.unscheduled` has no executable
 lane even if it mechanically says `spawnable: true`; never launch it until it has passed
@@ -110,17 +112,17 @@ issuectl may mechanically report it spawnable.
 **Run truth is Taskfleet's, and only `run merge` is success.** A spinoff is asynchronous;
 its spawn call returns immediately, and `taskfleet run wait <run-id> …` blocks until the
 run settles. Settled is not landed: `run show` can report a false `failed` or `pending`
-for a worker that committed and merged, and a `done` run can be `report_only: true`,
-meaning agent-reported success without a recorded merge, which is legitimate for an
-external delivery but is never proof of source landing. The landing signal is the CLI's
-`landed` Boolean, on both `run wait` and `run show`. It is git-verified against the
-current target tip by patch-id equivalence with an ancestry safety net, so it survives
-your rebases of local `main`. Its companion `landed_method` says how it was decided:
-`git-verified` means git positively found the work landed or absent; `report-marker`
-means git could not run (the branch is already torn down) and the durable merge marker
-decided; `unverified` means the CLI could not confirm, which is a reason to verify by
-content, never a reason to respawn or salvage. Do not check landing with
-`git merge-base --is-ancestor <worker-branch> <target>`: rebasing local `main` onto
+for a worker that committed and merged, and `run wait` can settle a `done` run as
+`report_only: true`, meaning agent-reported success without a recorded merge, which is
+legitimate for an external delivery but is never proof of source landing. The landing
+signal is the CLI's `landed` Boolean, on both `run wait` and `run show`. It is
+git-verified against the current target tip by patch-id equivalence with an ancestry
+safety net, so it survives your rebases of local `main`. Its companion `landed_method`
+says how it was decided: `git-verified` means git positively found the work landed or
+absent; `report-marker` means git could not run (the branch is already torn down) and the
+durable merge marker decided; `unverified` means the CLI could not confirm, which is a
+reason to verify by content, never a reason to respawn or salvage. Do not check landing
+with `git merge-base --is-ancestor <worker-branch> <target>`: rebasing local `main` onto
 `origin/main` replays the worker's merge under a new hash while the worker's branch ref
 keeps the old one, so the check answers "not landed" for fully merged content. That trap
 fired twice in one real stint and nearly caused a destructive respawn of landed work;
@@ -130,14 +132,15 @@ files and symbols themselves), not for the worker branch and not for a commit su
 which rebase and squash rewrite. When `landed` and a manual check disagree, that is a
 reconciliation point to investigate before deploying or salvaging anything.
 
-`run show` also exposes `preserved_work`, always an array, even for `done`: any retained
-worktree or branch is an open hold, not a finished handoff, and `run wait --fail-on-error`
-exits 3 on it. A `failed` run whose worker died after committing carries a
-`recoverable_work` block, which `run wait` summarizes per run
-(`recoverable=<n> unmerged commit(s) merge cleanly on <branch>`). Worker reports persist
-on the node as `last_report`; read them through the CLI rather than run files. `run show`
-carries the single-worker report as `data.report`; a multi-node run needs `node show` per
-node:
+`run show` and `run wait` expose `preserved_work`, always an array, even for `done`: any
+retained worktree or branch is an open hold, not a finished handoff, and
+`run wait --fail-on-error` exits 3 when a `report_only` done run still owns one (a
+confirmed merge may still be inside the supervisor's teardown window). A `failed` run
+whose worker died after committing carries a `recoverable_work` block, which `run wait`
+summarizes per run (`recoverable=<n> unmerged commit(s) merge cleanly on <branch>`).
+Worker reports persist on the node as `last_report`; read them through the CLI rather
+than run files. `run show` carries the single-worker report as `data.report`; a
+multi-node run needs `node show` per node:
 
 ```bash
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
@@ -191,19 +194,20 @@ issuectl dag --json --reservations "$reservations"
 It gives you the issue-to-lane and collision mapping and confirms the required fields
 exist. It must not drive spawning, because you do not yet know which resources are
 already held. Reconcile the full IDs this session already owns with `run show`. Then look
-at `taskfleet run list --output json` (its `--repo .` filter narrows to this repository)
-only to discover live runs whose recorded source or worktree belongs here. Those foreign
-runs are reservations, not owned work: their resources go into the hold set, and nothing
-else about them is your business. Map each relevant live run's issue slug through the
-first response and build the exact issuectl hold shape, one object per run even when
-lanes match: `[{"lane":"backend","collision":["path/to/hot-file"]}]`. Each object
-carries the issue's lane and its complete `collision` array; the tokens are opaque strings
-copied from issue metadata, never inferred from paths or lane names, because issuectl
-reads nothing from Taskfleet and a guessed token protects nothing. Validate the JSON, then
-re-run with it; only this reservation-aware response may drive spawning. When there are
-no holds, the second read still passes `'[]'`; `--reservations ""` is invalid. Shell
-variables do not survive between tool calls, so assign the hold JSON and invoke issuectl
-in the same command, or pass a recorded file path.
+at `taskfleet run list --output json` (its `--repo .` filter narrows to this repository;
+runs without recorded repository identity do not match it) only to discover live runs
+whose recorded source or worktree belongs here. Those foreign runs are reservations, not
+owned work: their resources go into the hold set, and nothing else about them is your
+business. Map each relevant live run's issue slug through the first response and build
+the exact issuectl hold shape, one object per run even when lanes match:
+`[{"lane":"backend","collision":["path/to/hot-file"]}]`. Each object carries the issue's
+lane and its complete `collision` array; the tokens are opaque strings copied from issue
+metadata, never inferred from paths or lane names, because issuectl reads nothing from
+Taskfleet and a guessed token protects nothing. Validate the JSON, then re-run with it;
+only this reservation-aware response may drive spawning. When there are no holds, the
+second read still passes `'[]'`; `--reservations ""` is invalid. Shell variables do not
+survive between tool calls, so assign the hold JSON and invoke issuectl in the same
+command, or pass a recorded file path.
 
 A session-owned run you cannot map to its complete hold is in an unresolved state
 (awaiting input, recoverable work); resolve that first. A same-repository foreign run that

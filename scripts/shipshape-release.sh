@@ -493,6 +493,9 @@ resume_after_gate() {
     assert_repo_identity
     assert_run_may_resume "$run_id"
     assert_remote_tag_absent
+    # Recheck after the potentially long local gate, immediately before authorizing
+    # the irreversible tag push. A stable bump during validation must stop here.
+    require_current_homebrew_stable
     assert_cut_activated
     "$repo_root/scripts/verify-release-github-policy.sh" >/dev/null
     record_release_authorization

@@ -1,12 +1,13 @@
 ---
 created: 2026-09-24
-updated: 2026-09-24
+updated: 2026-09-27
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:homebase-wrapup-taskfleet-gate-tmpfs-2026-09-23
+lane: release-gate
 ---
 
 # Release gate exhausts tmpfs on Haapa
@@ -33,3 +34,9 @@ This is limited to the real-protocol fixture near the end of `scripts/validate-l
 
 The issue report supplies a host reproduction, exact error, relevant allocation line, and a successful workaround; no additional bug-analysis work is needed to substantiate it.
 <!-- intakectl:analysis:end job:9491b440-49b6-4ec1-91c1-e0436c65501e generation:0 -->
+
+## Decisions
+
+### 2026-09-27T14:48:05Z · @agent
+
+Jari approved scheduling. Use /var/tmp (not /tmp) for large build and fixture scratch on Haapa; keep fixtures isolated and cleaned up, and retain an explicit caller override. Verify the complete release gate with this placement.

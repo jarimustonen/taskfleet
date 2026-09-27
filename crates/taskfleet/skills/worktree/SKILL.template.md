@@ -41,8 +41,9 @@ which one it is.
   on a bug slug goes here; "fix" on the same slug is a spinoff.
 - `/fan-out` — five or more identical, independent units over an enumerated
   set ("for every receipt in batch X", "apply this codemod to each package"),
-  each writing a disjoint output. Fewer than five, or units that depend on each
-  other or touch the same files, are spinoffs, not a fan-out.
+  each writing a disjoint output. Fewer than five, or units that touch the same
+  files, are spinoffs, not a fan-out; units that depend on each other are
+  issuectl-scheduled `/stint-start` waves.
 
 Three more skills belong to the family but act on a worktree that already
 exists, so there is nothing for you to route: `/worktree-merge` merges a

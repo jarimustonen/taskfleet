@@ -3,7 +3,7 @@ created: 2026-09-22
 updated: 2026-09-27
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:native-agent-host-stint-wait-strategy-20260922

@@ -185,12 +185,12 @@ external service, review, panel, or delegated workflow.
 
 A step **required** by the brief or the done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
-existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `taskfleet node report "$run_id"
-n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
-in this single-worker run). An **optional/advisory** failure may continue only
-when the report is independently complete and safe; disclose it in the full
-`success: true` report passed to `taskfleet run merge "$run_id"
+report payload from "How the worker closes" to `/tmp/node-report-${run_id}.json`
+with top-level `success: false`, then submit it with `taskfleet node report
+"$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the
+sole node in this single-worker run). An **optional/advisory** failure may
+continue only when the report is independently complete and safe; disclose it
+in the full `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
 Requested completeness is a contract. A requested panel with a missing model
@@ -253,7 +253,8 @@ surfacing to the user as such.
 
 The success envelope has the same shape as a spinoff's: `data.run_id` is the
 handle for everything that follows, and `data.supervisor` is the supervisor's
-pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`)
+pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`, or
+`delegated-to-parent-supervisor` for a run created with the parent flags)
 explains why none was spawned; anything else non-numeric means nothing is
 driving the worker, which the user needs to hear. `data.branch`,
 `data.worktree_path`, and `data.tmux_window` name what was created.

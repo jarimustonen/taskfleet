@@ -7,11 +7,14 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly expected_commit="d1d48d692707fee0d98697721e763a59e7ee3fb7"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-current-protocol.XXXXXX")"
+# The nested isolated Cargo target can grow beyond a small tmpfs. Default to
+# disk-backed scratch; an explicit TMPDIR still controls placement.
+fixture_parent="${TMPDIR:-/var/tmp}"
+tmp="$(mktemp -d "$fixture_parent/shipshape-current-protocol.XXXXXX")"
 cleanup() {
   status=$?
   if [[ "$status" -ne 0 && "${KEEP_FAILED_FIXTURE:-0}" == 1 ]]; then
-    failed="${TMPDIR:-/tmp}/shipshape-current-protocol-failed"
+    failed="$fixture_parent/shipshape-current-protocol-failed"
     rm -rf "$failed"
     mv "$tmp" "$failed"
     echo "failed protocol fixture preserved at $failed" >&2

@@ -58,6 +58,10 @@ printf '%s\\n' 'mkdir -p "$CARGO_DIST_INSTALL_DIR/bin"' \\
             existing.write_text('do not touch')
             env = dict(os.environ, HOME=str(home), RUNNER_TEMP=str(base),
                        PATH=f'{fakebin}:{os.environ["PATH"]}')
+            snapshot = base / 'snapshot.json'
+            checker = ROOT / 'scripts/check-macos-dist-bin.py'
+            snapshot.touch()
+            subprocess.run([sys.executable, checker, 'snapshot', snapshot], env=env, check=True)
             outputs = [base / f'path-{i}' for i in range(4)]
             for output in outputs:
                 output.touch()
@@ -78,17 +82,18 @@ printf '%s\\n' 'mkdir -p "$CARGO_DIST_INSTALL_DIR/bin"' \\
                 self.assertEqual(resolved, str(Path(root) / 'dist'))
             self.assertEqual(existing.read_text(), 'do not touch')
             self.assertTrue((home / '.cargo/bin/dist').exists())  # fallback caught, not erased
-            snapshot = base / 'snapshot.json'
-            checker = ROOT / 'scripts/check-macos-dist-bin.py'
-            snapshot.touch()
-            subprocess.run([sys.executable, checker, 'snapshot', snapshot], env=env, check=True)
+            fallback = subprocess.run([sys.executable, checker, 'verify', snapshot], env=env,
+                                      capture_output=True, text=True)
+            self.assertNotEqual(fallback.returncode, 0)
+            self.assertIn('entries changed', fallback.stderr)
+            (home / '.cargo/bin/dist').unlink()  # fixture-only wrong-directory artifact
             subprocess.run([sys.executable, checker, 'verify', snapshot], env=env, check=True)
-            (home / '.cargo/bin/dist').write_text('changed')
+            existing.write_text('changed')
             changed = subprocess.run([sys.executable, checker, 'verify', snapshot], env=env,
                                      capture_output=True, text=True)
             self.assertNotEqual(changed.returncode, 0)
             self.assertIn('entries changed', changed.stderr)
-            self.assertEqual(existing.read_text(), 'do not touch')
+            self.assertEqual(existing.read_text(), 'changed')
 
 
 if __name__ == '__main__':

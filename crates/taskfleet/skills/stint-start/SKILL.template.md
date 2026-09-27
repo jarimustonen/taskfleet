@@ -91,7 +91,9 @@ fall back to a prose schedule.
   session to take responsibility, and the conductor states that adoption before acting.
   Listing, showing, reserving, mentioning, or discovering a run never adopts it. Block on
   `taskfleet run wait <run-id> …` for owned runs to know they have *settled* before
-  you sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof
+  you sequence dependent units or enter Phase 3; choose aggregate or independently
+  watched waits for parallel batches as described in Phase 2. But do **not** trust run
+  *status* as proof
   the work landed: `taskfleet run show` can report a false `failed` / `pending` even
   when the worker committed **and** merged. **To confirm a landing, read the CLI's
   `landed` boolean** (surfaced by both `run wait` and `run show`). It is git-verified against
@@ -325,12 +327,24 @@ git** before counting it toward the deploy pile:
 - **A multi-feature dependency graph is not one Phase-2 unit.** Keep issuectl as the sole
   DAG owner and execute dependency-ordered work as bounded stint waves. Do not create an
   integration orchestrator or second campaign state.
-- **Launch disjoint units in parallel, then wait.** Record each spawn's run id; after a
-  parallel batch, block on `taskfleet run wait <id> …` and confirm each landing via the
-  CLI's `landed` flag before counting it (NOT `merge-base --is-ancestor` — see the landing
-  warning above). **Sequence hot-file units strictly:** launch → `run wait` → confirm
-  `landed` → *then* launch the next (so it branches off the first's landed result).
-  Do not enter Phase 3 until every launched run has settled and its `landed` flag is true.
+- **Launch disjoint units in parallel; choose the wait shape deliberately.** Record each
+  spawn's full run id. Before waiting on a batch, decide from its dependencies and review
+  needs: if no review, decision, next wave, or integration action can use an individual
+  result before the whole batch settles, use one aggregate `taskfleet run wait <id> …`
+  (default `--all`). If any result can be reviewed, presented, or used independently,
+  start one `taskfleet run wait <id>` per run through the harness's independently watched
+  background-command facility. Give each waiter a completion/failure wake notification;
+  when it wakes, inspect that run's result and report, act on usable early results, and
+  keep the other waiters running. A background wait is still the public blocking CLI,
+  not a Taskfleet job API: do not shell-background commands or poll `run show`/process
+  output to imitate notifications. If the harness cannot notify on independent command
+  completion, fall back to one blocking aggregate `run wait --all` rather than promise
+  an early wake. In either shape,
+  confirm each landing via the CLI's `landed` flag before counting it (NOT
+  `merge-base --is-ancestor` — see the landing warning above). **Sequence hot-file units
+  strictly:** launch → `run wait` → confirm `landed` → *then* launch the next (so it
+  branches off the first's landed result). Do not enter Phase 3 until **every owned run**
+  has settled and each `landed` flag is true; an early result never waives that barrier.
   If a worker doesn't land its merge, **report it and leave main clean** —
   do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
   separate manual step the user oversees, not an automatic conductor action.
@@ -388,7 +402,8 @@ git** before counting it toward the deploy pile:
 
 Deploy is **conditional on project policy**, read from the repo's root `AGENTS.md`:
 
-- **Precondition:** the pile is in `main` and **green** — run the project's green-gate
+- **Precondition:** every session-owned run has settled, each `landed` flag is true,
+  and the pile is in `main` and **green** — run the project's green-gate
   commands first (typecheck/build/smoke). If a gate fails, **halt the deploy, report
   the failure, and spawn a fix worktree** for it (then wait, git-verify its landing, and
   re-run the full green gate before reconsidering the deploy); do not deploy red.

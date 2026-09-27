@@ -51,6 +51,7 @@ run() {
   "$@"
 }
 
+run ./scripts/shipshape-release.sh check-tool
 run ./scripts/test-build-script-relocation.sh
 run cargo fmt --all --check
 run cargo clippy --locked --workspace --all-targets -- -D warnings

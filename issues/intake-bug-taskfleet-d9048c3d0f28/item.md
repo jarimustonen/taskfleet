@@ -1,9 +1,9 @@
 ---
 created: 2026-09-25
-updated: 2026-09-25
+updated: 2026-09-27
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-ops
 source_ref: agent:homebase-ops/reporter:jari/id:taskfleet-macos-dist-runner-36021035698

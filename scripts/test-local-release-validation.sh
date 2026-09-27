@@ -43,4 +43,30 @@ if grep -Eq 'rustup run [0-9]' "$repo_root/scripts/validate-local-release.sh"; t
   exit 1
 fi
 
-echo 'local release validation prerequisite tests passed'
+# Intercept only the protocol fixture's first allocation, before it clones or
+# compiles anything. Assert the actual mktemp argument for both placement modes.
+cat >"$tmp/bin/mktemp" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$SCRATCH_CAPTURE"
+exit 91
+STUB
+chmod +x "$tmp/bin/mktemp"
+check_fixture_parent() {
+  local expected="$1"
+  shift
+  set +e
+  env "$@" SCRATCH_CAPTURE="$tmp/scratch-argument" PATH="$tmp/bin:$PATH" \
+    "$repo_root/scripts/test-shipshape-release-current-protocol.sh" >"$tmp/stdout" 2>"$tmp/stderr"
+  status=$?
+  set -e
+  [[ "$status" -eq 91 && "$(cat "$tmp/scratch-argument")" == "-d $expected/shipshape-current-protocol.XXXXXX" ]] || {
+    echo "protocol fixture scratch placement mismatch (expected $expected, status=$status)" >&2
+    cat "$tmp/stderr" >&2
+    exit 1
+  }
+}
+check_fixture_parent /var/tmp -u TMPDIR
+mkdir -p "$tmp/fixture-parent"
+check_fixture_parent "$tmp/fixture-parent" TMPDIR="$tmp/fixture-parent"
+
+echo 'local release validation prerequisite and fixture scratch tests passed'

@@ -62,10 +62,12 @@ worth a question.
 ## Before you merge
 
 The merge refuses an uncommitted worker tree, including untracked files, so
-commit first (`/git-commit`). It also refuses when the checked-out branch is
-`main` or `master` itself, so confirm you are on the run's branch with
-`git rev-parse --abbrev-ref HEAD`. Check the binary once per session as
-described under "Install or upgrade" below.
+commit first (`/git-commit`). It merges the branch recorded on the node, not
+whatever is checked out, and refuses a recorded branch named `main` or `master`;
+confirm you are on the run's branch with `git rev-parse --abbrev-ref HEAD`,
+because the ownership lookup below fails closed when the checkout and the record
+disagree. Check the binary once per session as described under "Install or
+upgrade" below.
 
 Resolve the owning run from the durable ownership record, not from the branch
 name. The short fragment in `wt/<fragment>-<slug>` is display metadata that can
@@ -196,9 +198,10 @@ can be re-run once the cause is fixed.
   running, the message names the stale lock directory.
 - `merge_source_moved` — the source tip moved between recording the transaction
   and taking the lock. Rebase onto the new tip and re-run.
-- `run_already_terminal` — the run is already done or cancelled and its
-  worktree is gone; a cancelled run is refused even under `--dry-run`. If
-  teardown looks incomplete, `taskfleet run reattach <run-id>`.
+- `run_already_terminal` — the run is already done or failed and its worktree
+  is gone, or the run was cancelled; a cancelled run is refused whether or not
+  its worktree survives, even under `--dry-run`. If teardown looks incomplete,
+  `taskfleet run reattach <run-id>`.
 - `worktree_missing` — a live run whose worktree no longer exists; if the run
   actually finished, `run reattach` completes the roll-up.
 - `no_worktree` / `no_branch` — a driver node, not a worker; drivers are not
@@ -210,6 +213,8 @@ can be re-run once the cause is fixed.
 - `merge_recovery_unverifiable` — a prior transaction is pending and git could
   not be consulted; resolve the worktree or source repo and retry rather than
   overwrite it.
+- `merge_txn_record_failed` — the transaction could not be written to the event
+  log, so nothing in git was touched; retry.
 
 ## Afterwards
 
@@ -222,8 +227,9 @@ say: the report is the handoff the caller reads.
 
 A run that a worker left unmerged (a clean exit that skipped `run merge`, or a
 failure with a preserved branch) is finished from outside by
-`taskfleet run salvage`, which fences the old worker and drives this same merge
-from the preserved worktree; that is an operator's move, not a worker's.
+`taskfleet run salvage`, which fences a still-live worker (only with `--fence`)
+and drives this same merge from the preserved worktree; that is an operator's
+move, not a worker's.
 
 ## Install or upgrade `taskfleet`
 

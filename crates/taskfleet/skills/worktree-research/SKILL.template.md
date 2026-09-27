@@ -1,6 +1,6 @@
 ---
 name: worktree-research
-description: Spawn an autonomous research worktree via `taskfleet run create --kind research` — multi-source background investigation that reads sources, gathers divergent perspectives, and writes a sourced markdown report committed to the repo, then merges itself back. Use when the user asks to research, investigate, survey, look into, or compare options for a topic that needs reading multiple sources and synthesizing into a sourced markdown report. Do NOT use for quick factual lookups (one `WebSearch`), single-doc summaries, debugging, code changes, or forward decisions (`/worktree-technical-decision`).
+description: Spawn an autonomous research worktree via `taskfleet run create --kind research` — one background worker that reads several sources, weighs divergent perspectives, writes a sourced markdown report into the repository, commits it, and merges itself back. Use when the user asks to research, investigate, survey, look into, or compare options for a topic that needs more than one source read and synthesized into a written report. Not for a one-search factual lookup, a single-document summary, debugging (`/worktree-bug-analysis`), code changes (`/worktree-spinoff`), or a forward decision that ends in an ADR (`/worktree-technical-decision`).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -8,232 +8,182 @@ schema_version: 1
 
 # worktree-research
 
-A **research worktree** is one autonomous agent whose deliverable is a
-**sourced markdown report**, not code. It reads multiple sources, weighs
-divergent perspectives, writes the report into the repo (typically
-`research/<slug>.md`), commits, and merges itself back to the source
-branch — same self-merge contract as `worktree-spinoff` but with a
-prose-output recipe and `WebSearch`/`WebFetch` enabled.
+A research worktree is one autonomous agent whose deliverable is a sourced
+markdown report, not code. It reads several sources, weighs the perspectives
+that disagree, writes the report into the repository, commits it, and merges
+itself back with `taskfleet run merge`. Nobody reviews it interactively, and it
+cannot ask you anything: the brief you write is the whole conversation, and the
+terminal report it submits is all you hear back. Your work is therefore mostly
+deciding that the request is research-shaped, sharpening the question, writing a
+brief the worker can finish alone, creating the run, and telling the caller
+honestly how they will learn the outcome.
 
-Read `taskfleet-overview` first; read `worktree-spinoff` for the
-shared autonomous-merge contract.
+The run mechanics are shared with `worktree-spinoff`: placement and PTY limits,
+driver flags, profiles, `--notify`, `run wait`, the `landed` flag, and the
+error codes are documented there and not repeated here. If the run /
+supervisor / node vocabulary is new to you, read `taskfleet-overview` first.
 
-## When to use
+## Is this research?
 
-- ✅ "Research the state of X", "investigate options for Y", "survey
-  approaches to Z", "compare A vs B vs C in depth".
-- ✅ The deliverable is a written report the user will read and cite
-  later.
-- ❌ One-shot fact lookup (just `WebSearch`).
-- ❌ Single-doc / single-file summary (read it inline).
-- ❌ Debugging or code changes → `/worktree-bug-analysis` or `/worktree-spinoff`.
-- ❌ "Which option should we pick?" — that is a decision, use
-  `/worktree-technical-decision` (it records an ADR).
+It is when the user wants a written survey they will read and cite later:
+"research the state of X", "investigate the options for Y", "compare A, B, and C
+in depth". The report is the product, and the topic needs several sources
+weighed against each other.
 
-## Workflow
+It is not research when one web search answers the question, when the user
+wants one document summarised (read it inline), when the subject is a bug
+(`/worktree-bug-analysis` explains it, `/worktree-spinoff` fixes it), or when
+the user is asking which option to pick. That last one is a decision and belongs
+to `/worktree-technical-decision`, which records an ADR; a research report
+deliberately stops short of choosing, so a decision sent here comes back with
+the actual question unanswered.
 
-### 0. Validate context
+## What is at stake
 
-1. Working directory must be a git repo. Per repo CLAUDE.md, the
-   current branch must be clean.
-2. `taskfleet version --output json` to confirm
-   `{{CLI_VERSION}}` matches the running binary.
-3. Capture the current branch as the source/merge target.
+**Hours of unattended work aimed by one paragraph.** A research run reads and
+writes for a long time with no chance to check back. A brief that misreads the
+question or leaves the scope open produces a competent report on the wrong
+thing, and the cost is the whole run plus a merge cycle. When the request
+genuinely does not say what is being asked, one question to the user is cheaper
+than the run it would misdirect. Everything else (title, placement, output path
+where the repository has a convention) is a routine call: make it, say what you
+chose, and continue.
 
-### 1. Sharpen the question
+**The source branch.** `run merge` rebases the worker's branch onto the run's
+recorded source branch and merges it there. The branch checked out when you run
+`run create` is the default, so the caller should hear which one it was. The
+merge is also taskfleet's only success signal: a worker that finishes and skips
+it has delivered nothing the caller can see.
 
-Research outputs are only as good as their question. Before spawning,
-distill the user's request to:
+**The worker's report.** Preserving unmerged work is the supervisor's job: a
+blocked report, a failure, or a cancel keeps the branch and worktree for a human
+to harvest. The real loss is a run that never terminalizes. It stays alive, the
+worktree dangles, and anyone waiting on it waits forever. That is why the brief
+ends with exactly one terminal path, and why the report's field names are exact:
+they are an interface the supervisor and the caller parse.
 
-- **Core question** — one sentence.
-- **Scope** — what counts as in-bounds (timeframe, ecosystems,
-  platforms, audience).
-- **Out-of-scope** — explicit exclusions; prevents the agent from
-  wandering.
-- **Audience + tone** — engineer-facing? executive-facing? Finnish?
-- **Output location** — default `research/<slug>.md`; override if the
-  user has a different repo convention.
+**The user's installed taskfleet.** When the repository under study is
+taskfleet itself, a worker may `cargo build --release` and run
+`./target/release/taskfleet …` from its worktree, but it never installs,
+replaces, or removes the user's installed binary or bundled skills, by
+`cargo install`, Homebrew, a manual copy, or any `skill install` variant. The
+installed release is the user's production tool and legitimately differs from
+source `HEAD`.
 
-If any of the above is genuinely missing from the user's prompt, ask
-**once** before spawning. A misdirected research run wastes hours.
+## Sharpening the question
 
-### 2. Build the prompt
+Distil the request into a core question in one sentence; the scope that counts
+as in bounds (timeframe, ecosystems, platforms, audience); what is explicitly
+out of scope, since an open-ended worker otherwise wanders; the audience and
+tone (engineer-facing, executive-facing, Finnish); and where the report lands.
 
-Include in the brief:
+The default location is `research/<slug>.md`. Repository conventions override
+it: check the repository's `AGENTS.md`, and note that a repository which keeps
+planning documents under their issue directory expects an issue-driven report
+at `issues/<slug>/analysis.md` rather than under `research/`. The worker is
+told the exact path; it does not choose one.
 
-1. The four-part framing from step 1 (question / scope / exclusions /
-   audience).
-2. **Source-quality bar** — prefer primary sources (RFCs, vendor
-   docs, original papers) over aggregators; cite every non-trivial
-   claim with a URL.
-3. **Divergent perspectives** — explicitly require N≥2 distinct
-   viewpoints when the topic admits them; do not present a single
-   narrative as consensus.
-4. **Report structure** — TL;DR (3–5 bullets) → Background → Options /
-   Findings → Trade-offs → Citations. Keep claims and citations
-   inline.
-5. **Done criteria** — file at `research/<slug>.md` exists, committed,
-   merged back to source branch.
-6. **Repository-local tool safety** — if repository inspection requires
-   building taskfleet, use `cargo build --release` and invoke
-   `./target/release/taskfleet …` explicitly. During repository work,
-   neither workers nor the orchestrator may create, replace, remove, or modify
-   the user's installed taskfleet or bundled skills by any mechanism,
-   including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
-   `skill install` variant.
-7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
-   into the brief. Required source/tool failure cannot be claimed complete;
-   optional failure may continue only when independently safe and disclosed.
+## The brief
 
-Long prompts → temp file + `--prompt-file <path>`.
+`run create` prepends generated run context to every worker prompt, including a
+custom `--prompt-file`: the exact run id, the `run show --current` ownership
+resolver, and the issue-filing boundary (issues a worker files go through
+`issuectl intake file` and are born unlaned). A pi research worker additionally
+gets a translation note that neutralises Claude-only slash commands and carries
+the clean closing recipe with the run id already filled in. That generated text
+is authoritative over the brief, so do not restate or weaken it. What the worker
+still needs from you:
 
-### 3. Create the run
+- **The question, scope, exclusions, audience, and output path** from above.
+- **The source-quality bar.** Primary sources (specifications, vendor
+  documentation, original papers, source code) over aggregators and
+  second-hand summaries, and every non-trivial claim cited inline with a URL,
+  so the reader can check it later without redoing the research.
+- **Divergent perspectives.** Where the topic admits more than one credible
+  view, the report presents at least two and says where they disagree, rather
+  than smoothing a contested area into a single narrative. Consensus that is
+  not actually there is the most expensive error a survey can make, because
+  the reader cannot see it.
+- **A structure the user can read top-down:** a summary of three to five
+  bullets, background, options or findings, trade-offs, with citations kept
+  inline next to the claims they support.
+- **Done criteria:** the report exists at the agreed path, is committed, and is
+  merged back through `run merge`.
+- **Repository-local build safety**, the installed-taskfleet rule above, when
+  the target repository is taskfleet.
+- **The closing recipe and the failure-disclosure contract** from the two
+  sections below: copy the disclosure contract below into the brief together
+  with the closing recipe. The pi preamble's own recipe covers only the clean
+  path, and a worker on any other harness gets no recipe at all.
 
-```
-taskfleet run create \
-  --kind research \
-  --title "<2–4 word slug>" \
-  --task "<self-contained research brief>" \
-  [--source-branch <branch>] \
-  [--idempotency-key <key>]
-```
+A brief longer than about 2 KB, or one with awkward shell quoting, goes in a
+temp file passed as `--prompt-file`; the CLI copies it into the run directory,
+so remove the temp file once `run create` returns.
 
-Same flag rules as `worktree-spinoff` — `--kind research`,
-`--title`, and `--task`/`--prompt-file` required; `--source-branch`
-defaults to the current branch. Output defaults to `--output jsonl`.
+### How the worker closes
 
-**`--harness pi` is supported for research.** A pi worker is
-AGENTS.md-native and has none of Claude's Skill/Agent tools or
-`/worktree-*` slash commands, so when the resolved harness is `pi` the
-CLI auto-prepends a short translation preamble to the worker's prompt
-(mapping the `/worktree-merge` close to the plain `taskfleet run
-merge` bash, telling it to skip `/llm-review` and sub-agents). You do
-not need to hand-translate the brief — write it as usual. This is the
-only autonomous kind translated for pi so far; other kinds still assume
-a Claude worker.
+The worker takes exactly one terminal path. A completed, mergeable report goes
+through `run merge`, which rebases and merges the branch and submits the terminal
+report stamped `via: "explicit-merge"` in the same call. Research blocked by a
+required failure does not merge; it submits a direct `success: false` report.
+Taking neither leaves the run alive; taking both confuses the record.
 
-### 4. Success envelope
+The worker's run id is in its generated preamble. If a recipe has to recover it,
+`taskfleet run show --current --output json` returns `.data.run_id` from the
+durable ownership record and fails closed on missing, duplicate, stale, or
+malformed evidence; the branch name's short fragment is display metadata that
+can repeat, so it is never used as the id.
 
-```json
+Once the report file is committed, the worker writes the terminal report. These
+field names are what the supervisor and the caller read; an unknown key such as
+`discuss` or `wrap_up` passes validation and is never read.
+
+```bash
+cat > /tmp/node-report-${run_id}.json <<'JSON'
 {
-  "schema_version": 1,
-  "data": {
-    "run_id": "01HZ...",
-    "supervisor": 12345,
-    "kind": "research",
-    "lifecycle": "autonomous",
-    "node_id": "n-...",
-    "tmux_window": "<workmux-reported-window-name>",
-    "worktree_path": "$HOME/repos/<repo>/worktrees/<title>",
-    "branch": "wt/<title>"
-  }
+  "success": true,
+  "summary": "<one-line outcome>",
+  "discussion_items": [],
+  "spinoff_proposals": [],
+  "wrap_up_recommendations": []
 }
+JSON
 ```
 
-Read `data.run_id` and `data.supervisor`. If supervisor is `null` or
-`{"note": "..."}`, surface and stop.
+`success` is the one required field. `discussion_items[]` carries decisions
+that genuinely needed a human (`{"topic": "<non-empty>", "severity":
+"discuss|critical|info", "options": ["…"]}`); `spinoff_proposals[]` carries
+follow-up work worth spawning (`{"proposed_title": "<non-empty>",
+"proposed_kind": "spinoff|research|technical-decision|fan-out", "rationale":
+"<why>"}`, and only those four kinds exist: `run merge` drops a proposal naming
+any other kind with a warning, and `node report` rejects the whole file);
+`wrap_up_recommendations[]` is an array of strings for the caller. The per-run
+path matters because two concurrent workers writing a shared
+`/tmp/node-report.json` clobber each other.
 
-### 5. Report to the caller
+Then merge and report in one call:
 
-Tell the user:
+```bash
+taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+```
 
-- Run id, branch, tmux window.
-- Expected output path: `research/<slug>.md` (or the override they
-  specified).
-- That the research worktree merges-and-reports itself via
-  `taskfleet run merge` — no `/worktree-merge` handoff.
-- How to follow progress: `taskfleet run show <run-id>` for a
-  one-shot snapshot, `taskfleet event tail <run-id> --follow` for
-  the streaming log, or `taskfleet run wait <run-id>` to block until
-  the run is terminal (`done | failed | cancelled`) — no hand-rolled poll
-  loop, no wrong-field footgun.
-
-## Terminal report (mandatory)
-
-A research worker MUST take exactly one terminal path, never both. Completed,
-mergeable research uses `taskfleet run merge`, which merges and submits the
-terminal report stamped `via: "explicit-merge"`. Research blocked by a required
-failed or incomplete step does **not** merge; it submits a direct `success:
-false` report under "Tool and sub-workflow failure disclosure" below. Omitting
-both paths leaves the run alive. The completed path passes a `--report-file`
-carrying the full §7.3 payload (validated **before** the merge).
-
-1. **Resolve the exact owning run id** from inside the worktree. Use the
-   durable node ownership record, never the branch's display identifier (it is a
-   lossy bounded fragment that can repeat, not ownership). The node id defaults
-   to `n-0001`:
-
-   ```bash
-   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
-     echo "failed to resolve exact owning run id" >&2
-     exit 1
-   }
-   ```
-
-   This fails closed on missing, duplicate, stale, or malformed ownership
-   evidence. If it fails, stop and report the error; do not guess a run id.
-
-2. **Write the §7.3 payload** to a temp file. These exact field names are
-   what the supervisor consumes — do NOT use `discuss`,
-   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
-   validation, but its contents are silently dropped.
-
-   ```bash
-   cat > /tmp/node-report-${run_id}.json <<'JSON'
-   {
-     "success": true,
-     "summary": "<one-line outcome>",
-     "discussion_items": [],
-     "spinoff_proposals": [],
-     "wrap_up_recommendations": []
-   }
-   JSON
-   ```
-
-   - `success` — **required** boolean. `true` when the work merged
-     cleanly; `false` when reporting a blocked or failed outcome.
-   - `summary` — optional one-line human-readable result.
-   - `discussion_items[]` — decisions that genuinely needed a human
-     call. Each: `{"topic": "<non-empty>", "severity":
-     "discuss|critical|info", "options": ["…"]}`.
-   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
-     `{"proposed_title": "<non-empty>", "proposed_kind":
-     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
-     "rationale": "<why>"}`.
-   - `wrap_up_recommendations[]` — array of strings; advice for the
-     caller (further reviews, doc updates, additional siblings).
-
-   Even a clean, no-follow-up run submits `{"success": true}` with the
-   arrays empty — the call itself is what releases the supervisor.
-
-3. **Merge and report in one call:**
-
-   ```bash
-   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
-   ```
-
-   This rebases + merges the worktree branch into its source branch and
-   submits the §7.3 report in the same call. On a clean merge the per-run
-   supervisor consumes the report, winds the run down, and tears down the
-   worktree, tmux window, and branch automatically — do **not** manually
-   run any tmux/git cleanup. If the source branch is not the run's
-   recorded `source_branch`, pass `--source <branch>`.
-
-   On a merge conflict the call exits non-zero with `error.code:
-   "merge_failed"` and submits **no** report — the node stays live.
-   Resolve the conflict (or run `/complex-rebase`) and re-run the same
-   `run merge` call.
-
-A terminal report is **not optional**. Completed work with no `run merge`, or
-blocked work with no direct `node report`, leaves the run dangling with no
-structured outcome for the caller to read.
+The file is validated before the merge runs. `run merge` defaults to node
+`n-0001`, the only node a research run has, and merges into the recorded source
+branch unless `--source <branch>` says otherwise. The supervisor then tears
+down the worktree, tmux window, and branch within a second or two and the
+worker's session ends as its window closes; the worker does not run
+`tmux kill-window`, `git worktree remove`, or `git branch -d` itself. On
+`error.code: "merge_failed"` no report was submitted and the node stays live:
+resolve the conflict (or `/complex-rebase` for a deeply diverged branch),
+commit, and re-run the same `run merge` command; the report file is still on
+disk.
 
 ## Tool and sub-workflow failure disclosure
 
 Before closing, inventory every failed or detectably incomplete tool, command,
 external service, review, panel, or delegated workflow.
 
-A step **required** by the brief or done criteria that remains failed or
+A step **required** by the brief or the done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
 `success: false`, then submit it with `taskfleet node report "$run_id"
@@ -262,30 +212,93 @@ data, environment dumps, or unbounded logs. Set top-level `summary` and
 discussion item. Existing prose fields suffice, so do not add a schema or
 supervisor state.
 
-## Issue Management
+## Creating the run
 
-Skip when driver-spawned. For standalone issue-driven research, distinguish two cases:
+You need a git repository and a compatible binary (see "Install or upgrade"
+below). Capture the current branch; it is the default source and merge target.
+`run create` runs inside tmux or with `--headless` / `--tmux-session <name>`.
 
-- If research is evidence for a larger issue, commit the report with
-  `Refs-Issue: @<slug>` and do not close or stamp the issue.
-- If the issue's whole deliverable is this report, make and validate the final report
-  commit, then run `issuectl close <slug> --status done --stamp --as <agent> --json`.
-  Require `.data.stamp.status` to be `stamped` or `already_present`; otherwise do not
-  merge. Commit the exact closure metadata path separately and require a clean tree before
-  `taskfleet run merge`. The stamped report commit carries `Fixes-Issue: @<slug>`.
+```
+taskfleet run create \
+  --kind research \
+  --title "<2–4 word slug>" \
+  --task "<self-contained research brief>" \
+  [--profile <name>] \
+  [--source-branch <branch>] \
+  [--headless] \
+  [--notify <cmd>] \
+  [--idempotency-key <key>] \
+  [--dry-run]
+```
 
-Freeform research has no issue trailer or issue mutation.
+Exactly one of `--task` and `--prompt-file`. `--idempotency-key` makes a retry
+after a transient error return the original run instead of spawning a second
+one. Output defaults to `--output jsonl`.
+
+The worker runs under the pi harness by default, and on an installation with
+executable profiles configured an autonomous run accepts only a pi candidate
+with `worker-v1` telemetry; `--harness claude` is honoured only on an
+installation that predates profiles. The routing matrix in `taskfleet-overview`
+recommends no profile for research, so forward an explicit caller `--profile`
+as their selection and otherwise let the installation's default apply. When you
+are unsure a selector exists, preflight the complete command with `--dry-run`;
+`unknown_profile` after materialization costs a run.
+
+The worker's web access is whatever its harness provides. taskfleet does not
+check that a research worker can fetch anything, so a report full of "could not
+fetch sources" notes is the symptom of a harness with no web tools, and worth
+surfacing to the user as such.
+
+## What comes back
+
+The success envelope has the same shape as a spinoff's: `data.run_id` is the
+handle for everything that follows, and `data.supervisor` is the supervisor's
+pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`)
+explains why none was spawned; anything else non-numeric means nothing is
+driving the worker, which the user needs to hear. `data.branch`,
+`data.worktree_path`, and `data.tmux_window` name what was created.
+
+Tell the user the run id, the source branch, the tmux window and the session it
+is in, the path the report will land at, and that the run merges and reports
+itself, so no `/worktree-merge` is needed from them. Be precise about how
+completion reaches them: a research run is out of band and nothing re-invokes
+this session by itself. Promise "I'll tell you when it's done" only if you wired
+`--notify` or started a background `taskfleet run wait <run-id>` through a
+harness facility that re-invokes you; otherwise say plainly that they check
+`taskfleet run show <run-id>` or ask you to wait on it. `run wait` blocks until
+the run is terminal without a hand-rolled poll loop, and `taskfleet event tail
+<run-id> --follow` streams the log. Settled is not landed: read the `landed`
+flag from `run wait` or `run show` rather than checking git ancestry yourself.
+The report persists on the node and `run show` exposes it as `data.report`, so
+a late `run show` still answers after teardown.
+
+## Issue-driven research
+
+A research run spawned by a driver with the parent flags leaves the issue to
+the driver. Otherwise, when the request came from an issue, decide which of two
+cases holds and write the concrete slug into the brief:
+
+- The report is evidence for a larger issue: the worker commits it with a
+  `Refs-Issue: @<slug>` trailer and does not close or stamp the issue.
+- The report is the issue's whole deliverable: after the final validated report
+  commit and before `run merge`, the worker runs `issuectl close <slug>
+  --status done --stamp --as <agent> --json`. The stamp rewrites the report
+  commit's message with a `Fixes-Issue: @<slug>` trailer, which is what the
+  trailer-driven changelog reads; `.data.stamp.status` has to be `stamped` or
+  `already_present`, because `skipped` (detached HEAD, merge commit, signed, mid
+  rebase) means the landing commit would be invisible to the changelog, and
+  that blocks the merge. The closure metadata path issuectl returns is committed
+  separately, and the tree is clean before `run merge`.
+
+Freeform research adds no trailer and touches no issue.
 
 ## Errors
 
-Same envelope and codes as `worktree-spinoff` (`invalid_arguments`,
-`branch_not_found`, `worktree_create_failed`, `idempotent_replay`,
-`supervisor_spawn_failed`). One research-specific gotcha: if
-`WebSearch`/`WebFetch` is disabled in the worktree's tool allowlist,
-the run will be useless — the project's CLAUDE.md / `.workmux.yaml`
-must expose those tools to `--kind research`. The CLI does not
-currently validate this; surface it to the user if the research output
-comes back with "could not fetch sources" notes.
+`run create` fails with the same envelope and codes as `worktree-spinoff`
+(`invalid_arguments`, `no_tmux_session`, `base_ref_not_found`,
+`workmux_add_failed`, `unknown_profile`, `supervisor_spawn_failed`, and the
+rest); branch on `error.code`, the message is prose. Nothing in the create path
+is research-specific.
 
 ## Install or upgrade `taskfleet`
 
@@ -296,7 +309,10 @@ first invocation in a session, run
 
 - **Missing**: tell the user to install through a published distribution channel
   outside this repository workflow, then stop.
-- **Older**: tell the user to upgrade and stop.
+- **Older**: tell the user the skill expects `{{CLI_VERSION}}` and suggest
+  upgrading via the channel they originally used
+  (`brew upgrade jarimustonen/taskfleet/taskfleet` or the shell installer),
+  then stop; the `run create --kind research` surface may have changed.
 - **Newer**: tell the user the installed skill is stale and stop. Refreshing
   installed bundled instructions is published-tool maintenance outside
   repository work; never run `skill install` as part of this workflow.

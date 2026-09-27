@@ -39,6 +39,11 @@ publish-jobs = ["homebrew"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
 # Where to host releases
 hosting = "github"
+# cargo-dist has no pre-install hook for build-local-artifacts. Only its CI
+# output is overridden to isolate the self-hosted macOS install. Native
+# `dist generate --check` skips CI with this setting; the local release gate
+# additionally runs scripts/release-workflow.py --check against pristine output.
+allow-dirty = ["ci"]
 
 # Route the macOS build to a self-hosted runner. GitHub-hosted macOS minutes
 # are effectively unavailable on the Free plan (multi-hour queues); the two

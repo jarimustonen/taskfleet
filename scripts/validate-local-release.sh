@@ -12,7 +12,7 @@ require_command() {
   }
 }
 
-for command in cargo cargo-nextest cargo-deny git jq rustc rustup shipshape; do
+for command in cargo cargo-nextest cargo-deny git jq python3 rustc rustup shipshape; do
   require_command "$command"
 done
 
@@ -74,6 +74,8 @@ run ./scripts/test-publish-crates.sh
 run ./scripts/test-release-authorization.sh
 run ./scripts/test-release-github-policy.sh
 run ./scripts/test-distribution-topology.sh
+run python3 ./scripts/test-macos-dist-isolation.py
+run python3 ./scripts/release-workflow.py --check --dist "$dist_bin"
 run ./scripts/test-shipshape-release.sh
 run ./scripts/test-shipshape-release-current-protocol.sh
 run ./scripts/verify-release-activation.sh

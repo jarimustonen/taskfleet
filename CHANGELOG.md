@@ -14,6 +14,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.11.3] - 2026-09-27
+
+### Fixed
+
+- Self-hosted macOS release installs cargo-dist in persistent Cargo bin (`intake-bug-taskfleet-d9048c3d0f28`).
+
 ## [0.11.2] - 2026-09-24
 
 ### Fixed

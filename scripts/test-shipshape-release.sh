@@ -179,7 +179,7 @@ for malformed in lowercase01m0ja657ejjjyc7j7230jf42n '../run' '--help' '01M0JA65
   status=$?
   set -e
   [[ "$status" -eq 2 ]] || { echo "malformed run id was not rejected: $malformed" >&2; exit 1; }
-  ! grep -F "repo view" "$tmp/gh.log" || { echo "malformed run id reached gh: $malformed" >&2; exit 1; }
+  test ! -s "$tmp/gh.log" || { echo "malformed run id reached gh: $malformed" >&2; exit 1; }
   grep -F "invalid release run id: $malformed" "$tmp/stderr" >/dev/null
   ! grep -F 'release show' "$tmp/shipshape.log" >/dev/null || { echo "malformed run id reached release show" >&2; exit 1; }
 done
@@ -281,9 +281,9 @@ for formula_version in 0.12.4 0.13.0; do
   set -e
   [[ "$status" -eq 1 ]] || { echo "new Homebrew stable $formula_version was admitted" >&2; exit 1; }
   grep -F "shipshape 0.12.3 is not Homebrew stable $formula_version" "$tmp/stderr" >/dev/null
-  ! grep -F 'repo view' "$tmp/gh.log" >/dev/null
-  ! grep -F 'release show' "$tmp/shipshape.log" >/dev/null
- done
+  ! grep -F 'repo view' "$tmp/gh.log" >/dev/null || { echo "new stable reached repository preflight" >&2; exit 1; }
+  ! grep -F 'release show' "$tmp/shipshape.log" >/dev/null || { echo "new stable reached release show" >&2; exit 1; }
+done
 reset_logs
 set +e
 FORMULA_FAIL=1 run_wrapper
@@ -291,7 +291,7 @@ status=$?
 set -e
 [[ "$status" -eq 1 ]] || { echo "unavailable tap was admitted" >&2; exit 1; }
 grep -F 'cannot verify Homebrew shipshape stable version' "$tmp/stderr" >/dev/null
-! grep -F 'repo view' "$tmp/gh.log" >/dev/null
+! grep -F 'repo view' "$tmp/gh.log" >/dev/null || { echo "unavailable tap reached repository preflight" >&2; exit 1; }
 
 reset_logs
 set +e

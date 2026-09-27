@@ -82,6 +82,7 @@ validate_contract_targets() {
 require_current_homebrew_stable() {
   local formula_json formula stable
   require_command gh
+  require_command base64
   formula_json="$(gh api repos/jarimustonen/homebrew-shipshape/contents/Formula/shipshape.rb)" || {
     echo "cannot verify Homebrew shipshape stable version" >&2
     exit 1
@@ -544,6 +545,12 @@ case "$command" in
   *) usage ;;
 esac
 
+# Reject malformed resume coordinates before network access. The later check also
+# rejects the permanently abandoned ids after the tool preflight.
+if [[ "$command" == resume ]]; then
+  [[ $# -eq 2 ]] || usage
+  [[ "$2" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]] || { echo "invalid release run id: $2" >&2; exit 2; }
+fi
 require_command shipshape
 require_supported_shipshape
 require_current_homebrew_stable

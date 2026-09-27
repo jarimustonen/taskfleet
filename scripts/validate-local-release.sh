@@ -12,7 +12,7 @@ require_command() {
   }
 }
 
-for command in cargo cargo-nextest cargo-deny git jq python3 rustc rustup shipshape; do
+for command in base64 cargo cargo-nextest cargo-deny gh git jq python3 rustc rustup shipshape; do
   require_command "$command"
 done
 

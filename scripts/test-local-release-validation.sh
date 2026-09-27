@@ -7,7 +7,7 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/local-release-validation.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 
-for tool in bash cargo cargo-nextest dirname git jq pwd python3 rustc rustup shipshape; do
+for tool in base64 bash cargo cargo-nextest gh dirname git jq pwd python3 rustc rustup shipshape; do
   path="$(command -v "$tool")" || { echo "test prerequisite missing: $tool" >&2; exit 1; }
   ln -s "$path" "$tmp/bin/$tool"
 done

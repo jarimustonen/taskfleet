@@ -1,179 +1,341 @@
 # taskfleet
 
-Rust CLI for orchestrating autonomous AI-agent workflows on a developer's
-machine. It spawns agents into isolated git worktrees (kinds: `spinoff`,
-`research`, `technical-decision`, `fan-out`), supervises them with a
-per-run supervisor process, and merges their work back via `run merge`.
-State is file-based under `~/.taskfleet/runs/<run-id>/` (append-only
-`events.jsonl` + flock-guarded projections), so any UI can present the
-same canonical source of truth. The orchestration semantics ship as
-bundled skills (`/worktree-spinoff`, `/worktree-research`,
-`/worktree-technical-decision`, `/fan-out`, `/stint-start`,
-`/stint-handoff`, …) installed with `taskfleet skill install`.
+Rust CLI that runs autonomous AI-agent workflows on a developer's machine. It
+spawns agents into isolated git worktrees, watches each run with its own
+supervisor process, and merges the work back with `run merge`. Run state is
+file-based under `~/.taskfleet/runs/<run-id>/`: an append-only `events.jsonl`
+plus flock-guarded projections, so every UI reads the same source of truth. The
+orchestration workflows ship as bundled skills under
+`crates/taskfleet/skills/*/SKILL.template.md` (`/worktree-spinoff`,
+`/worktree-research`, `/worktree-technical-decision`, `/fan-out`,
+`/stint-start`, `/stint-handoff`, and others).
 
-The 0.2 series is the "thin supervisor" simplification (ADR
-`docs/decisions/0001-thin-supervisor-vs-harden.md`): told-not-guessed —
-`run merge` is the only success truth, terminal outcomes are typed tables,
-and the old inference heuristics (activity clocks, git-reconcile probes,
-kind-derived interactivity) are deleted. The former TUI/discussion/
-orchestrate/code-pipeline surfaces were cut in that release; do not
-resurrect them without a new decision.
+`ARCHITECTURE.md` is the code map. `crates/taskfleet/AGENTS.md` covers the CLI
+crate itself: the snapshot test loop, test-spawn hygiene, profiles, evidence
+capture, and the skill installer. This file holds what is true of the whole
+repository and would otherwise be learned the hard way.
 
-## Tool family (the stack this repo belongs to)
+## Decisions that shape the code
 
-taskfleet is one component in a family of AI-first CLIs that share the
-same conventions. What each one owns in THIS repo:
+**The supervisor is told, not guessing.** ADR 0001
+(`docs/decisions/0001-thin-supervisor-vs-harden.md`, design in
+`issues/lifecycle-architecture-review/design.md`) replaced an inference engine
+that reconstructed a worker's state from a cross-product of proxies (pid
+liveness, tmux panes, branch ancestry, three activity clocks) with a thin
+model: a unit is done only when the worker called `run merge`, and every other
+terminal outcome is a typed table. The proxies were deleted because patching
+one edge case reliably exposed its neighbours. If you find yourself adding a
+heuristic that infers done-ness, idleness, or interactivity from ambient
+signals, you are rebuilding the thing the ADR removed. The TUI, discussion,
+orchestrate, and code-pipeline surfaces were cut in the same release along with
+the `worktree-code` / `worktree-bugfix` / `worktree-make-skill` kinds. Bringing
+any of them back is a new decision, not a restoration.
 
-- **issuectl** — issue tracking. Owns `issues/`, `issues/AGENTS.md`,
-  `.issuectl/AGENTS.md`, and the `/issue` skill. The execution DAG
-  (`lane:`/`lane_seq:` frontmatter, `issuectl dag`) is the scheduling
-  source of truth.
-- **Shipshape** — OSS release engine. Owns the approved `OSS-RELEASE.md`
-  contract and the `/shipshape-*` skills, and supports this multi-crate
-  workspace. `shipshape release plan --bump <level>` owns the bump phase
-  (version + intra-workspace pin rewrites + `Cargo.lock` refresh +
-  CHANGELOG finalize) and `shipshape release verify <run-id>` reconciles a cut
-  against registry state. The historical integration issue is
-  `adopt-ossctl-release-cut`.
-- **project-canon** — ships the `/ai-first-cli-canon` skill (see below).
-- **glasspad** — publishes rich HTML views to a browser
-  (`glasspad publish`); used for dashboards/reports, not part of the build.
+**One identity.** ADR 0002 (`docs/decisions/0002-taskfleet-identity.md`): the
+workspace is exactly `taskfleet-core` and `taskfleet`, the only executable is
+`taskfleet`, state lives only under `~/.taskfleet`, and the code contains no
+alias, migration, wrapper, or transition artifact for any earlier name.
 
-## CLI Design Principles
+**Non-blocking waits are not this repository's problem.** A homebase decision
+(ADR 0011 there) superseded the closed `pi-background-jobs-extension` issue.
+Session-scoped background commands inside a pi.dev session belong to the host
+runtime, which may use the third-party `@aliou/pi-processes` extension; its
+processes dying with the pi session is a safety property. Durable background
+running belongs behind a separate, harness-neutral runner contract. taskfleet
+therefore stays the run-state owner behind `run wait`, the `landed` flag, and
+its JSON contracts, and it does not import that extension, reach into its
+manager object, assume its process ids or log paths, or use its in-process
+EventBus. A pi extension's internals are not a public interface. Do not file a
+"build our own pi background-jobs extension" issue here; that option was
+evaluated and rejected.
 
-Use the `/ai-first-cli-canon` skill shipped by `project-canon` as the maintained AI-first CLI canon. It is the binding reference for CLI surface work: strict input validation, `--json` output, JSONL logs, no interactive prompts, informative errors and composable commands. Do not keep or edit a repo-local `ai-first-cli-canon` copy; update it in the `project-canon` repository and reinstall the skill from the released tool.
+## The tool family
 
-## Gitignored directories
+taskfleet is one of a family of AI-first CLIs with shared conventions. In this
+repository:
 
-- `history/` — agent scratchpad and ephemeral planning docs (not tracked)
-- `target/` — Rust build artifacts
+- **issuectl** owns `issues/`, `issues/AGENTS.md`, `.issuectl/AGENTS.md`, and
+  the `/issue` skill. The execution DAG (`lane:` / `lane_seq:` frontmatter,
+  `issuectl dag`) is the scheduling source of truth.
+- **Shipshape** owns the approved `OSS-RELEASE.md` contract and the
+  `/shipshape-*` skills. It performs the version bump, the exact intra-workspace
+  pin rewrite, the `Cargo.lock` refresh, and the CHANGELOG finalize, and it
+  reconciles a cut against registry state.
+- **project-canon** ships the `/ai-first-cli-canon` skill, the binding
+  reference for any CLI surface work here (strict input validation, `--json`
+  output, JSONL logs, no interactive prompts, informative errors, composable
+  commands). The installed copy is gitignored on purpose. Change the canon in
+  the `project-canon` repository and reinstall it; a repo-local copy drifts.
+- **glasspad** publishes HTML views to a browser for dashboards and reports. It
+  is not part of the build.
 
-## Documentation Pattern
+## Where things live
 
-Every directory follows this structure:
+Every directory follows one pattern: `AGENTS.md` holds the agent-relevant
+knowledge, `CLAUDE.md` is a symlink to it, and an optional `AGENTS-<TOPIC>.md`
+splits out a large topic.
 
-- `CLAUDE.md` — symlink to `AGENTS.md`
-- `AGENTS.md` — all AI-relevant info (consolidated)
-- `AGENTS-<TOPIC>.md` — complex topics split out (optional)
+Issues are `issues/<slug>/item.md`, flat, with status in the `status:`
+frontmatter field rather than the path. Use the `/issue` skill and `issuectl`
+for every mutation; the frontmatter is schema-validated and hand edits break
+the optimistic-concurrency tokens. Every planning document (plan, analysis,
+validation, design, breakdown, todo) lives under its issue directory, so work
+that needs a planning document also needs an issue. `TODO.md` is only the
+session handoff and a compact stint archive; it is not a schedule.
 
-## Issues & Planning
+`history/` (agent scratch) and `target/` are gitignored. An issue that only
+points at a `history/` file is unreadable to anyone else, so a review residual
+becomes an issue only with an observed occurrence or a self-contained
+description. Filing every deferred residual from an automated review
+manufactures work nobody asked for.
 
-Issue tracking is managed by [`issuectl`](https://github.com/jarimustonen/issuectl). Use the `/issue` skill (installed by `issuectl init`) to create, search, update, and close issues.
+## Working in this repository
 
-- `issues/<slug>/item.md` — every issue and epic (flat layout — no numeric prefix, no `open/closed/` split)
-- Status lives in the `status:` frontmatter field, not in the path
-- `issues/AGENTS.md` — issue schema, types, workflow (owned by issuectl)
-- `.issuectl/AGENTS.md` — repo-local policy for AI agents (owned by issuectl)
+This section is what `/stint-start` reads in Phase 0. Every project-specific
+fact an orchestrator or worker needs is here or pointed to from here.
 
-All planning documents (plans, analyses, validations, designs, breakdowns, todos) belong under their parent issue directory — not as standalone files. If work needs a planning document, it also needs an issue.
+**Coding happens in worktrees.** The orchestrator session plans, spawns, reads,
+and reports; it does not edit code. Spawn `/worktree-spinoff <issue-slug>` and
+friends. On macOS, five or six simultaneous spawns can exhaust
+pseudo-terminals (`fork failed: Device not configured`, surfacing as
+`workmux_add_failed` mid-batch), so batches larger than three go `--headless`;
+the bundled skills describe the placement flags. `taskfleet event tail
+<run-id> --follow` streams completions so you need not poll.
 
-- `issues/<slug>/plan.md` — architecture, implementation plans
-- `issues/<slug>/analysis.md` — research and analysis
-- `issues/<slug>/validation.md` — design assumptions checked against current reality, noting what differs from first-pass analysis
-- `issues/<slug>/design.md` — design documents
-- `issues/<slug>/breakdown.md` — epic → child-issue breakdown with dependencies and critical path
-- `issues/<slug>/todo.md` — task checklists
+**Git is the truth about landings.** `run` status can lag reality, so confirm
+every landing from git before reporting it. Handoffs describe the state as it
+was.
 
-## Operating policy (for `/stint-start` and orchestrators)
+**Check the installed binary before spending a worker.** Three stints in a
+row, intake reports described either a defect the current release had already
+fixed or a misread of the JSON surface (`last_report` versus `report`,
+`data.runs[]` versus `data.<field>`). Reproducing against the installed
+taskfleet first closed those issues without code.
 
-Read by `/stint-start` Phase 0 (the round engine; `/stint` was split 2026-08-04 into
-`/stint-start` + `/stint-handoff`, with bug intake kept outside this repository).
-Every project-specific fact an orchestrator needs:
+**Worker deaths are transient.** Re-spawn and adopt the preserved branch
+(review, adopt, complete, merge). Hand-merging unreviewed work skips the only
+review the change will get. Heavy units legitimately run 54 to 96 minutes; a
+long run is not a hang.
 
-- **Release worker boundary (ADR 0002 clean break).** Maintained HEAD has one identity and an exact two-crate crates.io saga plus canonical cargo-dist/Homebrew topology. Repository workers may run package/distribution checks and `scripts/shipshape-release.sh plan`, but must not cut, tag, publish, install, move state, mutate a tap, or edit another repository. Only the conductor may cut after the exact clean release commit passes `scripts/validate-local-release.sh` through the pinned held-tag wrapper. Repository-local package verification uses `cargo package --workspace --no-verify` while exact-pinned packages are not registry-visible.
-- **Release cadence (default posture, since 2026-08-04).** Outside an explicit pre-cut block, this project **ships real releases, often** — cut one whenever something production-ready lands, don't batch changes into a big release. Two channels, both driven from the approved `OSS-RELEASE.md` contract and **both triggered by pushing a `vX.Y.Z` tag**: **crates.io** via `publish-crates.yml` in CI (`taskfleet-core` first, then `taskfleet` — the CLI depends on `taskfleet-core = "=<version>"`; do NOT run `cargo publish` locally, see the dedicated bullet below), and **prebuilt binaries + the canonical Homebrew tap `jarimustonen/homebrew-taskfleet`** via cargo-dist (CI builds the mac target on a self-hosted runner). The canonical install is `brew install jarimustonen/taskfleet/taskfleet`. The `/shipshape-release` skill selects the SemVer bump; the Homebrew-stable, exact-build-allowlisted Shipshape 0.12.3 resumable protocol and `scripts/shipshape-release.sh` execute it. Mechanics live in `OSS-RELEASE.md` + `dist-workspace.toml`.
-- **Repository work never installs taskfleet or its skills (maintainer decision, 2026-08-23).** Build and test repository-local taskfleet artifacts with `cargo build --release` and explicit `./target/release/taskfleet …` invocations. During repository work, workers and stint orchestrators MUST NOT create, replace, remove, or modify the user's installed taskfleet binary or installed bundled instructions through any mechanism. This includes every local/registry form of `cargo install`, `cargo uninstall`, Homebrew operations, manual binary copies, and every `skill install` invocation (including via `./target/release/taskfleet`). This project has **no stint deploy step**. The installed release and source `HEAD` may legitimately differ; newly landed CLI or skill changes are validated locally but are not live in the installed tool until a published distribution-channel upgrade outside repository build/test work.
-- **Release autonomy (maintainer decision, 2026-08-05).** **Pushing `main` is always allowed for this project (no ask)** — this deliberately overrides the global "never push without being asked" default for taskfleet. **Cutting a release is ALSO fully autonomous: the conductor may push a `vX.Y.Z` release tag without asking, and may decide independently when a release is warranted** (per the release-often cadence above). The former release-skill **approval boundary is removed** for this project — there is no remaining human-confirmation gate on the release action. *(Autonomy is unchanged; what changed 2026-08-17 is the mechanism — the tag push is now the single release action, because CI does the publishing. See the "DO NOT `cargo publish` locally" bullet below.)* The agent still executes it *correctly and deliberately* (right version, changelog finalized, snapshots regenerated, tree clean, **the exact commit being tagged passes the complete local release gate**) — autonomy means no permission prompt, not less care. crates.io publishes remain permanent (yank-only), so verify before publishing; that is a correctness duty, not an approval gate.
-- **DO NOT `cargo publish` locally — pushing the tag IS the publish (2026-08-17).** `.github/workflows/publish-crates.yml` is tag-triggered (`v[0-9]+.[0-9]+.[0-9]+*`) and publishes **two** crates in dependency order using the repository secret. The contract therefore declares both crates `cargo-publish-ci`, plus CI-delegated cargo-dist GitHub Release and Homebrew targets. Use `scripts/shipshape-release.sh plan <major|minor|patch>` to seal and inspect the non-mutating plan, then `scripts/shipshape-release.sh cut <plan-id>`. Shipshape owns the bump, exact pin rewrite, `Cargo.lock` refresh, CHANGELOG finalize, deterministic `version_*` hook, bump commit, tag plan, journal, resume, and verify; CI owns every publish. Never invoke a direct `shipshape release cut` in this repo: the pinned Shipshape 0.12.3 protocol has no pause between its bump commit and tag push, so the wrapper deliberately journals a held tag push, advances `main` to the exact bump commit, and resumes only after `scripts/validate-local-release.sh` passes on that exact clean `HEAD`. The wrapper checks the live public `jarimustonen/homebrew-shipshape` tap formula via GitHub API on every release operation (no local brew required), then admits only the exact tested Shipshape 0.12.3 build; failed verification or a newer stable version blocks release until its protocol is validated and allowlisted.
-  The local script is the single repository test gate: fmt, clippy, release nextest, doctests, rustdoc, snapshots and identity, stable Rust/Cargo, cargo-deny, shell release fixtures, package archives, Shipshape contract/readiness, and cargo-dist generation/plan topology. Missing prerequisites fail clearly; callers may set `DIST_BIN` and `CARGO_TARGET_DIR`. After it returns, the wrapper rechecks `HEAD`, cleanliness, and exact remote `main` before creating the protected authorization ref and resuming. The tag push is irreversible because it starts both publication workflows and crates.io versions are yank-only. `publish-crates.yml` retains only lightweight authorization/version/topology checks and ordered publication; cargo-dist's generated `release.yml` remains independent. Local macOS validation does not prove Linux runtime behavior; cargo-dist's publication workflow still owns cross-platform binary builds.
-- **Resuming and verifying a cut.** If the wrapper stops after creating its journal, use `shipshape release list --json` and `shipshape release show <run-id> --json` to inspect it. For a transient pre-tag interruption, continue only with `scripts/shipshape-release.sh resume <run-id>`; it revalidates exact local/remote main, reruns the local release gate, and checks the remote tag. **Never run bare `shipshape release resume` while the tag is still local** — that bypasses the gate. If local validation found a source defect in the bump commit, do not resume: abandon that run with `shipshape release abandon <run-id> --reason <reason>`, remove its local tag, fix forward, and plan a new cut. Once the journal says the tag was pushed, publishing may already be underway: resume/verify the existing run and never retag or publish manually. The wrapper finishes with `shipshape release verify <run-id> --json`; the workflow's `scripts/publish-crates.sh` owns crates.io reconciliation and Shipshape owns cross-leg release verification; do not hand-roll an unlabelled API probe (the API requires a meaningful `User-Agent`, and an incomplete probe has caused a false alarm).
-- **Staying in sync (no ask).** You may always run the `pull → rebase → push` sequence to keep local `main` reconciled with `origin/main` and published — `git pull --rebase` (or `git fetch && git rebase origin/main`), then `git push`. Parallel worktree sessions push under you, so bringing local up to date and pushing before/after a round, before a handoff, or before preparing a release is expected and safe (it rebases your local commits onto the remote first). Both the sync and the push need no asking, and (per the release-autonomy point above) neither do the release actions — nothing in this project's normal git/release flow requires a human-confirmation gate anymore.
-- **Green gate (run before merging any worktree):** run `scripts/validate-local-release.sh`; it is the sole maintained aggregation of the repository and release checks. It selects rustup's current `stable` channel for every Rust/Cargo subprocess and fails closed when `cargo-nextest`, `cargo-deny`, stable Rust, Homebrew-current exact Shipshape build, or cargo-dist 0.33.0 (`DIST_BIN`) is unavailable. The orchestrator or machine setup installs nextest once with `cargo install cargo-nextest --locked` if the development machine lacks it; a worker reports the missing prerequisite rather than installing globally. This installs the test runner, not taskfleet. Doctests are a separate step because nextest does not run them. CLI-surface / bundled-skill changes also need the insta snapshot loop, including review of every accepted change; see `crates/taskfleet/CLAUDE.md`. The rustdoc step is separate because tests and clippy do NOT catch dangling intra-doc links. **A symbol-removing cut MUST run the doc check:** deleting a module/fn leaves any `[`crate::…`]` doc-link to it dangling and makes the local rustdoc gate red. **A developer machine is NOT a bare CI runner:** a test that depends on ambient `tmux`, an installed harness binary, or any other undeclared tool can pass locally and fail in CI. Exercise tool-sensitive tests with a stripped `PATH` containing only the explicitly required toolchain/stubs, or run them in an equivalent clean environment, rather than treating the fully equipped local host as evidence. (2026-08-15: `cut-run-kinds-discussion-machinery` removed `spinoff::approve` but left an intra-doc link to it in `proc.rs`; the round's test/clippy gate was green, `main` docs went red — `ci-red-main`. Fixed same session; the doc check is now part of every gate to prevent recurrence.)
-- **Integrated gate (run after a multi-worktree round):** re-run `scripts/validate-local-release.sh` on the *integrated* `main` once all the round's branches have landed. Per-worktree green does NOT imply integrated green: a test-isolation flake can stay latent until several workers' tests coexist in one run. (2026-07-25: five workers each passed their own gate, but `supervise::notify::tests::fires_hook_with_completion_env` — an order-dependent TOCTOU on an async hook file — failed only in the combined suite; caught by the integrated gate, fixed as `notify-test-toctou-flake`.) The gate also catches a distinct failure mode: a **lane misprediction** — a DAG lane assignment predicts an issue's *likely*-touched hot files, but a fix can legitimately land elsewhere, so two "disjoint-lane" spinoffs can silently collide. (2026-08-10: `supervisor-dies-before-worker-node` (Lane A, predicted `supervise/*`) actually landed in `run/*` — `run list`/`run show`/`RunSummary` — colliding with `run-wait-still` (Lane E); each was green alone but integrated `main` failed to **compile** (`E0425 stillborn`). Caught by the integrated gate, fixed via a follow-up spinoff.) Lesson: never skip the integrated gate for "independent" parallel units, and prefer sequencing any two units that might both touch the `run show` / `RunSummary` DTO surface.
-- **Hot / correctness-sensitive files (sequence edits; never parallelize worktrees that touch the same one):** `crates/taskfleet-core/src/{events,lock,reducer,schema}.rs` and `crates/taskfleet/src/supervise/*`. (The code-pipeline modules `crates/taskfleet/src/{floor,pipeline}/*` and the harness heavy layer were DELETED 2026-08-14 by `cut-pipeline-floor-harness-heavy`; only the light `harness/{mod,prompt,select,support}.rs` claude+pi launcher remains — no longer a hot cluster.) See "State integrity invariants".
-- **Rust toolchain policy.** Taskfleet builds and releases with rustup's newest `stable` Rust/Cargo channel. Old compilers are not compatibility targets, and published crate metadata deliberately declares no `rust-version` floor that the project does not test. Dependency security updates take precedence over preserving compatibility with an older compiler.
-- **Coding happens in worktrees, never in the orchestrator/stint session.** Spawn `/worktree-spinoff <issue-slug>` (headless for batches > 3; see the macOS PTY note). **Verify every landing from git** — `run` status can lag reality.
-- **Verify against the running binary before spending a worker.** Bug reports (intake or old issues) routinely describe a defect the current release already fixed, or a read-surface mistake (`last_report` vs `report`, `data.runs[]` vs `data.<field>`). Reproduce against the installed binary first; three stints in a row this closed issues without code.
-- **Filing bar for review residuals.** An automated review pass that files every "deferred residual" manufactures un-work. A residual becomes an issue only with (a) an observed occurrence or (b) a self-contained, readable description — never a bare pointer to a gitignored `history/` file.
-- **Worker deaths are transient — retry with harvest.** Re-spawn and adopt the preserved branch (review → adopt → complete → merge), never hand-merge unreviewed work. Heavy-LLM units legitimately take 54–96 min; a long run is not a hang.
-- **Test accounts / reset:** n/a (no external test accounts).
+**Repository work leaves the installed taskfleet alone.** This is a maintainer
+decision (2026-08-23). Build with `cargo build --release` and run
+`./target/release/taskfleet …` explicitly. Nothing in repository work creates,
+replaces, removes, or modifies the user's installed binary or installed
+bundled skills, by any route: `cargo install` or `cargo uninstall` in any form,
+Homebrew, manual copies, or any `skill install` invocation, including one from
+`./target/release/taskfleet`. The installed release and source `HEAD`
+legitimately differ; what lands here reaches the user's tool only through a
+published distribution-channel upgrade. There is no stint deploy step, no test
+account, and no reset step for this project.
 
-## Harness boundary: non-blocking waits are NOT a Taskfleet dependency
+**The green gate is one script.** Run `scripts/validate-local-release.sh`
+before merging any worktree. It is the sole maintained aggregation of the
+repository and release checks: fmt, clippy with warnings denied, release-mode
+nextest, doctests, rustdoc with warnings denied, snapshot and identity checks,
+cargo-deny, the shell release fixtures, package archives, the Shipshape
+contract, and cargo-dist plan topology. It pins every Rust subprocess to
+rustup's current `stable` channel and fails closed when a prerequisite is
+missing (`cargo-nextest`, `cargo-deny`, `gh`, `jq`, `python3`, `shipshape`, or
+cargo-dist 0.33.0 via `DIST_BIN`). Copy that exact command into worker briefs.
+A debug-mode `cargo test` passes in a worktree and turns `main` red. An
+orchestrator may install the test runner once with
+`cargo install cargo-nextest --locked` (that installs a test runner, not
+taskfleet); a worker reports a missing prerequisite rather than installing
+globally. Two of the gate's steps exist because nothing else catches their
+failures: doctests, because nextest does not run them, and rustdoc, because
+neither tests nor clippy notice a dangling intra-doc link. A cut that removes a
+symbol leaves any `[`crate::…`]` link to it dangling; this made `main` red once
+(`ci-red-main`, 2026-08-15) after a green test-and-clippy round.
 
-An external architecture decision supersedes this repo's closed `pi-background-jobs-extension` issue. Two separate lifecycles exist, and taskfleet owns only one of them:
+**A developer machine is not a bare CI runner.** A test that depends on an
+ambient `tmux`, an installed harness binary, or any other undeclared tool
+passes locally and fails in CI. Exercise tool-sensitive tests with a stripped
+`PATH` containing only the explicitly required toolchain and stubs.
 
-- **Interactive, session-scoped** background commands in a pi.dev TUI session belong to the host environment. Its runtime may use a third-party extension whose processes die with the pi session — that is a safety property, not a defect.
-- **Durable, harness-neutral** background running belongs behind a separate runner contract: start / status / bounded logs / stop / bounded wait over runner-owned job metadata.
+**Per-worktree green does not imply integrated green.** After a
+multi-worktree round, run the gate again on the integrated `main`. Two failure
+modes have only ever shown up there. A test-isolation flake can stay latent
+until several workers' tests coexist in one run (2026-07-25: an
+order-dependent hook-file TOCTOU in `supervise::notify` passed in five separate
+worktrees and failed in the combined suite). And a DAG lane predicts the files
+an issue will *likely* touch, but a fix can legitimately land elsewhere, so
+two "disjoint-lane" spinoffs can collide (2026-08-10: a fix predicted for
+`supervise/*` landed in `run/*` and integrated `main` did not compile). Prefer
+sequencing any two units that might both touch the `run show` / `RunSummary`
+DTO surface.
 
-**The binding constraint for this repo:** `taskfleet` MUST NOT import `@aliou/pi-processes`, reach into its manager object, assume its process ids or log paths, or send/receive its in-process EventBus events. A pi extension's internals are not a public interface. taskfleet stays the run-state owner and keeps exposing `run wait`, the `landed` flag, and the JSON contracts; any future non-blocking adapter sits behind the neutral runner contract, never on a harness-specific substrate. Do not re-file a "build our own pi background-jobs extension" issue here — that option was evaluated and rejected.
+**Hot files are edited one worktree at a time:**
+`crates/taskfleet-core/src/{events,lock,reducer,schema}.rs` and
+`crates/taskfleet/src/supervise/*`. They carry the state-integrity invariants
+below, and two concurrent edits there do not merge safely even when the diffs
+are textually disjoint. The light `harness/` launcher is no longer a hot
+cluster since the heavy layer was deleted (2026-08-14).
 
-## Spinoff workflow + lifecycle
+**Toolchain.** taskfleet builds and releases with rustup's newest `stable`.
+Old compilers are not compatibility targets and the crate metadata
+deliberately declares no `rust-version` floor. A dependency security update
+wins over compatibility with an older compiler.
 
-Use `/worktree-spinoff <issue-slug>` for bug fixes / improvements; the bundled SKILL handles the whole loop end-to-end: spawn → work → merge (`taskfleet run merge`) → self-cleanup (tmux window + worktree + branch all gone). Same for `/worktree-research`, `/worktree-technical-decision`, `/worktree-bug-analysis` (read-only analysis), and `/fan-out` units. For hands-on review, create the run with `--interactive` — the supervisor then never auto-terminalizes and waits for an explicit `/worktree-merge` (`run merge`) or `run cancel`. (The pre-0.2 `worktree-code` / `worktree-bugfix` / `worktree-make-skill` kinds and skills were cut; interactivity is the `--interactive` flag, not a kind.)
+**Staying in sync and pushing `main` needs no asking.** Parallel worktree
+sessions push under you, so `git pull --rebase` then `git push` before and
+after a round, before a handoff, and before a release is expected. This
+deliberately overrides the global "never push without being asked" default
+for this project.
 
-There is no post-merge stint deploy or local-reflection step. Even after a CLI surface or `SKILL.template.md` change lands, the orchestrator leaves the user's installed taskfleet and bundled skills untouched. Repository-local validation uses `cargo build --release`, explicit `./target/release/taskfleet …`, and the documented insta snapshot loop; distribution-channel installation or upgrade is a separate operation outside the stint.
+**Killing a supervisor.** `pgrep -lf "taskfleet supervise"` lists supervisors
+from every repository on the machine, and this was learned twice in one
+session by killing the wrong one. `taskfleet run cancel <run-id>` is the
+graceful path and leaves no orphans. If you have to kill by process, identify
+the run first: `tmux list-windows -a` shows an emoji prefix on each `wt-*`
+window naming its source project (🎬 is taskfleet), and `git worktree list`
+in the right repository confirms the worktree is yours. Scope any `pkill`
+pattern to the checkout path, never to the product name, so production
+supervisors from `~/.cargo/bin` or Homebrew are untouched.
 
-For parallel spawn batches, set up a `Monitor` watching `taskfleet event tail <run-id> --follow` filtering `node\.report|run\.status|supervisor\.exited` so completions arrive as notifications instead of requiring polling.
+## Releasing
 
-### Never `pkill` a supervisor without verification
+**What is at stake.** Pushing a `vX.Y.Z` tag is the release. It starts both
+publication workflows: `.github/workflows/publish-crates.yml` publishes
+`taskfleet-core` and then the exact-pinned `taskfleet` to crates.io, and
+cargo-dist's generated `release.yml` builds the binaries, the GitHub Release,
+and the canonical Homebrew tap `jarimustonen/homebrew-taskfleet` (the mac
+target on a self-hosted runner; the canonical install is
+`brew install jarimustonen/taskfleet/taskfleet`). crates.io versions are
+permanent and can only be yanked, so a bad tag is fixed forward with a new
+patch, not undone. Nothing publishes from a local machine: a local
+`cargo publish` would race the workflow and leave a half-published saga.
 
-Twice in one session this rule was learned the hard way: `pgrep -lf "taskfleet supervise"` finds processes from EVERY repo and every user-owned project, not just yours. Before killing anything:
+**Autonomy.** The maintainer decided (2026-08-05) that cutting a release
+needs no permission: the conductor decides when a release is warranted and
+pushes the tag. The default cadence is to ship often, cutting whenever
+something production-ready lands rather than batching. Autonomy removes the
+prompt, not the care: the version is right, the changelog is finalized, the
+snapshots are regenerated, the tree is clean, and the exact commit being
+tagged has passed the complete local gate.
 
-1. Run `tmux list-windows -a` and look at the emoji prefix on each `wt-*` window — it identifies the source project (🏠 home, 🥨 dpad, 🎬 taskfleet, etc.).
-2. Run `git worktree list` in the **right repo** to see if the run's worktree is one yours.
-3. Prefer `taskfleet run cancel <run-id>` over `pkill` — graceful, triggers the supervisor's cleanup path, leaves no orphans.
-4. If you must `pkill`, scope it: a repository-path-scoped pattern that covers the actual current checkout; never a product-name-only pattern only kills supervisors built from inside a deleted worktree's debug target — never touches `~/.cargo/bin` production supervisors.
+**Who cuts.** Only the conductor. Workers in worktrees may run package and
+distribution checks and `scripts/shipshape-release.sh plan`, but they do not
+cut, tag, publish, install, move state, mutate a tap, or edit another
+repository; a worker's branch is not `main`. Package verification inside the
+repository uses `cargo package --workspace --no-verify`, because the exact
+`taskfleet-core = "=<version>"` pin is not registry-visible until the cut.
 
-## macOS PTY constraint
+**How.** `OSS-RELEASE.md` is the contract and describes the transaction;
+`scripts/shipshape-release.sh` (`plan <bump>`, `cut <plan-id>`,
+`resume <run-id>`, `verify <run-id>`, `check-tool`) is the only way to drive
+it here, and `/shipshape-release` chooses the SemVer bump. The wrapper exists
+because Shipshape's own protocol has no pause between its bump commit and its
+tag push: the wrapper journals a held tag push, advances `main` to the bump
+commit, runs `scripts/validate-local-release.sh` on that exact clean `HEAD`,
+rechecks local and remote `main`, creates the protected authorization ref that
+both workflows verify, and only then resumes. It also checks the public
+Shipshape tap on every operation and admits only the exact validated 0.12.3
+build, failing closed if the tap cannot be read or has advanced beyond the
+validated protocol. Two traps follow from this design. A bare
+`shipshape release resume` while the tag is still local skips the gate; use
+the wrapper's `resume`. And once the journal says the tag was pushed,
+publishing may already be underway: resume and verify the existing run
+(`shipshape release list --json`, `shipshape release show <run-id> --json`)
+rather than retagging or publishing by hand. If local validation finds a
+defect in the bump commit, abandon the run
+(`shipshape release abandon <run-id> --reason <reason>`), remove the local
+tag, fix forward, and plan a new cut. The workflow's `scripts/publish-crates.sh`
+owns crates.io reconciliation and the wrapper's `verify` owns cross-leg
+verification; a hand-rolled crates.io probe without a meaningful `User-Agent`
+once raised a false alarm. Local validation on macOS does not prove Linux
+runtime behaviour; the publication workflow's cross-platform build does.
 
-macOS limits concurrent pseudo-terminals; ~5–6 simultaneous worktree spawns can hit `fork failed: Device not configured` from tmux. Symptom: native materialization reports `workmux_add_failed` mid-batch.
+## State-integrity invariants
 
-Use `--headless` (or `--tmux-session <name>`) on `taskfleet run create` to spawn into a detached tmux session that doesn't consume a foreground PTY. Mandatory for `/fan-out` of N≥5; recommended for any parallel `/worktree-spinoff` batch larger than 3. Attach later with `tmux attach -t headless` to inspect.
+Seven invariants govern the on-disk run state and the autonomous-spinoff
+loop. Each is easy to violate from inside a hot code path without noticing,
+and each has a module doc that carries the full mechanics and the issue that
+motivated it. Read those before touching the reducer, the lock layer, `run
+merge`, or supervisor cleanup. What follows is what each one protects.
 
-## State integrity invariants
+1. **`applied_seq` watermark** (`crates/taskfleet-core/src/events.rs`). The
+   reducer advances `manifest.applied_seq` only after every projection an
+   event touches is fsynced, and replays events above the watermark on the
+   next lock acquisition. Every event-appending path goes through the
+   `LockedRun` witness and the `append_and_apply_*` API. Calling a `write_*`
+   projection helper directly leaves a projection that no replay will repair.
 
-These seven invariants govern correctness of the on-disk run state and the autonomous-spinoff loop. The first five were established by the 2026-06-29 pre-publication campaign; six (merge-transaction recovery) and seven (typed terminal outcomes) landed with the thin-supervisor 0.2 work (A2 / A6). They are easy to violate from inside a hot code path without realising it. Read them before touching the reducer, the lock layer, or the `run merge` / supervisor cleanup paths.
+2. **`LockedRun` witness** (`crates/taskfleet-core/src/lock.rs`). Compile-time
+   proof that the caller holds the run's exclusive flock before appending.
+   Only the exclusive guard mints one. Thread it through rather than
+   bypassing with an `#[allow]`; the type is the whole enforcement.
 
-1. **`applied_seq` watermark**
-   (`crates/taskfleet-core/src/events.rs`)
-   The reducer advances `manifest.applied_seq` only after every projection an event touches has been fsynced. On the next lock acquisition, events with `seq > applied_seq` are replayed before any new append. Any new event-appending path MUST go through the `LockedRun` witness and the `append_and_apply_*` API — never call `write_*` projection helpers directly.
+3. **Shared lock on every multi-file read** (`RunLock::with_shared_lock`).
+   The reducer writes `manifest.json` and `nodes/*` under the exclusive lock,
+   so a reader that touches more than one of them in a single decision without
+   `LOCK_SH` can observe a half-applied set.
 
-2. **`LockedRun` witness**
-   (`crates/taskfleet-core/src/lock.rs`)
-   Compile-time proof that the caller holds the run flock before calling `append_event_with_seq` / `append_and_apply_unlocked`. Don't add `#[allow(...)]` to bypass; thread the witness through.
+4. **Progress polls `status`, never `lifecycle`.** `Lifecycle` is
+   `Autonomous | Interactive`, set once at `run create` from the explicit
+   `--interactive` flag and never transitioning; it is not derived from the
+   kind. `Status` is `Pending | Running | Done | Failed | Cancelled`. A skill
+   that polls `lifecycle` for a terminal value hangs forever, which was a real
+   bug (`skill-progress-polling-wrong-field`). In interactive mode the
+   supervisor never auto-terminalizes or tears down from a dead pid or worker
+   exit; it waits for an explicit `run merge` or `run cancel`.
 
-3. **`LOCK_SH` on every multi-file read path**
-   (`crates/taskfleet-core/src/lock.rs::with_shared_lock`)
-   Every reader that touches more than one of `manifest.json` / `nodes/*` in one decision wraps the scan in `RunLock::with_shared_lock`. The reducer holds the exclusive lock while it writes; without the shared lock a reader can observe a half-applied projection set. Don't add new readers that skip it.
+5. **The supervisor is the only teardown actor, and unmerged work survives
+   teardown** (`crates/taskfleet/src/supervise/cleanup.rs`). `merge.sh` does
+   not touch tmux or worktrees; the supervisor sees the terminal report, rolls
+   the run up, and tears down. Its tmux window lookup is session-scoped and
+   exact-cwd, because a prefix match once found the user's own pane. Teardown
+   force-removes a worktree and force-deletes a branch only after a confirmed
+   explicit `run merge`. On every other path (blocked, failed, cancelled, a
+   plain success that skipped `run merge`) it preserves the branch and
+   worktree whenever there is anything to lose, and it fails closed: commits
+   not reachable from the run's own recorded source branch, uncommitted or
+   untracked changes, a detached or differently-branched HEAD whose commit is
+   not in source, or any git error along the way all produce a
+   `cleanup.branch_preserved` event instead of a removal. Non-force
+   `git worktree remove` is the last safety net on those paths, since git
+   refuses to discard a tree that a race dirtied. `run discard --force` is a
+   separate, explicitly authorized operator action that records who and why;
+   it does not change any outcome or status. The `--notify` hook fires on the
+   terminal transition before teardown and is at-least-once by the owner's
+   choice: spawn first, record the `run.notified` marker after, tracked
+   separately from `cleaned`. Reordering either silently drops notifications
+   on a crash. The module doc lists the exact guards, reason strings, and the
+   known residual TOCTOU (`detached-head-teardown-toctou`).
 
-4. **Progress polling branches on `manifest.status`, NOT `lifecycle`**
-   (every `crates/taskfleet/skills/*/SKILL.template.md`, and any agent prose elsewhere)
-   `Lifecycle` is `Autonomous | Interactive` — a *how-run category* set once at `run create` from the explicit `--interactive` flag (issue `interactive-flag`), never transitions and NOT derived from `kind` (the removed `code` kind used to carry it accidentally; `Kind::lifecycle` now only *seeds the default* for a non-`--interactive` create). `Status` is `Pending | Running | Done | Failed | Cancelled` — terminal states are `Done | Failed | Cancelled`. An agent that polls `lifecycle` for `completed | failed | cancelled` hangs forever; the field never matches. This was a real bug (`skill-progress-polling-wrong-field`); never re-introduce it. Do NOT resurrect kind-derived `Lifecycle::Interactive` inference — interactivity is an explicit told flag on any topology, and in interactive mode the supervisor never auto-terminalizes/tears-down from a dead pid or worker exit — it waits for explicit `run merge` / `run cancel` (design.md §6).
+6. **`run merge` is a recorded, OID-recoverable transaction**
+   (`crates/taskfleet/src/run/{merge,merge_recovery}.rs`,
+   `crates/taskfleet/scripts/merge.sh`). The merge spans git refs and the event
+   log and is not atomic across them, so it records `merge.started` with the
+   expected source OID and the worker OID before touching git, guards the
+   fast-forward with a compare-and-swap against that expected OID, and lets
+   recovery resolve exactly that one transaction against immutable OIDs once
+   the driver process is confirmed dead. Recovery completes the missing
+   `explicit-merge` report only when the recorded worker OID is git-verified
+   integrated into the moved source; otherwise it rejects and preserves the
+   work. Verifying against the mutable worker branch, or a broad "branch is an
+   ancestor of source, so done" inference, is the deleted git-reconcile probe
+   under another name. The remaining non-atomic windows are documented in the
+   module; the operation lease that closes them is deferred (design §2.7).
 
-5. **Supervisor is the canonical worktree + tmux teardown actor**
-   (`crates/taskfleet/src/supervise/cleanup.rs`)
-   `merge.sh` no longer touches tmux or `git worktree remove` — the supervisor sees the terminal `node.report`, rolls the run up via `rollup_status`, and tears down. `find_window_by_path` is **session-scoped + exact-cwd-match**: it queries only the spawn-session via `tmux list-windows -t <session>` and requires `pane_current_path == worktree_path` (no sub-path prefix). Without these constraints the recovery would kill an unrelated pane that happened to `cd` into the worktree, including the user's master session.
+7. **Terminal outcomes are a typed table**
+   (`crates/taskfleet/src/supervise/outcome.rs`). `TerminalOutcome::classify`
+   maps a terminal report to one outcome and `TerminalOutcome::teardown` maps
+   that to the single teardown policy it authorizes; `cleanup_node` reads the
+   table rather than re-sniffing report JSON, so a new outcome cannot default
+   into destroying a branch. The primary completion signal is the told
+   `worker.exited` fact. Pid liveness is only the crash backstop: it fails a
+   node only when the worker is confirmed gone with no merge and a persisted
+   post-death grace (anchored to `Node.first_death_at`,
+   `TASKFLEET_DEATH_GRACE_SECS`) has elapsed, and it re-checks under the lock so
+   an exit or merge that landed in the window wins. A clean exit with no merge
+   stays non-terminal and attention-required: the worker skipped `run merge`,
+   and auto-failing it would discard a finished unit.
 
-   **Teardown is gated on the terminal outcome — unmerged work preserves the branch + worktree** (the typed outcome table `supervise::outcome::TerminalOutcome::teardown` + the source-relative check, issues `blocked-report-deletes-branch` / `typed-supervisor-outcomes`). Two layers:
-   - **Primary gate (typed table, invariant 7):** `cleanup_node` classifies the node's terminal `node.report` via `TerminalOutcome::classify` and acts on the single `Teardown` policy it returns — never a re-derivation from raw signal fields. A blocked handoff OR any non-merge failure (`success: false`, no `via: "explicit-merge"`, not a `cancelled` run-cancel) is `Teardown::PreserveWork`: `cleanup_node` closes its tmux window (winding the run down is fine) but must NOT `git worktree remove` or delete its branch — it records a `cleanup.branch_preserved` audit event instead. Deleting them is silent data loss.
-   - **Defense-in-depth (source-relative):** on ANY non-explicit-merge path (a plain success that skipped `run merge`, a `run cancel`, a genuine failure, a future ungated outcome), `cleanup_node` checks `git rev-list --count <manifest.source_branch>..<branch>` **before** touching anything. If the branch has commits not reachable from the run's OWN source branch, it preserves BOTH worktree and branch (`cleanup.branch_preserved`, reason `unmerged commits vs source`). The ancestry check is against the run's recorded source branch, NOT the main worktree's ambient `HEAD` (which may be on any branch when the supervisor ticks). This means a `run cancel` whose agent committed real work now preserves it too. **This check FAILS CLOSED** (issue `non-merge-teardown-dirty-worktree`): if `rev-list --count` cannot be computed (a git error / unparseable output), teardown preserves (`UnmergedCheck::Unverifiable`, reason `unmerged-commit check unavailable`) rather than proceed — the older code returned "nothing unmerged" on a git error and removed the worktree anyway.
-   - **Dirty-worktree guard (uncommitted work):** the source-relative check only protects *committed* work. On the same non-explicit-merge paths, `cleanup_node` classifies the tree via `worktree_cleanliness` (`git status --porcelain --untracked-files=all` → typed `Clean`/`Dirty`/`Unverifiable`) **before** removing it; a `Dirty` tree preserves BOTH worktree and branch (`cleanup.branch_preserved`, reason `uncommitted changes in worktree`) and an `Unverifiable` one fails closed the same way but with the distinct reason `worktree cleanliness unavailable (git error)` — never mislabel a git failure as uncommitted work. `--untracked-files=all` is load-bearing: it defeats a repo/global `status.showUntrackedFiles=no` that would otherwise hide an agent's untracked files. So an agent's mid-edit uncommitted scratch is never silently discarded on a cancel/plain-success teardown (issue `non-merge-teardown-dirty-worktree`).
-   - **HEAD-relative committed-work guard (detached / stale-branch metadata):** the source-relative check above measures the RECORDED `Node.branch`, so it is blind to a worktree on a DETACHED HEAD (or one whose `Node.branch` is `None`/stale) whose commits live only on the checked-out HEAD, protected by no branch ref — a clean such tree would pass every check above, remove non-force, have no branch to `-d`, and its commits would become unreachable. On the same non-explicit-merge paths `cleanup_node` inspects the ACTUAL HEAD via `head_teardown_safety` (`git rev-parse HEAD` + `git symbolic-ref HEAD`, typed `HeadTeardown::{DeferToBranch,Safe,Preserve}`) **after** the dirty guard. Only a HEAD on exactly the recorded `Node.branch` **defers** (the branch checks + `-d` backstop own it); a DETACHED HEAD **or a HEAD on a branch DIFFERENT from the recorded one** is removed only when its actual oid is reachable from source (`git rev-list --count <source>..<HEAD-oid> == 0`), else it preserves BOTH worktree and branch (`cleanup.branch_preserved`). A non-recorded branch is NOT treated as a durable protector: a merged sibling node can force-`-D` it after this worktree is removed (git only refuses to delete a branch checked out in a LIVE worktree), so its commits must be proven in source (issue `detached-head-teardown-commit-loss`, review finding B). The guard verifies the oid it READ (`head_oid`), never the branch tip from the separate `symbolic-ref` probe, so a HEAD moving between probes can't green-light removal of the observed commit. **FAILS CLOSED**: an unreadable HEAD, an unrecorded `source_branch`, or any `rev-list` git error preserves rather than removes; `Git::rev_list_count` rejects an empty endpoint (an empty `source_branch` would otherwise resolve `..<oid>` against ambient `HEAD` — finding A). **Residual (follow-up `detached-head-teardown-toctou`):** non-force removal re-checks cleanliness but NOT HEAD reachability, so a concurrent `git checkout --detach <new-commit>` between the probe and removal can still orphan the new commit — closing that needs a rescue ref / worktree lease.
-   - **Force vs non-force supervisor removal (`Teardown::Full` is the supervisor's only force):** inside `cleanup_node`, `worktree remove --force` is used ONLY on a confirmed explicit `run merge`. Every non-explicit-merge supervisor teardown uses **non-force** `git worktree remove`, which is the atomic TOCTOU safety net: the tree reaching removal was verified clean, but if a race dirtied it (or it is locked / has an initialized submodule) git REFUSES rather than discard the work, and `cleanup_node` records `cleanup.branch_preserved` (reason `worktree not cleanly removable`) and **returns before branch delete** so the branch is not stranded and no misleading `branch_remove_failed` is emitted; a later tick retries. `run discard --force` is a separate explicit operator operation: it may force-remove only a verified-dirty failed/cancelled node after durably recording exact ownership, reason, and force authorization. It does NOT earn `Teardown::Full`, change `TerminalOutcome`, or alter status/landing truth. (Follow-up: no back-pressure/escalation on a *persistent* git error — fail-closed can leak a worktree indefinitely, visible via `git worktree list` — tracked separately.)
-   - **Last-resort supervisor backstop:** only a confirmed `run merge` force-deletes (`git branch -D`) through `cleanup_node`; every other supervisor delete uses `git branch -d` (refuses an unmerged branch, ambient-HEAD-relative) for the residual case where `source_branch` was unrecorded and the source check could not run. Branch names are passed after `--`. Separately, an authorized `run discard` force-deletes only its selected recorded branch after all discard identity checks pass.
+## Conventions the bundled skills depend on
 
-   **The `run create --notify` completion hook fires on the terminal transition, BEFORE teardown** (`crates/taskfleet/src/supervise/notify.rs`, issue `no-completion-notification-to-parent`). The order in the terminal tick is fixed: fire notify → cleanup → loop-exit, so a hook can observe the run before the worktree/window are gone. Delivery is **at-least-once** (owner's call: a missed completion signal is worse than a duplicate): under one exclusive lock the supervisor scans for a durable `run.notified` marker (idempotency key `supervisor-notify:<run-id>`, scoped by `(kind, key)`) and, if absent, spawns the hook FIRST and records the marker AFTER — so a crash between the two re-fires on restart. Do NOT reorder to record-before-spawn (that is at-most-once and silently drops the notification on a crash). `notify` state is tracked SEPARATELY from `cleaned` (a shared flag silently drops the notification on a transient append failure — a bug caught in review); don't re-merge them. The hook is spawned detached and reaped on a thread so a hung command can't wedge the single-threaded tick.
-
-6. **`run merge` is a recorded, OID-recoverable transaction — never a raw git-then-append**
-   (`crates/taskfleet/src/run/{merge,merge_recovery}.rs`, `crates/taskfleet/scripts/merge.sh`, `crates/taskfleet-core/src/{schema,reducer}.rs`; issue `merge-transaction-recovery`, design §2.1b / A2)
-   `run merge` spans two durability domains — git refs and the event log — and is not atomic across them. A crash after the git merge but before the terminal `explicit-merge` `node.report` would strand the work *merged in source* with *no merge event* (a false `failed`). So `run merge` records a `merge.started` transaction (`op_id`, `expected_source_oid`, `worker_oid`, source/worker branch, driver pid → `Node.pending_merge`) **before** mutating git; merge.sh guards the source-ref fast-forward with a **compare-and-swap** against `expected_source_oid` (exits `76` → `merge_source_moved` if the target moved) and re-checks driver liveness (`--driver-pid`) immediately before the mutation; and recovery (next `run merge` retry, or the supervisor tick via `merge_recovery::recover_run`) resolves that **one** transaction against **immutable OIDs** — the recorded `expected_source_oid` and `worker_oid`, plus one pinned `source_now`. It **completes** (appends the missing `explicit-merge` report) only when `source_now` moved off `expected_source_oid` AND the recorded `worker_oid`'s content is git-verified integrated into `source_now` (rebase-robust patch-id, via `run::landed`) AND was NOT already integrated into `expected_source_oid`; otherwise it **rejects** (`merge.aborted`, work preserved). Recovery runs only when the driver process is confirmed dead (with a staleness bound when no start-time identity was recorded), so a live merge is never raced; the entry path refuses (`merge_in_progress` / `merge_recovery_unverifiable`) rather than overwriting a live or unverifiable transaction; a failed/conflicted merge and any terminal node.status/report clear `pending_merge` so none dangles; and a durable-record failure fails the merge closed BEFORE any git mutation. This is scoped to ONE recorded transaction and pinned to immutable OIDs — distinct from the deleted git-reconcile probe (which scanned every branch every tick). It is NOT a fully atomic cross-domain commit: the CAS is check-then-FF under the merge lock (a non-cooperating writer between check and FF, or a force-push between classify and append, is a documented residual), and the orphan-child window is bounded, not closed — the durable operation lease that closes both is deferred to 0.2.1 (design §2.7). Don't reintroduce a broad "branch is an ancestor of source ⇒ done" inference, don't verify against the mutable worker *branch* (use the recorded `worker_oid`), and don't append `explicit-merge` without the CAS-guarded git mutation having demonstrably landed.
-
-7. **Terminal outcomes are a typed table, never inferred from a signal cross-product**
-   (`crates/taskfleet/src/supervise/outcome.rs`, consumed by `supervise::cleanup::cleanup_node` and `supervise::watchdog_tick`; issue `typed-supervisor-outcomes`, design §2.6 / A6)
-   `run merge` is the only **success** truth, but not the only **terminal** truth. The supervisor no longer guesses done-ness from a cross-product of proxies (pid × pane × branch × report × activity clocks). Two small, pure, exhaustively-tested tables carry it: `TerminalOutcome::classify(&Node)` maps a terminal `node.report` to one typed outcome (`Merged` / `Blocked` / `Failed` / `Cancelled` / `PlainSuccess`) and `TerminalOutcome::teardown` maps that to the single `Teardown` policy it authorizes (`Full` = confirmed explicit `run merge`, force `-D`; `PreserveWork` = blocked handoff OR any non-merge failure, preserve branch+worktree; `SourceRelative` = cancel or a plain success that skipped `run merge`). `cleanup_node` (invariant 5) reads that table — it never re-sniffs `last_report` JSON. The **deleted** heuristics: the git-reconcile-implies-done probe + synthetic `merge-reconciled` success, the three activity clocks (commit-time / pane-mtime / CPU-rate) + the idle-unmerged synthesizer, and the tmux tri-state / streak-gating as a *primary* liveness signal. Don't reintroduce any of them, and don't add a teardown branch that bypasses `TerminalOutcome::teardown`.
-
-   **PID liveness is now ONLY the residual crash backstop** (design §2.1a). The primary completion signal is the A1 told `worker.exited` fact (a recorded exit — clean or failing — short-circuits the pid path). Pid liveness fires `failed` only when the worker is confirmed gone (`Dead`/`Recycled` — a lost `worker.exited`: hard kill of the shim, host death) AND no merge, AND a **fixed, persisted post-death grace** has elapsed. The grace is anchored to the durable, monotonic `Node.first_death_at` (set by a `node.death_observed` event, first-write-wins, cleared on `node.retry`) so it survives a supervisor restart; the backstop re-reads under the exclusive lock and re-checks `worker_exit`/report/status before appending, so an exit/merge that landed in the grace window wins. `TASKFLEET_DEATH_GRACE_SECS` overrides the ~5s default (tests set `0` to fire on the same tick). A clean exit (`code == 0`) with no merge stays **non-terminal** (attention-required) — the worker finished but skipped `run merge`; never auto-fail it.
-
-### Related conventions
-
-- **Concurrent spinoff reports** — bundled SKILLs use `/tmp/node-report-${run_id}.json`, never the shared `/tmp/node-report.json`. Drift re-introduces the clobber race.
+- Worker reports go to `/tmp/node-report-${run_id}.json`. A shared
+  `/tmp/node-report.json` lets concurrent spinoffs clobber each other.
+- Skill prose polls `manifest.status`, per invariant 4.
+- CLI-surface and bundled-skill changes need the insta snapshot loop in
+  `crates/taskfleet/AGENTS.md`, with every accepted change reviewed; the skill
+  catalog pin test is edited by hand.

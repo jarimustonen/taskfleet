@@ -49,7 +49,9 @@ pass them on, they never alter the canonical fields.
 
 Failures print the same envelope shape with an `error` object to stderr and
 exit non-zero. Branch on `error.code`, never on the prose message:
-`run_not_found`, `node_not_found`, `invalid_value` for a bad argument,
+`run_not_found` (`run wait` alone says `unknown_run` for a well-formed id that
+names no run), `node_not_found`, `invalid_run_id` for a malformed run id,
+`invalid_value` for another bad argument,
 `corrupt_state` for a state file the binary cannot read (including a state
 schema newer than it supports; `expected.supported_schema_versions` lists what
 it can read), and `corrupt_run` for a run directory that has been tampered
@@ -111,6 +113,9 @@ each has a different remedy:
 
 - `stalled` — the supervisor is confirmed dead and nothing can roll the run
   up. `stillborn` additionally means it died before creating any worker node.
+  `run show` and `run wait` flag both shapes; `run list` flags only the
+  stillborn one, and only once the run is older than the create window, so a
+  supervisor that died mid-run does not show as stalled in the listing.
   Remedy: `run reattach <run-id>` to revive the supervisor, or `run cancel`.
 - `attention_required` — the worker exited cleanly but skipped `run merge`,
   so its node never went terminal. The supervisor may be perfectly healthy,
@@ -182,14 +187,16 @@ taskfleet node show "$run_id" n-0001 --output json |
 
 Waiting can cover several ids, so its shape differs from `run show`:
 `data.outcome` is `condition-met` or `timed-out`, and per-run results are in
-`data.runs[]` (`run_id`, `status`, `merged`, `landed`, `landed_method`,
-`stalled`, `attention_required`, `awaiting_input`, `preserved_work`, plus
-`summary`, `error`, `attention`, and `recoverable_work` when present). There
+`data.runs[]` (`run_id`, `status`, `merged`, `report_only`, `landed`,
+`landed_method`, `stalled`, `attention_required`, `awaiting_input`,
+`preserved_work`, plus `summary`, `error`, `attention`,
+`awaiting_input_detail`, and `recoverable_work` when present). There
 is no `data.status`; read the runs array. Read `outcome` first: `timed-out` is
 not completion, and the field is authoritative even when a pipeline swallowed
 the exit code. Exit codes are `0` condition met, `1` usage or unknown run,
 `2` timeout, and `3` under `--fail-on-error` when a settled run did not finish
-`done`.
+`done`, or finished `done` without a recorded `run merge` (`report_only`)
+while still holding `preserved_work`.
 
 A run *settles* the wait when it goes terminal or when it can no longer
 progress on its own: stalled, attention-required, or awaiting input past a
@@ -210,8 +217,10 @@ rather than their category, decides how much care each deserves.
 - `run cancel <run-id>` stops a run and preserves both committed and
   uncommitted work. With `--node <id>` it cancels one live fan-out child,
   preserving its branch, while the run stays live until every sibling settles.
-  Both forms are idempotent; a cancel of something already terminal reports
-  it settled. Cancelling costs nothing but the worker's remaining time.
+  Re-cancelling a `cancelled` run, or a node that is already terminal, is a
+  no-op success; a `done` or `failed` run is refused with
+  `run_already_terminal`. Cancelling costs nothing but the worker's remaining
+  time.
 - `run reattach` only restarts a supervisor. `run salvage` changes the source
   branch, which is the sanctioned way to land work; `--dry-run` shows what it
   would do first. Never finish a run with raw git in its place.

@@ -47,8 +47,8 @@ Arguments: `$ARGUMENTS`, a focus hint if the caller gave one.
 
 ## Shape of the message
 
-The snapshot has a fixed shape, and other skills produce the same one:
-`/stint-start`'s report phase mirrors these sections, so readers learn to scan
+The snapshot has a fixed shape, and `/stint-start` produces the same one: its
+report phase mirrors these sections, so readers learn to scan
 them. Use these headings, in this order, and omit any section with nothing in
 it; a heading over "(none)" wastes the reader's glance. A session that shipped
 something usually has a Summary and Ready to test; a research or planning

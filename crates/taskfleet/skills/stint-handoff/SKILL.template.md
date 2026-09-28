@@ -143,7 +143,8 @@ does not. A finding that survives is filed with `issuectl intake file`, is creat
 no lane assignment, and carries machine-visible `ai-review` provenance (`--provenance
 ai-review` where the repository accepts it, always `--field review_source=ai-review`)
 plus whatever run/target/model/assessment/severity/confidence metadata the review
-produced. Named model agreement stays a list of `ai-review-model:<model-id>` labels,
+produced; preserve available severity/confidence metadata rather than inferring it.
+Named model agreement stays a list of `ai-review-model:<model-id>` labels,
 never a corroboration score. The resulting unaccepted candidate stays
 `status: untriaged`, with no `lane`, `lane_seq`, or `collision` assignment, and does not
 enter the next stint's agenda: the human lane-or-close sweep owns scheduling and

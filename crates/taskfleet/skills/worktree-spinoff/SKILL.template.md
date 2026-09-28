@@ -106,8 +106,9 @@ otherwise have that issue updated and closed N times.
 custom `--prompt-file`: the exact run id, the `run show --current` ownership
 resolver, and the issue-filing boundary (worker-filed issues go through
 `issuectl intake file`, are born unlaned, and review findings carry
-machine-visible `ai-review` provenance). That generated policy is authoritative
-over later brief text, so do not restate it, weaken it, or tell the worker to
+machine-visible `ai-review` provenance). This AI-review provenance includes
+the stable review source field even when the repository rejects `ai-review` as
+a provenance value. That generated policy is authoritative over later brief text, so do not restate it, weaken it, or tell the worker to
 execute an `/assess-findings`-staged `issuectl create` command verbatim.
 Everything else the worker needs is yours to supply:
 
@@ -125,8 +126,8 @@ Everything else the worker needs is yours to supply:
 - **Quality bar.** Primary evidence comes first: sources, source-grounded
   scenarios, deterministic tests, the repository gates, and where relevant the
   behaviour of a local bundle. For bounded implementation from an accepted
-  design, one focused final-diff review covering every relevant concern is the
-  default ceiling; mechanical, well-tested refactors and documentation usually
+  design, allow at most one focused final-diff review by default, covering every
+  relevant concern; mechanical, well-tested refactors and documentation usually
   need no model review at all. Panels, repeated reviews, or a broader
   independent review are justified by a concrete reason recorded in the brief or
   the report: security or privacy, destructive or concurrency-sensitive
@@ -134,8 +135,9 @@ Everything else the worker needs is yours to supply:
   trade-off. Adequate existing evidence is reused unless the risk surface
   changed, and model review never substitutes for deterministic validation.
 - **The failure-disclosure contract and the closing recipe** from the two
-  sections below, copied in. The report shape is an interface the supervisor and
-  the caller parse, so it has to be exact.
+  sections below: copy the disclosure contract below into the spawning brief
+  together with the closing recipe. The supervisor and caller parse the report
+  shape as an exact interface.
 
 A brief longer than about 2 KB, or one with awkward shell quoting, goes in a
 temp file (`mktemp -t spinoff-prompt-XXXXXX.md`) passed as `--prompt-file`;
@@ -247,37 +249,40 @@ before continuing.
 Before closing, the worker inventories every failed or detectably incomplete
 tool, command, external service, review, panel, or delegated workflow.
 
-A step the brief or the done criteria required, still failed or incomplete,
-blocks this attempt: no `run merge`, but a `success: false` report written to
-`/tmp/node-report-${run_id}.json` and submitted with `taskfleet node report
-"$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json`. An optional or
-advisory failure may continue only when the deliverable is independently
-complete and safe, and is then disclosed in the full `success: true` report
-passed to `run merge`, never hidden behind the minimal auto-report.
+A **required** step in the brief or done criteria that remains failed or
+incomplete blocks this attempt. Do not call `run merge`; write a `success: false`
+report to `/tmp/node-report-${run_id}.json` and submit it with
+`taskfleet node report "$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json`.
+An
+**optional/advisory** failure may continue only when the deliverable is
+independently complete and safe. Disclose it in the full `success: true` report
+passed to `run merge` with `--report-file`, never the minimal auto-report.
 
 Requested completeness is a contract: a panel with a missing model section, a
-truncation marker, malformed output, or a missing artifact is incomplete, not
-consensus. The worker retries only within a bound an existing workflow policy
-grants, records each attempt, and takes the required or optional path at
-exhaustion.
+truncation marker, malformed output, or a missing artifact is incomplete, not representative consensus.
+Retry only within a finite bound granted by existing workflow policy;
+record each attempt and take the required or optional path at exhaustion.
 
 Every distinct failure goes into one aggregate `discussion_items[]` entry whose
 `topic` starts `Tool/sub-workflow failure —`, coalescing repeated attempts of the
 same one: tool and purpose, expected completeness, observed error, attempts,
 affected step, whether work continued and why that was safe, suggested bug
-surface, and a stable artifact or log path when there is one. Actionable
+surface, and a stable artifact/log path when there is one. Actionable
 retry/recover/accept/file steps go in the item's `options`. The whole entry stays
 under 2 KiB with only a short redacted excerpt, never secrets, credentials,
 personal data, environment dumps, or unbounded logs. Top-level `summary` and
-`success` say whether the run is blocked or completed; they do not move into the
-item, and no new schema or terminal state is invented.
+`success` say whether the run is blocked or completed; do not put them inside the
+item, and do not add a schema or supervisor state.
 
 ## Choosing a profile and creating the run
 
 A profile is a capability tier, not a model name: `implementation` for bounded
 work from an accepted design (the ordinary feature or bug fix), `lightweight` for
-a mechanical, strongly tested refactor or documentation, `capable` for broad or
-high-risk design, uncertain or mixed scope, security or privacy, destructive or
+a mechanical, strongly tested refactor or documentation. In brief form:
+`implementation` — bounded implementation from an accepted design;
+`lightweight` — mechanical, strongly tested refactor or documentation.
+Use `capable` for broad or high-risk design, uncertain or mixed scope, security
+or privacy, destructive or
 concurrency-sensitive behaviour, hard rollback, or weak tests. The full matrix and
 the reasoning live in `taskfleet-overview`. An explicit caller profile wins and
 may escalate; do not silently downgrade it. Concrete model names and commands stay
@@ -286,17 +291,16 @@ argv a name means.
 
 Profile names are user-owned, so an installation may not define the one you
 recommend. Find that out before creating state: run the complete intended command
-with `--dry-run`. If a workflow-recommended profile returns `unknown_profile`, try
-`capable`; if that is also unknown and the error's `expected` list is empty, the
+with `--dry-run`. If a workflow-recommended profile returns `unknown_profile`, retry the dry-run with `--profile capable`;
+if that is also unknown and the error's `expected` list is empty, the
 installation predates profiles and the real call omits `--profile`. If profiles
 exist but neither is defined, stop and surface the structured error rather than
-pick an arbitrary one. An unknown profile the caller chose explicitly is theirs
-to fix, not yours to substitute. Any other dry-run error also stops. The real
-call uses exactly the selector whose dry-run passed. Child creates refuse
-`--dry-run` (`dry_run_unsupported`) because parent publication cannot be
-previewed truthfully, so in driver mode preflight with both parent flags omitted,
-add them back for the real call, and give that call an `--idempotency-key` so a
-retry is safe.
+pick an arbitrary one. If an explicit caller profile is unknown, stop rather than replacing it;
+that selection is theirs to fix. Any other dry-run error also stops. The real
+call uses exactly the selector whose dry-run passed. Driver-mode child creates reject `--dry-run`
+(`dry_run_unsupported`) because parent publication cannot be previewed truthfully;
+perform the profile preflight with both parent flags omitted, add them back for
+the real call, and give that call an `--idempotency-key` so a retry is safe.
 
 ```
 # First issue this command with --dry-run; remove only --dry-run after it passes.
@@ -429,23 +433,24 @@ taskfleet node show "$run_id" n-0001 --output json |
 
 For an issue-driven run outside driver mode the worker owns the issue lifecycle;
 you resolve the closing contract while building the brief and write the concrete
-slug, status, and agent identity into it rather than metavariables. A bug closes
-as `fixed`, a feature, task, improvement, or chore as `done`; if the repository
+slug, status, and agent identity into it rather than metavariables. For status,
+a bug closes as `fixed`; a feature/task/improvement/chore closes as `done`.
+If the repository
 customises types or delivery statuses and no single valid status follows from its
 schema, the brief says to stop before implementation rather than guess.
 
-The worker marks work begun with `issuectl update <slug> --status in-progress
---json`, commits only that metadata path, and starts implementation from a clean
+The worker marks work begun with `issuectl update <slug> --status in-progress --json`,
+commits only that metadata path, and starts implementation from a clean
 tree. After the final validated implementation commit and before `run merge`, it
 runs `issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json`.
 The stamp rewrites the implementation commit's message with a
 `Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog reads,
-without touching its tree; the top-level `.stamp.status` has to be `stamped` or
-`already_present`, since `skipped` (detached HEAD, merge commit, signed, or mid
+without touching its tree; the top-level `.stamp.status` has to be `stamped` or `already_present`, since `skipped` (detached HEAD, merge commit, signed, or mid
 rebase) or a missing stamp means the landing commit would be invisible to the
 changelog, and that blocks the merge. The closure metadata path issuectl returns
-is committed separately, and the tree is clean before `run merge`. A freeform run
-adds no trailer and closes no issue; in driver mode the driver owns the issue and
+needs its own commit: commit that metadata in a separate commit, leaving the tree
+clean before `run merge`. Do not add a `Fixes-Issue` trailer or close an issue for a freeform run;
+in driver mode the driver owns the issue and
 the spawning skill never races the worker on it.
 
 ## Errors

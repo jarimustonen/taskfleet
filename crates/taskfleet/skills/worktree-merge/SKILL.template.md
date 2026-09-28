@@ -1,6 +1,6 @@
 ---
 name: worktree-merge
-description: Close a taskfleet worktree run with one `taskfleet run merge` call — rebase and merge the branch into its source branch, submit the terminal `node report` stamped `via: "explicit-merge"`, and let the supervisor remove the tmux window, worktree, and branch. Use when an autonomous worktree (spinoff, research, technical-decision, bug-analysis, or a fan-out unit) reaches its merge-and-report step, or when a human has finished reviewing an `--interactive` run and wants it merged. Replaces the old two-step `/worktree-merge` + `taskfleet node report` sequence. When the branch and its source have diverged too far for an ordinary rebase, recover with `/complex-rebase` and re-run.
+description: 'Close a taskfleet worktree run with one `taskfleet run merge` call — rebase and merge the branch into its source branch, submit the terminal `node report` stamped `via: "explicit-merge"`, and let the supervisor remove the tmux window, worktree, and branch. Use when an autonomous worktree (spinoff, research, technical-decision, bug-analysis, or a fan-out unit) reaches its merge-and-report step, or when a human has finished reviewing an `--interactive` run and wants it merged. Replaces the old two-step `/worktree-merge` + `taskfleet node report` sequence. When the branch and its source have diverged too far for an ordinary rebase, recover with `/complex-rebase` and re-run.'
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1

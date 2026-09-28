@@ -115,11 +115,11 @@ you:
   above.
 - **The evidence bar.** Primary sources, the repository's own code and history,
   deterministic checks, and source-grounded scenarios come first; the worker
-  applies the required lenses itself against that evidence. A model panel is
-  worth running only where the decision holds a genuine unresolved trade-off
-  on which independent perspectives add evidence, and the brief or the ADR says
+  applies the required lenses itself against that evidence. Use a panel only when the decision contains genuine unresolved trade-offs
+  on which independent perspectives add evidence, and say in the brief or ADR
   why it was run. A panel that was not needed adds cost and a false sense of
-  consensus; a panel that was needed and came back incomplete cannot support an
+  consensus; repeated review/panels require a separate concrete risk. A panel
+  that was needed and came back incomplete cannot support an
   Accepted ADR, because the missing voice may be the dissent.
 - **The ADR shape:** title; status `Accepted`; context; the decision; its
   consequences, including each rejected alternative with the reason it lost;
@@ -157,7 +157,15 @@ The worker's run id is in its generated preamble. If a recipe has to recover
 it, `taskfleet run show --current --output json` returns `.data.run_id` from
 the durable ownership record and fails closed on missing, duplicate, stale, or
 malformed evidence; the branch name's short fragment is display metadata that
-can repeat, so it is never used as the id.
+can repeat, so it is never used as the id. If the generated preamble's full id
+is unavailable, recover it before writing the per-run report:
+
+```bash
+run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
+  echo "failed to resolve exact owning run id" >&2
+  exit 1
+}
+```
 
 Once the ADR is committed, the worker writes the terminal report. These field
 names are what the supervisor and the caller read; an unknown key such as
@@ -258,18 +266,18 @@ You need a git repository and a compatible binary (see "Install or upgrade"
 below). Capture the current branch; it is the default source and merge target.
 `run create` runs inside tmux or with `--headless` / `--tmux-session <name>`.
 
-The routing matrix in `taskfleet-overview` sends technical decisions to the
-`capable` profile, because a weak comparison becomes a durable record. A
-profile is a capability tier the user's `config.toml` maps to a harness and
+The routing matrix in `taskfleet-overview` says to
+select the user-owned `capable` profile by default for technical decisions;
+a weak comparison becomes a durable record. A profile is a capability tier the user's `config.toml` maps to a harness and
 argv, so the brief never names a concrete model or command. An explicit caller
 `--profile` (a driver may prefix the request with one; strip it from the
 question text) is their selection and may escalate; do not downgrade it.
 Profile names are user-owned, so find out that the one you intend exists before
-creating state: run the complete intended command with `--dry-run`. On
-`unknown_profile` for the workflow default, an empty `expected` list means the
-installation predates profiles and the real call omits `--profile`; a non-empty
-list without `capable` means you stop and surface the structured error rather
-than pick another name. An unknown profile the caller chose explicitly is theirs
+creating state. Preflight the **complete intended create command** with `--dry-run --profile <selected>`.
+On `unknown_profile` for the workflow default, an empty `expected` list means
+the installation predates profiles and the real call omits `--profile`; if
+`error.expected` is non-empty but lacks `capable`, stop with the structured error
+rather than pick another name. An unknown profile the caller chose explicitly is theirs
 to fix. Any other dry-run error also stops. The real call uses exactly the
 selector whose dry-run passed.
 
@@ -299,7 +307,8 @@ pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`, or
 `delegated-to-parent-supervisor` for a run created with the parent flags)
 explains why none was spawned; anything else non-numeric means nothing is
 driving the worker, which the user needs to hear. `data.branch`,
-`data.worktree_path`, and `data.tmux_window` name what was created.
+`data.worktree_path`, and `data.tmux_window` (the actual
+`<workmux-reported-window-name>`) name what was created.
 
 Tell the user the run id, the source branch, the tmux window and the session it
 is in, the path the ADR will land at, and that the run merges and reports
@@ -323,8 +332,8 @@ A run spawned by a driver with the parent flags leaves the issue to the driver.
 Otherwise, when the decision came from an issue, the ADR is that issue's
 deliverable and the worker closes it. Write the concrete slug into the brief and
 have the ADR name it. After the final validated ADR commit and before
-`run merge`, the worker runs `issuectl close <slug> --status done --stamp --as
-<agent> --json`. The stamp rewrites the ADR commit's message with a
+`run merge`, the worker runs
+`issuectl close <slug> --status done --stamp --as <agent> --json`. The stamp rewrites the ADR commit's message with a
 `Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog
 reads; the top-level `.stamp.status` has to be `stamped` or `already_present`,
 because `skipped` (detached HEAD, merge commit, signed, mid rebase) means the
@@ -332,7 +341,7 @@ landing commit would be invisible to the changelog, and that blocks the merge.
 The closure metadata path issuectl returns is committed separately, and the
 tree is clean before `run merge`. A blocked decision leaves the issue open.
 
-A freeform decision adds no trailer and touches no issue.
+A freeform decision has no issue trailer and touches no issue.
 
 ## Errors
 

@@ -218,9 +218,9 @@ Each child gets a self-contained brief with one unit interpolated:
 - **Silence.** A successful unit surfaces nothing: no discussion items, no
   spin-off proposals. A failed or incomplete tool is the one exception and
   follows the disclosure contract below.
-- **The disclosure contract and the closing recipe.** Copy the disclosure
-  contract below and the closing recipe into the brief verbatim; the report
-  shape is an interface the supervisor and the driver parse.
+- **The disclosure contract and the closing recipe.** For each unit, copy the disclosure contract below
+  and the closing recipe into the spawning brief verbatim; the report shape is
+  an interface the supervisor and the driver parse.
 
 ## How a child closes
 

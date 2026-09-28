@@ -130,9 +130,10 @@ downgrade takes a decision the caller already made.
 
 Profile names are user-owned, so an installation may not define the one a
 workflow recommends. Finding that out after `run create` has mutated state is
-expensive (a half-created run to clean up), so check first with the complete
-intended command plus `--dry-run` and branch on the error code. `unknown_profile`
-for a workflow-recommended name means try `capable`; if that is also unknown and
+expensive (a half-created run to clean up), so preflight the complete intended
+`run create ... --dry-run --profile <recommended>` with all other real-create
+flags and branch on the error code. `unknown_profile` for a workflow-recommended
+name means retry the dry-run with `--profile capable`; if that is also unknown and
 the error's `expected` list is empty, the installation predates profiles and the
 real call omits `--profile`. If profiles exist but neither is defined, surface
 the structured error rather than pick an arbitrary one, and an unknown profile
@@ -142,9 +143,9 @@ exactly the selector whose dry-run passed. Child spawns are the one exception:
 without the parent flags and restore them on the real, idempotency-keyed call.
 
 Profile choice is not correctness evidence. Primary sources, source-grounded
-scenarios, and deterministic tests are. For a bounded implementation one
-focused final-diff review is the default ceiling; panels or repeated reviews
-need a concrete risk or unresolved trade-off to justify their cost.
+scenarios, and deterministic tests are. For a bounded implementation, the
+default review ceiling is one focused final-diff review; panels or repeated
+reviews need a concrete risk or unresolved trade-off to justify their cost.
 
 ## Persistent worker sessions (opt-in)
 

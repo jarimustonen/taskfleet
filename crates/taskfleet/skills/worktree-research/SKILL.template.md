@@ -132,7 +132,15 @@ The worker's run id is in its generated preamble. If a recipe has to recover it,
 `taskfleet run show --current --output json` returns `.data.run_id` from the
 durable ownership record and fails closed on missing, duplicate, stale, or
 malformed evidence; the branch name's short fragment is display metadata that
-can repeat, so it is never used as the id.
+can repeat, so it is never used as the id. If the generated preamble's full id
+is unavailable, recover it before writing the per-run report:
+
+```bash
+run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
+  echo "failed to resolve exact owning run id" >&2
+  exit 1
+}
+```
 
 Once the report file is committed, the worker writes the terminal report. These
 field names are what the supervisor and the caller read; an unknown key such as
@@ -188,8 +196,8 @@ incomplete always blocks this attempt. Do not call `run merge`. Write the
 report payload from "How the worker closes" to `/tmp/node-report-${run_id}.json`
 with top-level `success: false`, then submit it with `taskfleet node report
 "$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the
-sole node in this single-worker run). An **optional/advisory** failure may
-continue only when the report is independently complete and safe; disclose it
+sole node in this single-worker run). An **optional/advisory** failure
+may continue only when the report is independently complete and safe; disclose it
 in the full `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
@@ -257,7 +265,8 @@ pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`, or
 `delegated-to-parent-supervisor` for a run created with the parent flags)
 explains why none was spawned; anything else non-numeric means nothing is
 driving the worker, which the user needs to hear. `data.branch`,
-`data.worktree_path`, and `data.tmux_window` name what was created.
+`data.worktree_path`, and `data.tmux_window` (the actual
+`<workmux-reported-window-name>`) name what was created.
 
 Tell the user the run id, the source branch, the tmux window and the session it
 is in, the path the report will land at, and that the run merges and reports
@@ -282,8 +291,8 @@ cases holds and write the concrete slug into the brief:
 - The report is evidence for a larger issue: the worker commits it with a
   `Refs-Issue: @<slug>` trailer and does not close or stamp the issue.
 - The report is the issue's whole deliverable: after the final validated report
-  commit and before `run merge`, the worker runs `issuectl close <slug>
-  --status done --stamp --as <agent> --json`. The stamp rewrites the report
+  commit and before `run merge`, the worker runs
+  `issuectl close <slug> --status done --stamp --as <agent> --json`. The stamp rewrites the report
   commit's message with a `Fixes-Issue: @<slug>` trailer, which is what the
   trailer-driven changelog reads; `.data.stamp.status` has to be `stamped` or
   `already_present`, because `skipped` (detached HEAD, merge commit, signed, mid
@@ -291,7 +300,7 @@ cases holds and write the concrete slug into the brief:
   that blocks the merge. The closure metadata path issuectl returns is committed
   separately, and the tree is clean before `run merge`.
 
-Freeform research adds no trailer and touches no issue.
+Freeform research has no issue trailer and touches no issue.
 
 ## Errors
 

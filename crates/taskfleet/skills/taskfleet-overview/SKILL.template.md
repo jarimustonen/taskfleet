@@ -42,7 +42,9 @@ fields mean what, and where earlier mistakes came from.
 
 ## Output contract
 
-Every machine-readable command emits the canonical envelope:
+Every machine-readable command emits the canonical envelope, except the two
+streaming ones: `skill print` writes the raw file and `event tail` writes one
+raw event per line followed by a single terminating envelope.
 
 ```json
 {"schema_version": 1, "data": {...}, "warnings": ["..."]}
@@ -79,7 +81,8 @@ supervisor tear the worktree down. This one call is the **only success truth**
 in taskfleet: the supervisor never infers "done" from a merged-looking branch,
 an idle pane, or a clean exit. A worker that exits cleanly without calling
 `run merge` leaves the run non-terminal with `attention_required: true`; the
-operator finishes it with `run salvage` or discards it. A direct `node report`
+operator finishes it with `run salvage` or cancels it (`run discard` accepts
+only a failed or cancelled run). A direct `node report`
 is for a blocked outcome with nothing to merge. The `worktree-merge` skill
 covers the closing step; `taskfleet-run-overview` covers reading run state and
 what each state calls for.
@@ -90,7 +93,7 @@ fragment, but it is not authoritative and may be ambiguous.
 
 ## `status` and `lifecycle` are different fields
 
-`status` is progress: `pending` / `running` / `blocked` / `done` / `failed` /
+`status` is progress: `pending` / `running` / `done` / `failed` /
 `cancelled`, with the last three terminal. Read it from `run show` (top-level
 `data.status` or `data.manifest.status`) to tell whether work is finished.
 

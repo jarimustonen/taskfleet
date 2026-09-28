@@ -1,200 +1,233 @@
 ---
 name: worktree-bug-analysis
-description: "Spawn an autonomous READ-ONLY spinoff that analyses ONE existing bug and writes findings back into its issue: reproduce/explain, locate the code path with Read/Grep, classify, estimate severity, and sketch fix scope. It self-merges only the issue update and never changes application code. Use before a fix/defer/not-a-bug decision. Fix with issue-driven `/worktree-spinoff`; use `/worktree-research` for open-ended multi-source research."
+description: "Spawn one autonomous read-only worker that analyses an already-filed bug and writes its findings into that issue under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the issue update back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on an existing bug. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
 ---
 
-# worktree-bug-analysis — read-only, issue-updating
+# worktree-bug-analysis
 
-Analyse ONE already-filed bug in an isolated worktree and record what you found
-**in the issue itself** — no code changes, no fix, no new issue. This exists
-because the two obvious tools don't fit: `worktree-research` refuses
-debugging/bug-investigation topics, and `worktree-bugfix` *fixes* code and
-creates a new issue. This skill sits between: it takes an **existing bug slug**,
-investigates read-only, and updates that issue.
+A bug-analysis run is one autonomous worker whose deliverable is understanding,
+not code. It takes an already-filed bug, reproduces or explains the behaviour,
+finds the responsible area, classifies what it found, writes that into the
+bug's own issue, and merges the issue update back with `taskfleet run merge`.
+The user, or the triage skill that commissioned the run, then decides fix,
+defer, or not-a-bug with the analysis in hand. Nobody reviews the worker
+interactively and it cannot ask you anything: the brief is the whole
+conversation, and the terminal report is all you hear back.
 
-It is a `spinoff`-shaped run — one autonomous agent that self-merges and does not
-pause for the user — so it spawns via `taskfleet run create --kind spinoff`
-with a read-only brief. It runs **headless** (its only output is an issue update;
-nobody watches it), so a triage batch does not clutter the window list. Read
-`taskfleet-overview` first; read `worktree-spinoff` for the shared
-autonomous-merge contract that this skill reuses verbatim.
+The run is created as `--kind spinoff`; there is no analysis kind, and the
+read-only nature lives entirely in the brief. The run mechanics are shared with
+`worktree-spinoff`: placement and PTY limits, driver flags, profiles,
+`--notify`, `run wait`, the `landed` flag, and the error codes are documented
+there and not repeated here. If the run / supervisor / node vocabulary is new
+to you, read `taskfleet-overview` first.
 
-## When to use
+## Is this a bug analysis?
 
-- ✅ You have an **existing** bug issue slug that needs understanding before a
-  fix/defer/not-a-bug decision.
-- ❌ Fixing the bug → `/worktree-spinoff <existing-bug-slug>`.
-- ❌ Filing a new bug / any issue that does not yet exist — this skill never
-  creates issues.
-- ❌ Open-ended multi-source research → `/worktree-research`.
+It is when the user names an existing bug slug and wants it understood:
+"analyse", "understand", "figure out why", "is this real". The triage skill
+sends here the bug-like reports that already have a plausible path and material
+impact but whose root cause or expected-behaviour status is unclear.
 
-## Hard constraints
+It is not one when the user wants the bug fixed; a fix is `/worktree-spinoff
+<slug>`, driven by the same issue, and there is no separate bugfix variant. It
+is not one when the bug has not been filed yet: this skill only writes into an
+existing issue, so file it first. Open-ended multi-source investigation is
+`/worktree-research`. And it is not worth a run when reading the report already
+answers the question: each analysis costs a worker round, and bug reports
+routinely describe a defect the current release has already fixed or a
+read-surface mistake (the wrong field, the wrong command). A quick check against
+the installed binary or the current source, done inline, often settles such a
+report without spending a worker. Say what you found instead of spawning.
 
-1. **Never change application code.** The only files this worker writes are the
-   bug's own `issues/<slug>/item.md` (and, if useful, `issues/<slug>/analysis.md`).
-   Editing anything under the product source tree is a *fix* — out of scope.
-2. **Do not decide the disposition.** Classify and recommend; fix-now / defer /
-   not-a-bug stays with the user. Do not close the issue or change its status or
-   disposition labels.
-3. **Autonomous, no user pause.** Like `worktree-spinoff`: investigate, update
-   the issue, self-merge. Do NOT run `/wrap-up`.
+## What is at stake
 
-## Workflow
+**The disposition belongs to the user.** The analysis informs a fix / defer /
+not-a-bug decision; it does not make it. The worker leaves the issue's status,
+closing, and disposition labels alone, and commits the analysis with plain
+`git` and a `Refs-Issue: @<slug>` trailer. The brief says it in as many words:
+never use `Fixes-Issue`, `issuectl close --stamp`, or close the issue. The
+trailer-driven changelog and `issuectl sync-commits` would otherwise record a
+fix that never happened, and the user would find a bug marked resolved that is
+still there.
 
-### 0. Validate context
+**Application code stays untouched.** `run merge` lands the worker's branch on
+the source branch with no review. A fix committed by an analysis worker
+therefore arrives unreviewed, skips the quality bar a spinoff brief carries, and
+pre-empts the decision the analysis was meant to inform. The committed change
+is the issue directory only: `issues/<slug>/item.md` and, for a long trace,
+`issues/<slug>/analysis.md`. Building the project and running tests or the
+binary to reproduce is fine; a throwaway probe reverted before the commit is
+fine; anything that survives into the commit outside the issue directory is a
+fix and belongs to `/worktree-spinoff <slug>`.
 
-1. Working directory must be a git repo. Per repo CLAUDE.md, the current branch
-   must be clean.
-2. `taskfleet version --output json` to confirm `{{CLI_VERSION}}` matches
-   the running binary.
-3. Capture the current branch as the source/merge target.
+**The heading is an interface.** issuectl derives its `needs_analysis` signal
+and the `analysis` projection (`issuectl intake show <slug> --json`,
+`issuectl intake queue --needs-analysis`) from the exact `## Triage analysis`
+heading and nothing else. An earlier version of this skill let the worker pick
+an alternative heading, and the mismatch left analysed issues looking
+unanalysed, so every consumer either carried compatibility logic or
+commissioned the same analysis again. Findings go under that exact heading.
 
-### 1. Resolve the bug slug
+**The source branch and the run's lifecycle.** `run merge` rebases the worker's
+branch onto the run's recorded source branch and merges it there; the branch
+checked out when you run `run create` is the default, and it is the only
+success signal taskfleet has. Preserving unmerged work is the supervisor's job:
+a blocked report, a failure, or a cancel keeps the branch and worktree for a
+human. The real loss is a run that never terminalizes, which stays alive with a
+dangling worktree while a triage batch waits on it. That is why the brief ends
+with exactly one terminal path.
 
-The remaining argument (after any agent/layout flags, parsed as `worktree-spinoff`
-does) is the **bug issue slug**. It must already exist — if `issues/<slug>/item.md`
-is missing, abort with a clear error. This skill does not create issues.
+**The user's installed taskfleet.** When the repository under analysis is
+taskfleet itself, the worker may `cargo build --release` and run
+`./target/release/taskfleet …` from its worktree, but it never installs,
+replaces, or removes the user's installed binary or bundled skills, by
+`cargo install`, Homebrew, a manual copy, or any `skill install` variant. The
+installed release is the user's production tool and legitimately differs from
+source `HEAD`.
 
-### 2. Build the read-only brief
+**The user's attention.** The only input this skill needs is the slug. A slug
+whose `issues/<slug>/item.md` does not exist is the one thing worth stopping
+for: report it and do not create the issue. Everything else (placement, title,
+profile) is a routine call: make it, say what you chose, and continue.
 
-The brief must be self-contained (a spinoff cannot ask follow-ups). It MUST carry
-the read-only hard constraints above **and** end with exactly one terminal path:
-completed analysis uses `taskfleet run merge`; analysis blocked by a
-required failure uses direct `node report` without merging. Include:
+## Before you spawn
 
-1. **Objective** — understand and scope the bug in `issues/<slug>/item.md`; do
-   NOT fix it, do NOT change application code; write findings back into the issue.
-2. **Steps**:
-   - Read `issues/<slug>/item.md` **and every attachment** under
-     `issues/<slug>/attachments/` (screenshots are often the whole report).
-   - Reproduce or explain the behaviour; locate the responsible code path with
-     **Read/Grep only**. If you cannot reproduce, say why.
-   - Classify: **real bug** / **expected behaviour** / **cannot tell**. Estimate
-     rough severity and who it hits. Sketch what a fix would touch (files/areas)
-     — a sketch, not an implementation.
-   - Write findings into `issues/<slug>/item.md` under the exact heading
-     `## Triage analysis`: verdict, severity, affected area, repro status, fix
-     sketch. Keep it tight; for a long trace add `issues/<slug>/analysis.md`
-     and link it.
-   - Commit with plain `git` and a `Refs-Issue: @<slug>` trailer. This is read-only
-     analysis: never use `Fixes-Issue`, `issuectl close --stamp`, or close the issue.
-   - If reproducing requires a local taskfleet build, use `cargo build
-     --release` and invoke `./target/release/taskfleet …` explicitly.
-     During repository work, neither workers nor the orchestrator may create,
-     replace, remove, or modify the user's installed taskfleet or bundled
-     skills by any mechanism, including any `cargo install`, `cargo uninstall`,
-     Homebrew, manual-copy, or `skill install` variant.
-3. **Done criteria** — the issue carries the analysis; the branch is committed
-   and merged back; no application code changed.
-4. **Tool/sub-workflow failure policy** — copy the disclosure contract below
-   into the brief. A required failed/incomplete repro or inspection step cannot
-   be claimed complete; optional failure may continue only when safe and
-   disclosed.
+You need a git repository with the current branch clean (workmux refuses to
+materialize over uncommitted changes) and a compatible binary (see "Install or
+upgrade" below). Capture the current branch; it is the default source and merge
+target, and the caller should hear which one it was.
 
-Long brief → temp file + `--prompt-file <path>` (`mktemp -t bug-analysis-XXXXXX.md`).
+The request is parsed as `worktree-spinoff` parses a driver request: leading
+`--headless`, `--tmux-session <name>`, or `--profile <name>` tokens are forwarded
+to `run create`, and what remains is the bug slug. `issuectl show <slug> --json`
+confirms the issue exists and gives you its title for the brief.
 
-### 3. Create the run
+## The brief
 
+`run create` prepends generated run context to every worker prompt, including a
+custom `--prompt-file`: the exact run id, the `run show --current` ownership
+resolver, and the issue-filing boundary (issues a worker files go through
+`issuectl intake file` and are born unlaned). That generated text is
+authoritative over the brief, so do not restate or weaken it. What the worker
+still needs from you:
+
+- **Objective.** Understand and scope the bug in `issues/<slug>/item.md` and
+  write the findings back into that issue; do not fix it and do not change
+  application code, for the reasons above.
+- **What to read.** The item and every file under `issues/<slug>/attachments/`;
+  a screenshot attached with `issuectl attach` is often the whole report.
+- **What to establish.** Reproduce the behaviour or explain it from the code,
+  and locate the responsible code path with file references. Name the commit or
+  release examined, because reports often describe an already-fixed defect. If
+  reproduction fails, say what was tried and why it did not work rather than
+  guessing.
+- **The verdict.** Real bug, expected behaviour, or cannot tell; rough severity
+  and who it hits; and a sketch of what a fix would touch (files or areas, not
+  an implementation). For "cannot tell", say whether a specific plausible path
+  with material impact remains, because that is what separates a clarification
+  lane from a close recommendation downstream.
+- **Where it goes.** Into `issues/<slug>/item.md` under the exact heading
+  `## Triage analysis`: verdict, severity, affected area, repro status, fix
+  sketch. Keep it tight, since the reader is deciding, not debugging; a long
+  trace goes to `issues/<slug>/analysis.md`, linked from the section.
+- **The commit.** Plain `git` with a `Refs-Issue: @<slug>` trailer; never use
+  `Fixes-Issue`, `issuectl close --stamp`, or close the issue.
+- **Repository-local build safety**, the installed-taskfleet rule above, when
+  the target repository is taskfleet.
+- **Done criteria.** The issue carries the analysis under the heading, the
+  branch is committed and merged back through `run merge`, and no application
+  code changed.
+- **The closing recipe and the failure-disclosure contract** from the two
+  sections below: copy the disclosure contract below into the brief together
+  with the closing recipe. The generated preamble carries no closing recipe for
+  a spinoff-kind worker, so the brief is the only place it will see one.
+
+A brief this long goes in a temp file (`mktemp -t bug-analysis-XXXXXX.md`)
+passed as `--prompt-file`; the CLI copies it into the run directory, so remove
+the temp file once `run create` returns.
+
+### How the worker closes
+
+The worker takes exactly one terminal path. A completed analysis goes through
+`run merge`, which rebases and merges the branch and submits the terminal
+report stamped `via: "explicit-merge"` in the same call. An analysis blocked by
+a required failure does not merge; it submits a direct `success: false` report.
+Taking neither leaves the run alive; taking both confuses the record.
+
+The worker's run id is in its generated preamble. If a recipe has to recover it,
+`taskfleet run show --current --output json` returns `.data.run_id` from the
+durable ownership record and fails closed on missing, duplicate, stale, or
+malformed evidence; the branch name's short fragment is display metadata that
+can repeat, so it is never used as the id:
+
+```bash
+run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
+  echo "failed to resolve exact owning run id" >&2
+  exit 1
+}
 ```
-taskfleet run create \
-  --kind spinoff \
-  --headless \
-  --title "bug-analysis-<slug>" \
-  --prompt-file <brief-file> \
-  [--source-branch <branch>]
+
+Once the issue update is committed, the worker writes the terminal report.
+These field names are what the supervisor and the caller read; an unknown key
+passes validation and is never read.
+
+```bash
+cat > /tmp/node-report-${run_id}.json <<'JSON'
+{
+  "success": true,
+  "summary": "<one-line verdict, e.g. real bug, medium severity, in <area>>",
+  "discussion_items": [],
+  "spinoff_proposals": [],
+  "wrap_up_recommendations": []
+}
+JSON
 ```
 
-- `--kind spinoff` + `--title` + `--prompt-file` (or `--task`) required — same
-  flag rules as `worktree-spinoff`.
-- `--headless` is the default for this skill: the run's only deliverable is an
-  issue update, so its window belongs in the detached `headless` session, not the
-  user's window list. Auto-cleanup still closes it on terminal. Drop `--headless`
-  only if the user explicitly wants to watch the analysis live.
-- `--source-branch` defaults to the current branch from step 0.
+`success` is the one required field and `summary` is the verdict in one line;
+that line is what `run wait` and a triage briefing surface. The three arrays are
+usually empty. A fix worth doing goes in `spinoff_proposals[]` as
+`{"proposed_title": "<non-empty>", "proposed_kind": "spinoff", "rationale":
+"<why>"}`; only `spinoff`, `research`, `technical-decision`, and `fan-out`
+exist as kinds, so a proposal naming `bugfix` is dropped by `run merge` with a
+warning and rejects the whole file under `node report`. The per-run path
+matters because two concurrent workers writing a shared `/tmp/node-report.json`
+clobber each other.
 
-### 4. Success envelope
+Then merge and report in one call:
 
-Same shape as `worktree-spinoff` (`run_id`, `supervisor`, `kind: spinoff`,
-`node_id`, `tmux_window`, `worktree_path`, `branch`). Read `data.run_id`; if
-`data.supervisor` is `null` or `{"note": "..."}`, surface it and stop.
+```bash
+taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+```
 
-### 5. Report to the caller
-
-- Run id, branch, and the issue path `issues/<slug>/item.md`.
-- That the worker self-merges the issue update via `taskfleet run merge` — no
-  `/worktree-merge` handoff.
-- Follow progress with `taskfleet run show <run-id>` or
-  `taskfleet run wait <run-id>`; the headless window is reachable with
-  `tmux attach -t headless` if the user wants to watch.
-
-When spawned by another skill rather than invoked directly by the user, return the
-structured payload (run id, node id, branch) to the caller instead of a human summary.
-
-## Terminal report (mandatory)
-
-A bug-analysis worker MUST take exactly one terminal path, never both.
-Completed, mergeable analysis uses `taskfleet run merge`, which merges and
-submits the report in one call. Analysis blocked by a required failed or
-incomplete step does **not** merge; it submits a direct `success: false` report
-under "Tool and sub-workflow failure disclosure" below. Omitting both paths
-leaves the run pending. For the completed path, run the following once the issue
-update is committed:
-
-1. **Resolve the exact owning run id** from inside the worktree. Use the
-   durable node ownership record, never the branch's display identifier (it is a
-   lossy bounded fragment that can repeat, not ownership):
-
-   ```bash
-   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
-     echo "failed to resolve exact owning run id" >&2
-     exit 1
-   }
-   ```
-
-   This fails closed on missing, duplicate, stale, or malformed ownership
-   evidence. If it fails, stop and report the error; do not guess a run id.
-
-2. **Write the §7.3 payload** to a temp file — `success: true`, `summary` = the
-   one-line verdict (e.g. "real bug, medium sev, in <area>"), the three arrays
-   usually empty (a fix worth doing goes in `spinoff_proposals[]` with
-   `proposed_kind: "bugfix"`):
-
-   ```bash
-   cat > /tmp/node-report-${run_id}.json <<'JSON'
-   { "success": true, "summary": "<verdict>", "discussion_items": [], "spinoff_proposals": [], "wrap_up_recommendations": [] }
-   JSON
-   ```
-
-3. **Merge and report in one call:**
-
-   ```bash
-   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
-   ```
-
-   On a clean merge the supervisor consumes the report and tears down the
-   worktree/window/branch — do not run any manual tmux/git cleanup. On a merge
-   conflict it exits non-zero with `error.code: "merge_failed"` and submits no
-   report; resolve (or `/complex-rebase`) and re-run the same call. **Do not**
-   close the issue or change its status or disposition labels — that decision is the
-   user's.
+The file is validated before the merge runs. `run merge` defaults to node
+`n-0001`, the only node this run has, and merges into the recorded source
+branch. The supervisor then tears down the worktree, tmux window, and branch
+within a second or two and the worker's session ends as its window closes; the
+worker does not run `tmux kill-window`, `git worktree remove`, or
+`git branch -d` itself. On `error.code: "merge_failed"` no report was submitted
+and the node stays live: resolve the conflict (or `/complex-rebase` for a
+deeply diverged branch), commit, and re-run the same `run merge` command; the
+report file is still on disk. The issue's status and labels stay as they were
+throughout; the decision is the user's.
 
 ## Tool and sub-workflow failure disclosure
 
 Before closing, inventory every failed or detectably incomplete tool, command,
 external service, review, panel, or delegated workflow.
 
-A step **required** by the brief or done criteria that remains failed or
+A step **required** by the brief or the done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
-existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `taskfleet node report "$run_id"
-n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
-in this single-worker run). An **optional/advisory** failure may continue only
-when the issue analysis is independently complete and safe; disclose it in the
-full `success: true` report passed to `taskfleet run merge "$run_id"
---report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
+report payload from "How the worker closes" to `/tmp/node-report-${run_id}.json`
+with top-level `success: false`, then submit it with `taskfleet node report
+"$run_id" n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the
+sole node in this single-worker run). An **optional/advisory** failure
+may continue only when the issue analysis is independently complete and safe;
+disclose it in the full `success: true` report passed to `taskfleet run merge
+"$run_id" --report-file /tmp/node-report-${run_id}.json`, never the minimal
+auto-report.
 
 Requested completeness is a contract. A missing requested reproduction,
 inspection result, attachment, or expected artifact is incomplete and cannot be
@@ -215,24 +248,91 @@ data, environment dumps, or unbounded logs. Set top-level `summary` and
 discussion item. Existing prose fields suffice, so do not add a schema or
 supervisor state.
 
-## Non-goals
+## Creating the run
 
-- Does NOT fix bugs or touch application code — use `/worktree-spinoff` for the fix.
-- Does NOT create issues — it only updates an existing one.
-- Does NOT decide fix/defer/not-a-bug, close the issue, or change its status or
-  disposition labels.
-- Does NOT run open-ended multi-source research — that's `/worktree-research`.
+```
+taskfleet run create \
+  --kind spinoff \
+  --headless \
+  --title "bug-analysis-<slug>" \
+  --prompt-file <brief-file> \
+  [--profile <name>] \
+  [--source-branch <branch>] \
+  [--notify <cmd>] \
+  [--idempotency-key <key>] \
+  [--dry-run]
+```
+
+Headless placement is the default here, not an option: the run's only output is
+an issue update, nobody watches it, and a triage batch of five analyses would
+otherwise fill the user's window list and, on macOS, exhaust pseudo-terminals
+mid-batch. Drop `--headless` only when the user says they want to watch the
+analysis live; a caller's `--tmux-session <name>` replaces it. The title
+`bug-analysis-<slug>` makes the run recognisable in `run list` and the window
+name. `--source-branch` defaults to the branch you captured. `--idempotency-key`
+makes a retry after a transient error return the original run instead of
+spawning a second one. Output defaults to `--output jsonl`.
+
+The profile routing matrix in `taskfleet-overview` has no row for bug analysis:
+forward an explicit caller `--profile` as their selection and otherwise let the
+installation's default apply. When you are unsure a selector exists, preflight
+the complete command with `--dry-run`; `unknown_profile` after materialization
+costs a run.
+
+## What comes back
+
+The success envelope has the same shape as a spinoff's: `data.run_id` is the
+handle for everything that follows, and `data.supervisor` is the supervisor's
+pid. A string there instead (`not-spawned-dry-run`, `recorded-on-prior-run`, or
+`delegated-to-parent-supervisor`) explains why none was spawned; anything else
+non-numeric means nothing is driving the worker, which the user needs to hear.
+`data.branch`, `data.worktree_path`, and `data.tmux_window` name what was
+created.
+
+Tell the user the run id, the source branch, the issue path
+`issues/<slug>/item.md`, and that the run merges and reports itself, so no
+`/worktree-merge` is needed from them. Be precise about how completion reaches
+them: the run is out of band and nothing re-invokes this session by itself.
+Promise "I'll tell you when it's done" only if you wired `--notify` or started a
+background `taskfleet run wait <run-id>` through a harness facility that
+re-invokes you; otherwise say plainly that they check `taskfleet run show
+<run-id>` or ask you to wait on it, and that `tmux attach -t headless` shows
+the worker live. Settled is not landed: read the `landed` flag from `run wait`
+or `run show` rather than checking git ancestry yourself. The analysis itself
+is visible on the source branch afterwards, in `git log -- issues/<slug>` or as
+`.data.analysis` from `issuectl intake show <slug> --json`; a triage caller
+confirms landing that way before mapping the verdict onto a recommendation.
+
+When spawned by another skill rather than invoked directly by the user, return
+the structured payload (run id, node id, branch) to the caller instead of a
+human summary; it needs the ids to poll.
+
+## Errors
+
+`run create` fails with the same envelope and codes as `worktree-spinoff`
+(`invalid_arguments`, `no_tmux_session`, `base_ref_not_found`,
+`workmux_add_failed`, `unknown_profile`, `supervisor_spawn_failed`, and the
+rest); branch on `error.code`, the message is prose. Nothing in the create path
+is analysis-specific. A missing `issues/<slug>/item.md` is your error to report
+before `run create`, not one of its codes.
 
 ## Install or upgrade `taskfleet`
 
-This skill was installed for `taskfleet {{CLI_VERSION}}`. On the first
-invocation in a session, run `taskfleet version --output json`, compare
-`.data.version` to `{{CLI_VERSION}}`: **Missing** → tell the user to install
-through a published distribution channel outside this repository workflow and
-stop; **Older** → tell the user to upgrade and stop; **Newer** → tell
-the user the installed skill is stale and stop (refreshing bundled instructions
-is published-tool maintenance outside repository work; never run `skill install`
-as part of this workflow); **Equal** → proceed.
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
+first invocation in a session, run
+`taskfleet version --output json`, compare `.data.version` to
+`{{CLI_VERSION}}`, and:
+
+- **Missing**: tell the user to install through a published distribution channel
+  outside this repository workflow, then stop.
+- **Older**: tell the user the skill expects `{{CLI_VERSION}}` and suggest
+  upgrading via the channel they originally used
+  (`brew upgrade jarimustonen/taskfleet/taskfleet` or the shell installer),
+  then stop; the `run create` surface may have changed.
+- **Newer**: tell the user the installed skill is stale and stop. Refreshing
+  installed bundled instructions is published-tool maintenance outside
+  repository work; never run `skill install` as part of this workflow.
+- **Equal**: proceed.
 
 ## Example
 

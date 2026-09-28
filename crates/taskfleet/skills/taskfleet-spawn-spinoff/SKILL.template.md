@@ -285,7 +285,7 @@ What the flags do that `--help` does not tell you:
     "lifecycle": "autonomous",
     "node_id": "n-0001",
     "tmux_window": "<window-name>",
-    "worktree_path": "<repo>/worktrees/<title>",
+    "worktree_path": "<repo>__worktrees/wt-<id>-<title>",
     "branch": "wt/<id>-<title>",
     "selection": { "profile": "...", "selected": { "harness": "pi", "command": ["..."] } }
   }
@@ -331,16 +331,17 @@ Failures print `{"schema_version": 1, "error": {"code": "<code>", "message":
 "..."}}` on stderr with a non-zero exit. Branch on `error.code`; the message is
 prose. Codes you are likely to meet from `run create`:
 
-- `invalid_arguments` — missing or empty `--title` / `--task`, both or neither
-  of `--task` and `--prompt-file`.
+- `missing_argument` / `invalid_value` / `invalid_arguments` /
+  `missing-task-or-prompt-file` — a missing `--title`; an empty or
+  whitespace-only `--title` / `--task`; both of `--task` and `--prompt-file`;
+  neither of them.
 - `prompt_file_not_found` / `prompt_file_not_readable`.
 - `no_tmux_session` — not inside tmux and no `--headless` /
   `--tmux-session`.
 - `base_ref_not_found` — `--source-branch` does not resolve locally. Fetch or
   correct the name; do not create it.
-- `workmux_add_failed` — the materializer refused: uncommitted changes on the
-  source branch, a conflicting worktree path, or macOS PTY exhaustion
-  mid-batch. Materialization is rolled back.
+- `workmux_add_failed` — the materializer refused: a conflicting worktree
+  path, or macOS PTY exhaustion mid-batch. Materialization is rolled back.
 - `unknown_profile` / `profile_required` — see the `--dry-run` preflight
   above.
 - `supervisor_spawn_failed` — the run directory exists but nothing drives the

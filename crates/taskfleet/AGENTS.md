@@ -21,8 +21,9 @@ Every hidden re-entry (detached supervision, reattach, doctor fixes, the
 worker shim) goes through `src/self_exec.rs`, which starts `current_exe()`.
 Looking the product name up on `PATH` could land on a different installed
 version, and a run that mixes binaries cannot enforce newer invariants such as
-evidence capture. `src/home.rs` is the only reader of the `TASKFLEET_*`
-environment variables and the only chooser of the repository config file, and
+evidence capture. `src/home.rs` is the only reader of the public `TASKFLEET_*`
+inputs (`TASKFLEET_HOME`, `TASKFLEET_PROFILE`, `TASKFLEET_HARNESS`,
+`TASKFLEET_LOG`) and the only chooser of the repository config file, and
 it freezes its answers for the process so a command cannot switch state roots
 midway. Help output does not touch the filesystem, so `--help` works with no
 home and no config.
@@ -112,9 +113,10 @@ a surviving `taskfleet supervise` process from `target/debug` is a
 missing-fixture bug; scope any `pgrep` to that path, since the same pattern
 matches supervisors from every repository on the machine.
 
-`tests/e2e_spinoff.rs` drives one complete headless spinoff (create, live
-stub worker, `run merge`, roll-up, teardown) and asserts the canonical event
-sequence, so a change to the lifecycle shows up there first. For a check
+`tests/e2e_spinoff.rs` drives complete headless spinoffs (create, live stub
+worker, `run merge` through a stub `merge.sh`, roll-up, teardown, and
+`run merge` recovery of a failed run) and asserts the lifecycle events they
+must emit, so a change to the lifecycle shows up there first. For a check
 against a real pi, `scripts/native-spawn-smoke.sh` runs a bounded prompt from
 a built `target/release/taskfleet` inside a disposable home, repository, and
 private tmux server, and fails if anything outside that sandbox changed. An
@@ -149,7 +151,9 @@ proposal to recover a worker's identity from names, trees, or timestamps is a
 step back toward what that ADR removed.
 
 Every pi launcher also owns its session: it assigns the UUID, writes the
-native session header into the run's private staging area, and starts pi with
+native session header into a private run-bound directory under the state root
+(`.creating/pi-sessions/<run-id>/`, outside the run's staging directory), and
+starts pi with
 `--session <path>`. That is why a profile whose argv contains session
 selection flags is rejected rather than overridden, and why evidence can be
 exact instead of "the newest session file". On the terminal transition
@@ -181,7 +185,8 @@ companion shell only when it is provably untouched, leave a modified or shared
 window alone, keep the last pane as an inert anchor rather than killing the
 session) each protect something the user was using. `session maintain`
 applies the TTL and count bounds from a timer; it scans state without `$TMUX`
-or a repository cwd, rechecks every identity under the run's shared lock, and
+or a repository cwd, rechecks every identity under the run's exclusive lock
+(taken without waiting, so a busy run is left for the next pass), and
 never starts a tmux server or removes archives or git-preserved work. Homebase
 owns the timer unit. A unit that binds to the shared tmux server with
 `Requires=` or `PartOf=` would let maintenance start or restart the user's
@@ -195,7 +200,9 @@ policy because it is the only text that knows the exact run id and reaches
 workers launched from a custom `--task` or `--prompt-file`, which no bundled
 skill does. Today it carries the closing identity and the issue-filing
 boundary (worker-filed issues go through `issuectl intake file`, are born
-unlaned, and carry machine-visible `ai-review` provenance); the full text is
+unlaned, and carry machine-visible `ai-review` provenance), plus, for pi
+research workers only, the translation shim for Claude-flavoured briefs and
+the literal `run merge` close; the full text is
 in `src/harness/prompt.rs`. issuectl remains the only writer of issue storage.
 A caller's `--prompt-file` is copied to `<run-dir>/prompt.md` so the preamble
 can be prepended without mutating the caller's file.
@@ -222,5 +229,7 @@ secret.
 `doctor` runs its checks in a fixed order with `binary.commit` first. A build
 commit that differs from the checkout's `HEAD` is a warning, since released
 binaries and branch work differ legitimately, and `doctor` never manages the
-installed binary. The `--fix` subset is drift-only and, for the reasons above,
-excludes pi.
+installed binary. The `--fix` subset is Claude skill-drift reinstalls and
+removal of dead supervisor PID files older than 24 hours. Pi and Codex drift
+get no fix of their own, for the reasons above, though the reinstall a Claude
+fix runs (`skill install <name> --force`) still writes every runtime.

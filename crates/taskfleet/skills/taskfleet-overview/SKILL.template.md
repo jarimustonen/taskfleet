@@ -1,6 +1,6 @@
 ---
 name: taskfleet-overview
-description: First read for any agent that has just discovered the `taskfleet` binary mid-conversation. Teaches the overall shape of the tool — runs, supervisors, nodes, discussions, spinoffs — and the canonical create→supervise→collect-reports cycle. Use when asked "what is taskfleet", when the binary appears in a session for the first time, or before issuing the first non-trivial command.
+description: First read for any agent that has just discovered the `taskfleet` binary mid-conversation. Explains what taskfleet is, its vocabulary (runs, nodes, supervisors, kinds, profiles), the output envelope, the create → supervise → merge cycle, and which bundled skill to open next. Use when asked "what is taskfleet", when the binary appears in a session for the first time, or before issuing the first non-trivial taskfleet command.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -8,14 +8,39 @@ schema_version: 1
 
 # taskfleet-overview
 
-`taskfleet` (binary name: `taskfleet`) is the state owner for
-AI-agent workflows: worktrees, fan-outs, orchestrations, and spinoffs.
-Every workflow is a **run** with canonical state under
-`~/.taskfleet/runs/<run-id>/`. Read this skill once at the start of
-any session that touches the tool — every other `taskfleet-*` skill assumes
-the vocabulary and conventions defined here.
+`taskfleet` is the state owner for AI-agent workflows on a developer's machine.
+It spawns an agent into an isolated git worktree, supervises it with a per-run
+process, and merges its work back. Every workflow is a **run** with canonical
+state under `<taskfleet home>/runs/<run-id>/` (the home is `TASKFLEET_HOME`,
+default `~/.taskfleet`): an append-only `events.jsonl` plus projections such as
+`manifest.json` and `nodes/`. Any command or UI reading a run reads that same
+truth. Every other bundled `taskfleet-*` and `worktree-*` skill assumes the
+vocabulary here.
 
-## Output contract (read this first)
+The binary's `--help` text is the authoritative description of every verb and
+flag; this skill tells you what the help text cannot: how the pieces fit, which
+fields mean what, and where earlier mistakes came from.
+
+## Vocabulary
+
+- **Run** — one workflow, identified by a ULID. Created with `run create`.
+- **Kind** — the run's topology: `spinoff` (one focused coding task),
+  `research`, `technical-decision`, `fan-out` (a parent run with one child run
+  per unit). Kind is about the work, not about how it is supervised.
+- **Node** — one unit of work inside a run. Every run starts with node
+  `n-0001`. Node ids are `n-` followed by 4–10 ASCII digits and the binary
+  rejects anything else, so never invent a slug such as `n-driver-001`; take
+  the id from `run create`'s `node_id` field or from `node list`.
+- **Supervisor** — the long-lived `taskfleet supervise <run-id>` process that
+  drives the run's worker, records what it is told, and tears the worktree,
+  tmux window, and branch down when the run ends. `run create` starts it;
+  `run reattach` restarts a dead one. Agents rarely invoke it directly.
+- **Profile** — a named, user-owned executable definition (harness plus argv)
+  in the taskfleet home's `config.toml`, selected with `run create --profile`.
+- **Report** — the structured terminal document a worker submits to end its
+  node. It is usually submitted through `run merge`, not directly.
+
+## Output contract
 
 Every machine-readable command emits the canonical envelope:
 
@@ -23,94 +48,71 @@ Every machine-readable command emits the canonical envelope:
 {"schema_version": 1, "data": {...}, "warnings": ["..."]}
 ```
 
-- The default `--output` is `jsonl` — one compact envelope per line on
-  stdout. AI agents parse it directly with `serde_json::from_str` per
-  line.
-- `--output json` returns a single pretty-printed document; use it for
-  one-shot inspection.
-- `--output text` is the human summary; do not parse it.
-- Errors print a separate envelope on **stderr** with non-zero exit:
-  `{"schema_version": 1, "error": {"code": "<snake_case>", "message": "..."}}`.
-  Always branch on `error.code`; the message is human prose.
+The default `--output` is `jsonl`, one compact envelope per line on stdout;
+`--output json` (or `--json`) is a single pretty document; `--output text` is a
+human summary and not stable enough to parse. Errors are a separate envelope on
+**stderr** with a non-zero exit:
+`{"schema_version": 1, "error": {"code": "<snake_case>", "message": "..."}}`,
+often with `invalid_value` and `expected` fields. The `code` is the stable
+part; the message is prose that may change between versions. A
+`schema_version` you do not recognise means the data shape may have moved under
+you, so treat what you parse from it as unverified.
 
-If `schema_version` is a value you do not recognise, refuse to proceed
-— the data shape may have changed under you.
+## The cycle: create → supervise → merge
 
-## The verbs you will use most
+`run create --kind <kind> --title "..."` with the brief as `--task "<inline>"`
+or `--prompt-file <path>` (exactly one of the two; there is no `--prompt`
+flag) creates the run, materializes the worktree, launches the worker, and
+starts the supervisor. Its `data` payload carries `run_id`, `node_id`, `kind`,
+`lifecycle`, and the worktree location. The run's progress starts at
+`status: pending`.
 
-- `taskfleet version` — binary version, commit, schema versions,
-  and the bundled skill catalog (see §17 of the design doc). Run this
-  first when you discover the binary; it tells you whether the skill
-  you loaded matches the binary on disk.
-- `taskfleet skill list` / `skill print <name>` / `skill install <name>`
-  — discover, stream, and persist the operating manual for each workflow.
-  `skill list --json` declares the supported runtimes and layouts. Install
-  defaults to all three (`claude`, `pi`, and `codex`); select one with
-  `--agent`, preserve native layouts under another base with `--target`, and
-  preview the complete no-write plan with `--dry-run`. Existing files are
-  never replaced unless you pass explicit `--force`.
-- `taskfleet run create --kind <kind> --title "..." --task "..."`
-  — start a new run (kinds: `spinoff`, `research`, `technical-decision`,
-  `fan-out`). The brief is `--task "<inline>"` or, for a long brief,
-  `--prompt-file <path>` — there is no `--prompt` flag. See the
-  `taskfleet-spawn-spinoff` skill for the spinoff specifics.
-- `taskfleet run list` / `run show <id>` — inspect runs. See the
-  `taskfleet-run-overview` skill for payload shapes.
-- `taskfleet run merge <run-id> [--source <branch>] [--report-file <path>]`
-  — the closing step for a worktree run: rebase + merge the branch back
-  to its source, submit the terminal `node report` (stamped
-  `via: "explicit-merge"`), and let the supervisor tear the worktree down.
-  One call replaces the old `/worktree-merge` + `node report` pair. See
-  the `worktree-merge` skill.
-- `taskfleet supervise <run-id>` — the long-lived per-run
-  supervisor process; `run reattach` invokes it. Most agents do not call
-  this directly.
-- `taskfleet session maintain --output json` — bounded, idempotent timer
-  maintenance for opt-in persistent worker sessions. It uses only each run's
-  recorded socket/server/window/pane ownership, never `$TMUX` or cwd, and does
-  not start a missing tmux server.
-- `taskfleet node list` / `node show <id>` / `node report` —
-  per-unit detail inside a run, and the structured terminal report a
-  worker submits to end its run. A worktree worker usually submits this
-  report *as part of* `run merge` (its closing step) rather than calling
-  `node report` directly; a direct `node report` is for a blocked
-  outcome with nothing to merge. Node ids have the form
-  `n-` followed by 4–10 ASCII digits (e.g. `n-0001`, the first node of
-  every run); the binary rejects any other shape. Never invent a slug
-  like `n-driver-001` — discover the id from `run create`'s `node_id`
-  field or from `node list`.
+The supervisor then records what it is told: worker exit, telemetry, reports.
+`run show <id>` reads the current state; `run wait <id>...` blocks until runs
+reach a terminal state and is the right tool instead of a hand-rolled polling
+loop. `event tail <id> --follow` streams the event log for live monitoring.
 
-## Canonical cycle: create → supervise → collect reports
+The worker closes with `run merge <run-id> [--source <branch>]
+[--report-file <path>]`, which rebases and merges the branch into its source,
+submits the terminal report stamped `via: "explicit-merge"`, and lets the
+supervisor tear the worktree down. This one call is the **only success truth**
+in taskfleet: the supervisor never infers "done" from a merged-looking branch,
+an idle pane, or a clean exit. A worker that exits cleanly without calling
+`run merge` leaves the run non-terminal with `attention_required: true`; the
+operator finishes it with `run salvage` or discards it. A direct `node report`
+is for a blocked outcome with nothing to merge. The `worktree-merge` skill
+covers the closing step; `taskfleet-run-overview` covers reading run state and
+what each state calls for.
 
-The flow every workflow follows:
+Inside a worker's worktree, `run show --current` resolves the exact owning run
+from durable ownership metadata. A branch name contains a run-id-looking
+fragment, but it is not authoritative and may be ambiguous.
 
-1. **Create**: `taskfleet run create --kind <kind> --title
-   "<title>" --task "<the brief>"` returns a `data` payload with
-   `run_id`, `kind`, and `lifecycle` (the kind's classification —
-   always `autonomous` for the surviving kinds, not a progress value).
-   The run's progress starts at `status: pending`, read later via `run show`.
-2. **Supervise**: a background supervisor process picks the run up and
-   drives the worker agent(s). State transitions land in the run's
-   event log; `run show <id>` reads them.
-3. **Collect**: when the worker finishes, it submits a structured
-   terminal report describing the outcome (success, failures, spin-off
-   proposals, discussion items, wrap-up recommendations) — usually as
-   part of its `run merge` closing step, which merges the branch and
-   submits the report in one call. The orchestrator reads these via
-   `node show`.
+## `status` and `lifecycle` are different fields
+
+`status` is progress: `pending` / `running` / `blocked` / `done` / `failed` /
+`cancelled`, with the last three terminal. Read it from `run show` (top-level
+`data.status` or `data.manifest.status`) to tell whether work is finished.
+
+`lifecycle` is the run's supervision category, fixed at creation:
+`autonomous` (the default; the supervisor adjudicates the worker's exit) or
+`interactive` (set by `run create --interactive`; the supervisor never
+auto-terminalizes and waits for an explicit `run merge` or `run cancel`
+because a human owns the lifecycle). It never transitions. An agent that once
+polled `lifecycle` for a terminal value hung forever because the field never
+matches; that is why this distinction is spelled out.
 
 ## Worker profile routing
 
-Taskfleet keeps profile ownership in two layers:
+Profile ownership sits in two layers. User configuration defines executable
+profiles under `[profiles.<name>]` in the taskfleet home's `config.toml`,
+including harness and argv. Repository configuration may select names but
+cannot define executables. Bundled workflow skills own the routing decision and
+pass `--profile <name>` to `run create`. Issue briefs describe capability and
+risk; they never name a concrete model or command, because the user's config
+decides what a name means on this machine.
 
-- User configuration owns executable definitions under `[profiles.<name>]`, including
-  harnesses and command argv. Repository configuration may select names but cannot
-  define executable commands.
-- Bundled workflow skills own the routing matrix and pass `--profile <name>` to
-  `run create`. Issue briefs describe capability and risk; they never hard-code a
-  concrete model or executable command.
-
-Use this default matrix unless the caller explicitly selects or escalates a profile:
+Default routing, unless the caller explicitly selects or escalates:
 
 | Work | Recommended profile |
 | --- | --- |
@@ -118,48 +120,36 @@ Use this default matrix unless the caller explicitly selects or escalates a prof
 | Bounded implementation from an accepted design | `implementation` |
 | Mechanical, strongly tested refactor or documentation | `lightweight` |
 
-Uncertain, mixed, security/privacy-sensitive, destructive, concurrency-sensitive,
-hard-to-rollback, or weakly tested work routes to `capable`. An explicit caller
-profile wins; escalation is allowed, silent downgrade is not.
+Uncertain, mixed, security- or privacy-sensitive, destructive,
+concurrency-sensitive, hard-to-roll-back, or weakly tested work goes to
+`capable`. An explicit caller profile wins and may be escalated; a silent
+downgrade takes a decision the caller already made.
 
-For a workflow-recommended profile (not an explicit caller selector), resolve
-compatibility **before mutation** with the complete intended `run create ... --dry-run
---profile <recommended>` command and branch only on the machine-readable error code.
-If it returns `unknown_profile`, retry the dry-run with
-`--profile capable`. If `capable` is also unknown and the error's `expected` list is
-empty (no executable profiles are configured), retry the dry-run with no `--profile`
-to preserve the legacy built-in behavior. If profiles exist but neither requested nor
-`capable` is defined, stop with the structured error; never choose an arbitrary profile.
-After a successful dry-run, make the real create call with exactly the selector that
-passed. Child spawns are the one preflight exception: `--parent-run-id` cannot be
-truthfully dry-run, so omit both parent flags for profile preflight, restore them only
-on the idempotency-keyed real call, and let that call validate the relationship. This
-keeps installations with only `capable`, and pre-profile installations, working
-predictably without discovering profile incompatibility after state mutation.
+Profile names are user-owned, so an installation may not define the one a
+workflow recommends. Finding that out after `run create` has mutated state is
+expensive (a half-created run to clean up), so check first with the complete
+intended command plus `--dry-run` and branch on the error code. `unknown_profile`
+for a workflow-recommended name means try `capable`; if that is also unknown and
+the error's `expected` list is empty, the installation predates profiles and the
+real call omits `--profile`. If profiles exist but neither is defined, surface
+the structured error rather than pick an arbitrary one, and an unknown profile
+the caller chose explicitly is theirs to fix. Then make the real call with
+exactly the selector whose dry-run passed. Child spawns are the one exception:
+`--parent-run-id` / `--parent-node-id` cannot be dry-run truthfully, so preflight
+without the parent flags and restore them on the real, idempotency-keyed call.
 
-Profile choice is not correctness evidence. Start with primary sources,
-source-grounded scenarios, and deterministic tests. For a bounded implementation,
-the default review ceiling is one focused final-diff review covering all relevant
-concerns. Panels or repeated reviews require a concrete risk or unresolved-trade-off
-rationale; they are not workflow defaults.
+Profile choice is not correctness evidence. Primary sources, source-grounded
+scenarios, and deterministic tests are. For a bounded implementation one
+focused final-diff review is the default ceiling; panels or repeated reviews
+need a concrete risk or unresolved trade-off to justify their cost.
 
-Two distinct fields, two distinct meanings — do not conflate them:
+## Persistent worker sessions (opt-in)
 
-- **`lifecycle`** carries the run's *classification*, derived from its
-  kind and fixed for the run's whole life. Every surviving kind (spinoff,
-  fan-out, research, technical-decision) is `autonomous` — it runs to
-  completion unattended. It is **not** a progress signal: a brand-new run
-  already reads `lifecycle: autonomous`.
-- **`status`** carries the run's *progress* and is the field to read
-  when deciding whether a run is finished: `pending` / `running` /
-  `blocked` / `done` / `failed` / `cancelled`. `done`, `failed`, and
-  `cancelled` are terminal. Read `status` (via `run show <id>` →
-  `data.manifest.status`), never `lifecycle`, to tell whether work is
-  complete.
-
-## Persistent autonomous-worker session (opt-in)
-
-User config may select one named session and bounded inert completed displays:
+By default autonomous workers spawn a tmux window in the current session and
+the window disappears at teardown; `--headless` or `--tmux-session <name>`
+place it in a detached session instead, which matters on macOS where a batch
+of more than about four simultaneous spawns can exhaust pseudo-terminals. A
+user may instead opt into one named persistent session:
 
 ```toml
 [tmux]
@@ -169,48 +159,45 @@ completed_window_ttl = "24h"
 completed_window_max = 20
 ```
 
-With no `[tmux]` section behavior is unchanged. `--tmux-session NAME` wins over
-that default and selects a **session on the invocation's actual tmux socket**,
-not a socket; `--headless` still explicitly selects `headless`. Explicit
-interactive runs stay in the current session unless the caller names one.
-Completed Pi evidence is archived before the worker pane is stopped and replaced
-by a dead, inert display whose cwd is the surviving source repository. Schedule
-`taskfleet session maintain --output json` (for example every five minutes)
-from a bounded noninteractive timer with `HOME`, `TASKFLEET_HOME`, and `PATH`
-set explicitly. The strictest recorded count limit wins within one exact
-server/session generation. Expiry removes only the owned pane; a final inert
-pane remains as the persistent session anchor. Pane expiry never removes run
-events, transcripts, reports, or preserved Git work.
+With this, a completed Pi worker's evidence (transcript, pane history, report)
+is archived first and the pane is replaced by an inert display whose cwd is the
+source repository, so a human can still look at what happened. Expiry of those
+displays is done by `taskfleet session maintain`, meant to run from a bounded
+noninteractive timer with `HOME`, `TASKFLEET_HOME`, and `PATH` set explicitly.
+It acts only on panes taskfleet recorded as its own, never starts a missing
+tmux server, and never removes run events, transcripts, reports, or preserved
+git work. An explicit `--tmux-session` still wins over the configured default,
+and it names a session on the invocation's socket, not a socket.
 
-## When to use which skill
+## Which skill to open next
 
-- **`taskfleet-overview` (this one)** — sanity-check vocabulary,
-  confirm the canonical cycle, locate the right specific skill.
-- **`taskfleet-run-overview`** — when you need to read `run list` / `run show`
-  output and reason about a run's state.
-- **`taskfleet-spawn-spinoff`** — when the user wants to spawn one focused
-  autonomous task without interactive review.
+- **`taskfleet-run-overview`** — reading `run list` / `run show` / `run wait`
+  output and deciding whether to wait, salvage, cancel, or discard.
+- **`worktree`** — the router for a free-form "do this in a worktree" request;
+  it delegates to `worktree-spinoff`, `worktree-research`,
+  `worktree-technical-decision`, `worktree-bug-analysis`, or `fan-out`.
+- **`worktree-spinoff`** / **`taskfleet-spawn-spinoff`** — spawning one
+  autonomous task.
+- **`worktree-merge`** — the closing step of any worktree run.
+- **`stint-start`** / **`stint-handoff`** — running a bounded work session as
+  an orchestrator.
 
-If the user asks for behavior these skills do not cover (fan-out,
-research, technical-decision), call `--help` first and report back rather
-than guessing.
+`taskfleet skill list` shows the bundled catalog and `skill print <name>`
+streams any of them. For anything these skills do not cover, the binary's
+`--help` is more reliable than a guess.
 
-## Install or upgrade `taskfleet`
+## Skill and binary versions
 
-This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
-first invocation in a session, run
-`taskfleet version --output json`, parse the JSON, and read
-`.data.version`. Compare it to `{{CLI_VERSION}}`:
-
-- **Missing**: tell the user to install through a published distribution channel
-  outside this repository workflow, then stop.
-
-- **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
-  `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/taskfleet/taskfleet` or
-  re-run the shell installer). Stop and wait — schema / CLI surface may have changed.
-- **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
-  stale and stop. Refreshing installed bundled instructions is published-tool
-  maintenance outside repository work; never run `skill install` as part of
-  this workflow.
-- **Equal**: proceed normally.
+This skill was rendered for `taskfleet {{CLI_VERSION}}`. Bundled skills are
+the worker's operating manual and are validated in CI against the exact binary
+they ship with, so a matching version means the commands here parse. When the
+installed binary differs from `{{CLI_VERSION}}` (read `.data.version` from
+`taskfleet version --json`), a flag or field described here may not exist, and
+the help text of the installed binary outranks this document. Tell the user
+about the mismatch; the remedy is upgrading the binary through the channel
+they installed it from (`brew upgrade jarimustonen/taskfleet/taskfleet` or the
+shell installer) or refreshing the installed skills, and both are the user's
+tool maintenance rather than something to do silently inside another task. A
+missing binary is the same: say so and let the user install it. Inside the
+taskfleet repository itself, never touch the installed binary or skills at
+all; maintained `HEAD` and the installed release are allowed to differ.

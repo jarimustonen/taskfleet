@@ -273,11 +273,13 @@ merge`, or supervisor cleanup. What follows is what each one protects.
 4. **Progress polls `status`, never `lifecycle`.** `Lifecycle` is
    `Autonomous | Interactive`, set once at `run create` from the explicit
    `--interactive` flag and never transitioning; it is not derived from the
-   kind. `Status` is `Pending | Running | Done | Failed | Cancelled`. A skill
-   that polls `lifecycle` for a terminal value hangs forever, which was a real
-   bug (`skill-progress-polling-wrong-field`). In interactive mode the
-   supervisor never auto-terminalizes or tears down from a dead pid or worker
-   exit; it waits for an explicit `run merge` or `run cancel`.
+   kind. `Status` is `Pending | Running | Blocked | Done | Failed | Cancelled`;
+   nothing produces `Blocked` since the discussion cut, but the variant stays
+   so historic runs still decode. A skill that polls `lifecycle` for a
+   terminal value hangs forever, which was a real bug
+   (`skill-progress-polling-wrong-field`). In interactive mode the supervisor
+   never auto-terminalizes or tears down from a dead pid or worker exit; it
+   waits for an explicit `run merge` or `run cancel`.
 
 5. **The supervisor is the only teardown actor, and unmerged work survives
    teardown** (`crates/taskfleet/src/supervise/cleanup.rs`). `merge.sh` does

@@ -1,6 +1,6 @@
 ---
 name: taskfleet-run-overview
-description: Read the output of `taskfleet run list` and `taskfleet run show` to inspect the state of orchestrated agent workflows (worktrees, fan-outs, spinoffs). Use when asked about run status, when triaging an in-flight orchestration, or before deciding whether to spawn, resume, or abort work.
+description: Read the output of `taskfleet run list`, `taskfleet run show`, and `taskfleet run wait` to learn the true state of orchestrated agent runs (spinoffs, research, technical decisions, fan-outs) and what each state calls for. Use when asked about run status, when triaging an in-flight or stuck run, or before deciding whether to spawn, wait, salvage, cancel, or discard work.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -8,188 +8,166 @@ schema_version: 1
 
 # taskfleet-run-overview
 
-`taskfleet` is the state owner for agent workflows: worktrees,
-fan-outs, orchestrations, and spinoffs. Every workflow is a **run** with
-canonical state under `~/.taskfleet/runs/<run-id>/`. These commands
-expose that state:
+`taskfleet` owns the state of agent runs. Every run lives under
+`~/.taskfleet/runs/<run-id>/` as an append-only event log plus projections,
+and the read verbs expose that state so you never have to reconstruct it from
+git, tmux, or a process table. The point of reading it is to answer honestly
+what a run is doing, whether its work has landed in the source branch, and
+what, if anything, somebody has to do next.
 
-- `taskfleet run list` — every run, newest first; add `--repo <path>` (including
-  `--repo .` from a subdirectory or linked worktree) to select runs by their
-  recorded git repository identity
-- `taskfleet run show <run-id>` — one run, full detail (one-shot)
-- `taskfleet run wait <run-id> …` — the blocking counterpart to
-  `run show`: poll one or more runs with sane backoff until they reach a
-  terminal state (`done | failed | cancelled`), then emit a structured
-  summary. Use this instead of hand-rolling a `while … run show … case`
-  loop (`--any` returns on the first terminal run; `--timeout <dur>` and
-  `--fail-on-error` shape the exit code).
+Three verbs cover it:
 
-Pass `--output json` for one structured JSON envelope, or `--output jsonl`
-for a line-oriented stream. Use `--output text` only when a human is reading
-the terminal.
+- `taskfleet run list` — every run, newest first by `created_at`. `--status`
+  and `--kind` filter on exact values. `--repo <path>` (including `--repo .`
+  from a subdirectory or a linked worktree) keeps the runs whose recorded
+  source repository is the same git repository: main and linked worktrees
+  match, an independent repository nested inside a checkout does not, and a
+  run with no recorded repository never matches.
+- `taskfleet run show <run-id>` — one run in full. Inside a worker worktree,
+  `run show --current` resolves the owning run from recorded ownership; the
+  run-id fragment in a branch name is not authoritative and can be ambiguous.
+- `taskfleet run wait <run-id>…` — block until the listed runs settle, then
+  emit one summary. Use it instead of a hand-rolled `run show` poll loop: the
+  loop in the binary already handles backoff, the stuck shapes described
+  below, and a default `6h` ceiling so a wedged run cannot block you forever.
 
-## Envelope
+Use `--output json` for one envelope or `--output jsonl` for one envelope per
+line. `--output text` is for a human at a terminal; its wording is not a
+contract.
 
-Every success looks like:
+## The envelope
+
+```json
+{ "schema_version": 1, "data": { ... }, "warnings": ["..."] }
+```
+
+`schema_version` is the envelope version this skill was written for. If you
+see another number, the payload shapes below may no longer hold; tell the user
+the skill and binary disagree rather than reading fields on faith. `warnings`
+carries advisory conditions, such as a telemetry scan that could not complete;
+pass them on, they never alter the canonical fields.
+
+Failures print the same envelope shape with an `error` object to stderr and
+exit non-zero. Branch on `error.code`, never on the prose message:
+`run_not_found`, `node_not_found`, `invalid_value` for a bad argument,
+`corrupt_state` for a state file the binary cannot read (including a state
+schema newer than it supports; `expected.supported_schema_versions` lists what
+it can read), and `corrupt_run` for a run directory that has been tampered
+with.
+
+## What a run row says
+
+`run list` returns `data.runs[]`, and `run show` places the same row flat at
+the top of `data`, so `data.status`, `data.supervisor`, and the rest read
+identically from both verbs.
 
 ```json
 {
-  "schema_version": 1,
-  "data": { ... },
-  "warnings": ["..."]
+  "run_id": "01HZ...",
+  "kind": "spinoff | research | technical-decision | fan-out",
+  "lifecycle": "autonomous | interactive",
+  "status": "pending | running | done | failed | cancelled",
+  "title": "...",
+  "created_at": "2026-06-12T10:30:00Z",
+  "source_repo": "/path/recorded-at-create | null",
+  "source_branch": "main | null",
+  "worktree_path": "/path/to/worker/worktree | null",
+  "harness": "pi | claude | null",
+  "node_count": 1,
+  "supervisor": { "pid": 65745, "state": "alive", "alive": true },
+  "stalled": false,
+  "stillborn": false,
+  "attention_required": false,
+  "awaiting_input": false,
+  "open_discussion_count": 0,
+  "telemetry_available": true,
+  "telemetry_counts": { ... }
 }
 ```
 
-`schema_version` is the envelope version. If you see a number you do not
-recognise, refuse to proceed and report the mismatch — the state shape
-may have changed under you. `warnings` is optional; surface it to the
-user when present.
+**`status` is the only progress field.** `done`, `failed`, and `cancelled` are
+terminal and frozen; `pending` and `running` are live. `lifecycle` looks like
+a progress field and is not. It is recorded once, at `run create`, and says
+whether the run is `autonomous` (the supervisor adjudicates the worker's exit
+and tears down) or `interactive` (created with `--interactive`; the supervisor
+never terminalizes it on its own and waits for an explicit `run merge` or
+`run cancel`, so it can sit non-terminal indefinitely by design). An agent
+once polled `lifecycle` for `completed` and hung forever. Read `lifecycle` to
+know how a run is driven and `status` to know whether it is finished.
 
-## `run list` payload
+**`supervisor.state`** is the liveness of the per-run supervisor process.
+`alive` is running. `dead` means a pid was recorded and is no longer that
+process: the run is orphaned and `run reattach` revives it. `not-recorded`
+means the supervisor never launched or was cleanly torn down after the run
+finished; on a `pending` run with no nodes it is the stillborn signature, not a
+finished run. `unreadable` means the pid file exists but cannot be parsed, so
+nothing is proven either way. The boolean `alive` is kept for old consumers
+and collapses the last three states, which is exactly the distinction a
+recovery decision needs, so read `state`.
 
-`data.runs` is an array of summary objects. Sort order is newest-first
-by `created_at` (RFC3339).
+**Three ways a live run can be stuck.** Each is a typed verdict the binary
+computes so you do not have to infer it from pids, panes, or branches, and
+each has a different remedy:
 
-```json
-{
-  "data": {
-    "runs": [
-      {
-        "run_id": "01HZ...",
-        "kind": "spinoff | research | technical-decision | fan-out",
-        "lifecycle": "autonomous | interactive",
-        "status": "pending | running | done | failed | cancelled",
-        "source_repo": "/path/recorded-at-create | null",
-        "created_at": "2026-06-12T10:30:00Z",
-        "updated_at": "2026-06-12T10:45:12Z"
-      }
-    ]
-  }
-}
-```
+- `stalled` — the supervisor is confirmed dead and nothing can roll the run
+  up. `stillborn` additionally means it died before creating any worker node.
+  Remedy: `run reattach <run-id>` to revive the supervisor, or `run cancel`.
+- `attention_required` — the worker exited cleanly but skipped `run merge`,
+  so its node never went terminal. The supervisor may be perfectly healthy,
+  which is why this is not a stall and `run reattach` does nothing for it.
+  The `attention` object carries the worktree path, worker pid, pending age,
+  and a `resume_hint`. Remedy: `run salvage <run-id>`, which verifies the old
+  worker is gone (or fences it when you pass `--fence`) and drives `run merge`
+  from the preserved worktree; or `run cancel`. When a run matches both this
+  and a stall shape, attention wins and the stall flags are cleared, because
+  the manual finish is the right fix.
+- `awaiting_input` — the worker is alive and has asked for a human decision.
+  `awaiting_input_detail.discussion_items[]` holds the questions with their
+  options and recommended defaults. This is the one stuck shape whose answer
+  belongs to a person, not to a command.
 
-Fields that drive decisions:
+## What `run show` adds
 
-- `kind` — the run's **topology**; picks the right follow-up command (a
-  `fan-out` resumes differently from a single `spinoff`).
-- `lifecycle` — the run's **how-run category**, set explicitly at
-  `run create` from the `--interactive` flag (NOT derived from `kind`).
-  `autonomous` (the default — fire-and-forget; the supervisor adjudicates
-  exit and tears down) or `interactive` (human-driven — the supervisor
-  never auto-terminalizes; it waits for an explicit `run merge` /
-  `run cancel`, so an interactive run can sit non-terminal indefinitely by
-  design). It is NOT a progress state and never transitions. Read it to
-  know *how* a run is driven; read `status` for whether it is *done*.
-- `status` — the **terminal-progress field**. Values are `pending`,
-  `running`, `done`, `failed`, `cancelled`. **Terminal states are
-  `done | failed | cancelled`** — once any of those is set the run is
-  settled (the reducer freezes further status changes). Branch on this
-  to detect completion.
-- `source_repo` — the repository path recorded at creation, or `null` for a
-  legacy/skeleton run where identity was not recorded. `run list --repo <path>`
-  compares actual git common-dir identity, so main and linked worktrees match
-  while an independent nested repository does not.
+Under the flat row, `data.manifest` carries the recorded facts
+(`schema_version`, `updated_at`, `source_repo`, `source_branch`,
+`worktree_root`, `harness`, `selection`, `parent_run_id`, `parent_node_id`,
+and the same `status` as the flat row), `data.counts.nodes` the node count,
+and `data.telemetry[]` per-node advisory activity that never changes status.
+The computed fields are the ones decisions turn on:
 
-## `run show` payload
-
-`run show`'s `data` carries the **same flat row a `run list` row does**
-at the top level (`run_id`, `kind`, `status`, `title`, `created_at`,
-`node_count`, `supervisor`, `stalled`) — so you can address these the
-same way across both verbs. `data.manifest` then extends that row with
-full detail (`lifecycle`, `updated_at`, `source_*`, `parent_*`,
-`open_discussions`, `pending_spinoffs`); `data.counts` carries
-denormalised counters; `data.supervisor` is the probed supervisor
-liveness; `landed`/`landed_method`/`recoverable_work`/`preserved_work`/
-`false_failed` are `run show`-only computed detail. `report` is the default worker's terminal
-report for a **single-worker** run and is `null` before that worker reports or
-when the run has multiple nodes. Some kinds add kind-specific fields.
-
-`data.false_failed` (present only when set) flags a **suspected
-false-failed run**: the run is `failed` yet git confirms the worker's
-content is already in source (`landed: true`, `landed_method:
-"git-verified"`) with no `run merge` on record — the raw-git
-self-merge-then-death case. It is a **non-mutating hint, never an
-auto-success**: the run stays `failed`. Its `resume_hint` steers you to
-`taskfleet run salvage <id>`, which records the skipped merge
-through the real `run merge` machinery (idempotent against the
-already-integrated content) and terminalizes the run to `done` honestly.
-Do NOT treat a `false_failed` run as done — run salvage first. Never
-finish a run with a raw `git merge`; always use `run merge`/`run
-salvage`.
-
-`data.preserved_work` is always an array. It inventories current retained
-worktrees and branches for failed/cancelled nodes, including cleanliness,
-unmerged commit count, and whether Git verification succeeded. An empty array
-means no retained resources were observed. A non-empty row is not a success or
-salvage signal: inspect it, choose `run salvage` only for an eligible failed run
-whose work should land, manually copy anything needed from a cancelled run, or
-explicitly dispose of reviewed remnants with:
-
-```bash
-taskfleet run discard <run-id> --reason "superseded" --dry-run
-# For a selected dirty row:
-taskfleet run discard <run-id> --node n-0002 --reason "superseded" --force
-```
-
-Use `--dry-run --output json` first. More than one retained node requires
-`--node`. Dirty work requires `--force`; unverifiable ownership or Git state is
-always refused. Discard records authorization before deletion, leaves the run
-history/status/`landed` truth unchanged. An interrupted/incomplete authorization
-is safely retryable only with the same reason and force inputs; a completed
-retry is a no-op. Never reinterpret repeated `run cancel` as discard.
-
-`data.supervisor.state` is the field to branch on — it distinguishes the
-conditions the legacy `alive` boolean collapses: `alive` (running),
-`dead` (started then died / recycled — orphaned, recover with `run
-reattach`), `not-recorded` (never launched or cleanly torn down),
-`unreadable` (pid file present but can't be parsed — investigate), and
-`unknown` (not probed; you won't see it on `run show`/`run list`, which
-always probe). `data.supervisor.alive` is retained for back-compat and
-equals `state == "alive"` — prefer `state`, since only it tells
-"orphaned" from "finished" from "I/O error".
-
-```json
-{
-  "data": {
-    "run_id": "01HZ...",
-    "kind": "fan-out",
-    "status": "running",
-    "title": "...",
-    "created_at": "...",
-    "node_count": 10,
-    "supervisor": { "pid": 65745, "state": "alive", "alive": true },
-    "stalled": false,
-    "manifest": {
-      "schema_version": 1,
-      "run_id": "01HZ...",
-      "kind": "fan-out",
-      "lifecycle": "autonomous",
-      "title": "...",
-      "status": "running",
-      "created_at": "...",
-      "updated_at": "...",
-      "node_count": 10,
-      "open_discussions": 0,
-      "pending_spinoffs": 0
-    },
-    "counts": { "nodes": 10 },
-    "report": null
-  }
-}
-```
-
-Both `data.status` (flat) and `data.manifest.status` resolve to the same
-value; the flat path matches `run list`, the nested one is kept for
-back-compat.
-
-## Reading a worker report back
-
-A terminal worker report is persisted on the node projection as
-`last_report`. The read surface avoids needing that projection detail:
-`run show` exposes the default worker's report at `data.report` for a
-single-worker run. For a multi-node run it is `null`, so inspect each worker
-with `node show`, which keeps `data.last_report` and also exposes an identical
-`data.report` alias.
+- `landed` / `landed_method` — whether the worker's committed content is in
+  the source branch. `git-verified` means patch-id equivalence against the
+  current source tip, which survives a rebase on the caller's side;
+  `report-marker` means only the recorded merge says so; `unverified` means
+  neither could be established. Trust this over your own `git merge-base`
+  reasoning.
+- `report` — the terminal worker report, present only for a single-node run
+  and only once its worker has reported. A fan-out has no single report; read
+  each worker with `node show <run-id> <node-id>`, whose `data.report` and
+  `data.last_report` carry the same value. `run wait` folds only a report's
+  `summary` in; the full `discussion_items`, `spinoff_proposals`, and
+  `wrap_up_recommendations` arrays are on `run show` and `node show`.
+- `recoverable_work` — on a `failed` run, the block the supervisor stamps when
+  the dead worker's branch has commits ahead of source, so salvageable work is
+  visible without running `git log` yourself.
+- `false_failed` — present only when the run is `failed`, git verifies its
+  content is in source, and no `run merge` is on record: the worker merged
+  with raw git and then died. It is a hint, never an auto-success; the run
+  stays `failed` until `run salvage <run-id>` records the merge through the
+  real merge machinery (idempotent against content already integrated) and
+  terminalizes it to `done`. Finishing a run with raw `git merge` is what
+  creates this state: it bypasses the recorded merge transaction, so the
+  run's own history cannot tell that the work landed.
+- `preserved_work[]` — always present; the current inventory of worktrees and
+  branches still on disk for terminal nodes, with `cleanliness`,
+  `unmerged_commits`, `verification`, and a `reason`. They exist because
+  teardown deliberately keeps unmerged, uncommitted, or unverifiable work
+  instead of deleting it, so a cancel or a crash never silently loses an
+  agent's edits. An empty array means nothing is retained. A non-empty row is
+  not a success signal and is not disposable just because the run was
+  cancelled.
+- `evidence` — archived Pi transcript and pane artifacts for a single-node
+  run's worker, with an explicit `pending | failed | complete` status.
 
 ```bash
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
@@ -200,81 +178,79 @@ taskfleet node show "$run_id" n-0001 --output json |
   jq '.data.report // .data.last_report'
 ```
 
-Do not apply `run show` paths to `run wait`: waiting can cover several run
-ids, so its outcomes live in `data.runs[]`. Read `data.outcome` first:
-`condition-met` means the requested `all`/`any` condition was met, while
-`timed-out` means the timeout elapsed first. This is authoritative even when a
-pipeline loses the process exit code. A valid wait probe is:
+## What `run wait` returns
+
+Waiting can cover several ids, so its shape differs from `run show`:
+`data.outcome` is `condition-met` or `timed-out`, and per-run results are in
+`data.runs[]` (`run_id`, `status`, `merged`, `landed`, `landed_method`,
+`stalled`, `attention_required`, `awaiting_input`, `preserved_work`, plus
+`summary`, `error`, `attention`, and `recoverable_work` when present). There
+is no `data.status`; read the runs array. Read `outcome` first: `timed-out` is
+not completion, and the field is authoritative even when a pipeline swallowed
+the exit code. Exit codes are `0` condition met, `1` usage or unknown run,
+`2` timeout, and `3` under `--fail-on-error` when a settled run did not finish
+`done`.
+
+A run *settles* the wait when it goes terminal or when it can no longer
+progress on its own: stalled, attention-required, or awaiting input past a
+short grace. A settled run can therefore still be `pending` or `running`; that
+is the wait telling you it needs a hand, not a defect. `--any` returns on the
+first settled run; `--all` (the default) waits for every one.
 
 ```bash
 taskfleet run wait "$run_id" --output json |
   jq '.data | {outcome, runs: [.runs[] | {run_id, status, summary}]}'
 ```
 
-Thus `.data.status` is intentionally null on a `run wait` response. `run wait`
-folds in a summary; use `run show` or `node show` to read the full
-`discussion_items`, `spinoff_proposals`, and `wrap_up_recommendations` arrays.
+## Acting on what you read
 
-## Decision rules
+Reading is free. The follow-up verbs differ in what they put at risk, and that,
+rather than their category, decides how much care each deserves.
 
-1. **Triaging "is this still going?"** — read `data.manifest.status`.
-   Terminal values (`done | failed | cancelled`) mean the run is settled
-   and the supervisor has either already torn it down or is about to.
-   Anything else (`pending | running`) is still live.
-2. **Waiting for completion** — use `taskfleet run wait <id> --output json`
-   and branch first on `.data.outcome`; never treat `timed-out` as completion.
-   Then inspect `.data.runs[]`. Do NOT poll `lifecycle` — it is the category,
-   not a progress field, and never transitions.
-3. **Deciding whether to spawn more work** — list runs first. If a
-   `fan-out` is already `running` on the same scope, do not start a
-   second; resume or wait.
-4. **Surfacing problems to the user** — when `status == "failed"`, the
-   event log has the cause; quote it instead of guessing.
-5. **Schema drift** — if `schema_version` does not match what this skill
-   describes, stop and tell the user the skill is out of date with the
-   installed binary.
-6. **Unblocking ONE stuck fan-out child** — cancel a whole run with
-   `taskfleet run cancel <run-id>`; cancel a single live node with
-   `taskfleet run cancel <run-id> --node <node-id>`. The per-node form
-   is branch-preserving (source-relative teardown — a child's committed
-   work is never force-deleted) and does NOT terminalize the run while
-   other nodes are still live: the supervisor rolls the run up
-   (`done | failed | cancelled`) only once every node has settled. Both
-   forms are idempotent — a duplicate cancel of an already-terminal
-   node/run reports it settled rather than erroring.
-7. **Terminal retained work** — inspect `data.preserved_work` even after
-   `status` is terminal. If non-empty, review the exact node/path before choosing
-   salvage, manual harvest, or explicit `run discard --reason ...`; never clean
-   it with raw Git or infer that cancellation made it disposable.
+- `run cancel <run-id>` stops a run and preserves both committed and
+  uncommitted work. With `--node <id>` it cancels one live fan-out child,
+  preserving its branch, while the run stays live until every sibling settles.
+  Both forms are idempotent; a cancel of something already terminal reports
+  it settled. Cancelling costs nothing but the worker's remaining time.
+- `run reattach` only restarts a supervisor. `run salvage` changes the source
+  branch, which is the sanctioned way to land work; `--dry-run` shows what it
+  would do first. Never finish a run with raw git in its place.
+- `run discard <run-id> --reason "..."` permanently deletes one failed or
+  cancelled node's retained worktree and branch after recording who
+  authorized it and why. It is the only follow-up here that destroys work:
+  verified dirty work needs `--force`, more than one retained node needs
+  `--node`, and unverifiable ownership or git state is refused outright. Read
+  the `preserved_work` row, run `--dry-run --output json`, and decide whether
+  anything should be harvested by hand before you commit to it. Discard leaves
+  the run's status and `landed` truth unchanged, and a repeated `run cancel`
+  is not a discard.
 
-## Errors
-
-Failures print a JSON envelope to **stderr** with non-zero exit:
-
-```json
-{"schema_version": 1, "error": {"code": "<code>", "message": "..."}}
+```bash
+taskfleet run discard <run-id> --reason "superseded" --dry-run
+# For a selected dirty row:
+taskfleet run discard <run-id> --node n-0002 --reason "superseded" --force
 ```
 
-Common codes: `run_not_found`, `state_unreadable`, `schema_mismatch`.
-Always read the `code`; the `message` is human prose and may change.
+Before spawning more work, list what is already running: a second fan-out on
+the same scope competes with the first for the same files, so resume or wait
+instead. When a run is `failed`, its cause is in the event log
+(`taskfleet event tail <run-id>`); quote it rather than guessing.
 
 ## Install or upgrade `taskfleet`
 
 This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
 first invocation in a session, run
-`taskfleet version --output json`, parse the JSON, and read
-`.data.version`. Compare it to `{{CLI_VERSION}}`:
+`taskfleet version --output json`, compare `.data.version` to
+`{{CLI_VERSION}}`, and:
 
 - **Missing**: tell the user to install through a published distribution channel
   outside this repository workflow, then stop.
-
-- **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
-  `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/taskfleet/taskfleet` or
-  re-run the shell installer). Stop and wait — `run list` / `run show` payload shape
-  may have changed.
-- **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
-  stale and stop. Refreshing installed bundled instructions is published-tool
-  maintenance outside repository work; never run `skill install` as part of
-  this workflow.
-- **Equal**: proceed normally.
+- **Older**: tell the user the skill expects `{{CLI_VERSION}}` and suggest
+  upgrading via the channel they originally used
+  (`brew upgrade jarimustonen/taskfleet/taskfleet` or the shell installer),
+  then stop; the `run list` / `run show` / `run wait` payload shapes may have
+  changed.
+- **Newer**: tell the user the installed skill is stale and stop. Refreshing
+  installed bundled instructions is published-tool maintenance outside
+  repository work; never run `skill install` as part of this workflow.
+- **Equal**: proceed.

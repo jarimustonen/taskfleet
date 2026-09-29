@@ -109,17 +109,25 @@ case "$*" in
       }
       exec "$REAL_GIT" "$@"
     fi
-    # Keep the cut transport local while supplying the production remote
-    # coordinate to the wrapper-created hook. The wrapper already probes this
-    # hook through a real local Git push before shipshape reaches this path.
-    ref="${3:-}"
-    local_ref="${ref%%:*}"
-    remote_ref="${ref#*:}"
-    [[ "$remote_ref" != "$ref" ]] || remote_ref="$local_ref"
-    oid="$($REAL_GIT rev-parse --verify "$local_ref")"
-    zeros="$(printf '%040d' 0)"
-    printf '%s %s %s %s\n' "$local_ref" "$oid" "$remote_ref" "$zeros" |
-      "$GIT_CONFIG_VALUE_0/pre-push" origin git@github.com:jarimustonen/taskfleet.git
+    # Exercise Git's actual hook decision with the engine's exact argv. A
+    # future --no-verify must push into the local origin and fail this test,
+    # rather than being hidden by a stub that invokes the hook manually.
+    set +e
+    "$REAL_GIT" "$@"
+    push_status=$?
+    set -e
+    if [[ "$push_status" -eq 0 || -n "$("$REAL_GIT" ls-remote --tags origin "${3#*:}")" ]]; then
+      echo "fixture engine bypassed the pre-push hold" >&2
+      exit 97
+    fi
+    marker="$SHIPSHAPE_PRETAG_MARKER"
+    test -s "$marker" || { echo "fixture engine push did not invoke hook" >&2; exit 97; }
+    # The fixture's real remote is a local bare repo. Only the recorded
+    # coordinate is normalized so the production wrapper can inspect it.
+    [[ "$(sed -n '1p' "$marker")" == origin && "$(sed -n '2p' "$marker")" == "$FIXTURE_ORIGIN" ]] || exit 97
+    sed '2c\git@github.com:jarimustonen/taskfleet.git' "$marker" >"$marker.normalized"
+    mv "$marker.normalized" "$marker"
+    exit 1
     ;;
   "push origin HEAD:refs/heads/main"|push\ */probe.git\ refs/tags/v0.0.0-shipshape-pretag-probe)
     exec "$REAL_GIT" "$@"
@@ -221,10 +229,14 @@ echo reached-exact-commit-local-validation >&2
 exit 42
 STUB
 chmod +x "$tmp/repo/scripts/validate-local-release.sh"
+# The outer test is already exercising this engine. Prevent nested fixture
+# recursion when the wrapper's production cut invokes this test before tag push.
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/repo/scripts/test-shipshape-release-current-protocol.sh"
+chmod +x "$tmp/repo/scripts/test-shipshape-release-current-protocol.sh"
 grep -F 'https://github.com/jarimustonen/taskfleet' "$tmp/repo/Cargo.toml" >/dev/null
 git -C "$tmp/repo" add release/taskfleet-release.json release/taskfleet-distribution.json \
   dist-workspace.toml Cargo.toml CHANGELOG.md .github/workflows/release.yml \
-  scripts/validate-local-release.sh
+  scripts/validate-local-release.sh scripts/test-shipshape-release-current-protocol.sh
 git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
 git -C "$tmp/repo" push -q origin HEAD:refs/heads/main
 
@@ -240,6 +252,7 @@ run_env=(
   DIST_STUB_LOG="$tmp/dist.log"
   GIT_STUB_LOG="$tmp/git.log"
   TAG_PUSH_LOG="$tmp/tag-push.log"
+  FIXTURE_ORIGIN="$tmp/origin.git"
   GH_STUB_LOG="$tmp/gh.log"
   LOCAL_VALIDATION_LOG="$tmp/local-validation.log"
   GIT_CONFIG_GLOBAL=/dev/null

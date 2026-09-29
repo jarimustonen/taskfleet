@@ -111,9 +111,6 @@ require_current_homebrew_stable() {
      "$stable" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     echo "cannot parse unique Homebrew shipshape stable version" >&2; exit 1;
   }
-  [[ "$shipshape_version" == "$stable" ]] || {
-    echo "shipshape $shipshape_version is not Homebrew stable $stable" >&2; exit 1;
-  }
   archive="shipshape-$platform.tar.xz"
   url="https://github.com/jarimustonen/ossctl/releases/download/v$stable/$archive"
   checksum="$(awk -v url="$url" '
@@ -142,9 +139,6 @@ require_current_homebrew_stable() {
     if .object.type == "commit" and (.object.sha | test("^[0-9a-f]{40}$"))
     then .object.sha else error("invalid source commit") end
   ')" || { echo "cannot verify Shipshape source commit" >&2; exit 1; }
-  [[ "$shipshape_commit" == "$commit" ]] || {
-    echo "Shipshape executable commit differs from published source tag" >&2; exit 1;
-  }
   temp="$(mktemp -d "${TMPDIR:-/var/tmp}/shipshape-artifact.XXXXXX")"
   if ! gh release download "v$stable" -R jarimustonen/ossctl --pattern "$archive" -D "$temp" >/dev/null ||
      [[ "$(shasum -a 256 "$temp/$archive" | awk '{print $1}')" != "$checksum" ]] ||
@@ -154,6 +148,11 @@ require_current_homebrew_stable() {
     exit 1
   fi
   rm -rf "$temp"
+  # Do not execute even `version` until the executable has passed the byte check.
+  require_supported_shipshape
+  [[ "$shipshape_version" == "$stable" && "$shipshape_commit" == "$commit" ]] || {
+    echo "verified Shipshape executable reports a different version or source commit" >&2; exit 1;
+  }
 }
 
 require_supported_shipshape() {
@@ -591,7 +590,6 @@ if [[ "$command" == resume ]]; then
   [[ "$2" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]] || { echo "invalid release run id: $2" >&2; exit 2; }
 fi
 require_command shipshape
-require_supported_shipshape
 require_current_homebrew_stable
 
 case "$command" in
@@ -700,6 +698,10 @@ HOOK
     git tag -d "$probe_tag" >/dev/null
     rm -rf "$hooks/probe.git"
 
+    # Test this exact verified engine against an isolated origin before the
+    # production cut can even attempt a tag push. The clean-main gate still
+    # repeats the fixture on the bump commit before authorizing the held tag.
+    "$repo_root/scripts/test-shipshape-release-current-protocol.sh"
     # Shipshape reads the bump level from its authenticated stored plan.
     # Do not duplicate or reinterpret that plan in this adapter.
     cut_args=(release cut --plan "$plan_id" --json)

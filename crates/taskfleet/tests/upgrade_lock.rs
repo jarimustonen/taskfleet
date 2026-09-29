@@ -114,9 +114,17 @@ fn unpublished_state_refuses_upgrade_and_crashed_lease_is_released() {
     std::fs::create_dir_all(staging.join("orphan")).unwrap();
     let refused = call(
         &home,
-        &["run", "upgrade-lock", "--wait-secs", "0", "--", "/bin/true"],
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--",
+            "/bin/true",
+        ],
     );
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("upgrade_inhibited"));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("upgrade_state_unverifiable"));
+    assert!(home.path().join(".worker-admission-inhibited").exists());
     std::fs::remove_dir_all(staging.join("orphan")).unwrap();
     let stale = call(
         &home,
@@ -255,7 +263,7 @@ fn hard_kill_and_compromised_marker_fail_closed() {
         .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path())
         .args(["run", "upgrade-lock", "--", "/bin/sh", "-c"])
-        .arg(format!("touch {}; sleep 10", ready.display()))
+        .arg(format!("touch {}; sleep 2", ready.display()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -278,7 +286,7 @@ fn hard_kill_and_compromised_marker_fail_closed() {
             "--skip-materialize",
         ],
     );
-    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("upgrade_inhibited"));
     std::fs::remove_file(&marker).unwrap();
     std::os::unix::fs::symlink("/dev/null", &marker).unwrap();
     let blocked = call(
@@ -306,6 +314,63 @@ fn hard_kill_and_compromised_marker_fail_closed() {
         ],
     );
     assert!(String::from_utf8_lossy(&recover.stderr).contains("upgrade_state_unverifiable"));
-    // Cleanup the test's sleeper without signaling a group or other workers.
-    std::thread::sleep(Duration::from_secs(10));
+}
+
+#[test]
+fn failed_recovery_and_timeout_remain_inhibited_until_synchronous_success() {
+    let home = TempDir::new().unwrap();
+    let failed = call(&home, &["run", "upgrade-lock", "--", "/bin/false"]);
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("upgrade_command_failed"));
+    let no_confirm = call(
+        &home,
+        &["run", "upgrade-lock", "--recover", "--", "/bin/true"],
+    );
+    assert!(!no_confirm.status.success());
+    let timeout = call(
+        &home,
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--command-timeout-secs",
+            "1",
+            "--",
+            "/bin/sleep",
+            "5",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&timeout.stderr).contains("upgrade_command_timeout"));
+    let invalid = call(
+        &home,
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--command-timeout-secs",
+            "0",
+            "--",
+            "/bin/true",
+        ],
+    );
+    assert!(!invalid.status.success());
+    assert!(home.path().join(".worker-admission-inhibited").exists());
+    let recovered = call(
+        &home,
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--",
+            "/bin/true",
+        ],
+    );
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert!(!home.path().join(".worker-admission-inhibited").exists());
 }

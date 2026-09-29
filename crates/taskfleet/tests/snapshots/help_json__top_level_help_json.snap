@@ -4424,6 +4424,37 @@ expression: value
                 }
               },
               {
+                "name": "confirm_quiescent",
+                "long": "confirm-quiescent",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Explicit operator attestation that prior activation descendants cannot mutate the installation; not inferred from the parent PID",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "recover"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "help",
                 "long": "help",
                 "short": "h",
@@ -4510,6 +4541,37 @@ expression: value
                 "arity": {
                   "min": 1,
                   "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "recover",
+                "long": "recover",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Recover an inhibited upgrade under EX after stopping/identifying all previous activation writers. Command must synchronously reconcile the installation and return success only when safe for admissions",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "confirm_quiescent"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
                   "repeated": false,
                   "multi_value": false,
                   "require_equals": false

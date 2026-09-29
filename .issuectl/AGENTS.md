@@ -49,8 +49,8 @@ re-presents anything else at the end of every session because an issue
 outside the DAG would otherwise never be picked up. `lane: unlaned` is
 not an absent lane; it means confirmed parallel-safe work. `issuectl dag
 --help` explains how lanes are meant to be designed, as serial queues cut
-at independently mergeable boundaries rather than theme labels, and why
-priority outranks `lane_seq`. The hot-file clusters named in the
+at independently mergeable boundaries rather than theme labels, and that
+priority deliberately outranks `lane_seq`. The hot-file clusters named in the
 top-level `AGENTS.md` are what `collision:` tokens are for.
 
 Labels describe content. Lifecycle is never encoded in a label: the
@@ -78,16 +78,17 @@ the next reader, not the validator. Practice in this repository is a
 `## Description` on every issue, a `## Resolution` when it closes, notes
 through `issuectl note` so comments, decisions, and agent runs carry a
 timestamp and author, and an `## Acceptance Criteria` checklist when the
-work has a definition of done. That exact heading and the `- [ ]` syntax
-are what `issuectl ready` and `issuectl check` read; the lower-case
-variant in some older issues is invisible to them. A closing issue
+work has a definition of done. `issuectl ready` reads that exact heading
+and its `- [ ]` items, and the lower-case variant in some older issues is
+invisible to it; `issuectl check` matches `- [ ]` lines anywhere in the
+body. A closing issue
 should say what happened and where the change landed, because it is the
 record the next investigation of the same area will find.
 
 Commits reference issues with a `Refs-Issue: @<slug>` trailer, or
 `Fixes-Issue:` when the commit resolves the issue. `issuectl
 sync-commits` walks history and records trailered commits on the issue,
-and `changelog` and `timeline` read the same trailers, so `--add-commit`
+and `changelog` reads the same trailers, so `--add-commit`
 is only for a commit that has none and a missing trailer is worth fixing
 before the commit is pushed.
 

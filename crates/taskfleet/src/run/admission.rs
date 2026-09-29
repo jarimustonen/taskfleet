@@ -2,6 +2,10 @@
 //! per-run locks; upgrade EX -> per-run SH reads. Never acquire admission while
 //! holding a per-run lock. The lock file is permanent (never unlink it), and
 //! all versions participating in this protocol must use the same state root.
+//! Before launching activation we persist an inhibit marker under EX. A dead
+//! parent, timed-out child, or detached setsid descendant can never reopen
+//! admissions by merely releasing the flock. Only a trusted synchronous
+//! activation success, or explicit operator recovery, removes the marker.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -20,6 +24,7 @@ use crate::run::from_core;
 
 const FILE: &str = ".worker-admission.lock";
 const DEFAULT_WAIT: u64 = 10;
+const INHIBIT: &str = ".worker-admission-inhibited";
 
 pub(super) struct Gate(File);
 
@@ -77,7 +82,58 @@ fn io_error(path: &Path, e: io::Error) -> CliError {
 /// Acquired before any create-side idempotency or per-run lock and held until
 /// the create call returns, including child publication and replay repair.
 pub(super) fn admit(root: &Path) -> Result<Gate, CliError> {
-    acquire(root, false, DEFAULT_WAIT)
+    let gate = acquire(root, false, DEFAULT_WAIT)?;
+    ensure_not_inhibited(root)?;
+    Ok(gate)
+}
+
+fn ensure_not_inhibited(root: &Path) -> Result<(), CliError> {
+    let path = root.join(INHIBIT);
+    match path.symlink_metadata() {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(CliError::system("upgrade_inhibited", format!(
+            "worker admission inhibited at {}; inspect activation and descendants, then use run upgrade-lock --recover --confirm-quiescent with a trusted synchronous reconciliation command", path.display()
+        ))),
+        Err(e) => Err(io_error(&path, e)),
+    }
+}
+
+fn sync_root(root: &Path) -> Result<(), CliError> {
+    File::open(root)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| io_error(root, e))
+}
+
+fn inhibit(root: &Path) -> Result<(), CliError> {
+    let path = root.join(INHIBIT);
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = opts.open(&path).map_err(|e| io_error(&path, e))?;
+    file.sync_all().map_err(|e| io_error(&path, e))?;
+    sync_root(root)
+}
+
+fn clear_inhibit(root: &Path) -> Result<(), CliError> {
+    let path = root.join(INHIBIT);
+    // Only remove our own regular file. A replaced marker is never authority
+    // to admit workers, even after a successful activation.
+    let meta = path.symlink_metadata().map_err(|e| io_error(&path, e))?;
+    if !meta.file_type().is_file() || meta.len() != 0 {
+        return Err(CliError::system(
+            "upgrade_state_unverifiable",
+            format!(
+                "inhibit marker changed at {}; admission remains blocked",
+                path.display()
+            ),
+        ));
+    }
+    std::fs::remove_file(&path).map_err(|e| io_error(&path, e))?;
+    sync_root(root)
 }
 
 #[derive(Serialize)]
@@ -94,12 +150,46 @@ pub(super) fn upgrade(
     wait_secs: u64,
     command_timeout_secs: u64,
     argv: Vec<String>,
+    recover: bool,
+    confirm_quiescent: bool,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
     let gate = acquire(&root, true, wait_secs)?;
+    if recover {
+        if !confirm_quiescent {
+            return Err(CliError::system("upgrade_recovery_unconfirmed", "recovery requires --confirm-quiescent after verifying all previous activation writers have stopped"));
+        }
+        if root
+            .join(INHIBIT)
+            .symlink_metadata()
+            .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        {
+            return Err(CliError::system(
+                "upgrade_recovery_unneeded",
+                "no inhibited upgrade to recover",
+            ));
+        }
+        // A malformed or symlink marker still blocks admission; do not run
+        // arbitrary code or clear it until its provenance is inspected.
+        let marker = root.join(INHIBIT);
+        let meta = marker
+            .symlink_metadata()
+            .map_err(|e| io_error(&marker, e))?;
+        if !meta.file_type().is_file() || meta.len() != 0 {
+            return Err(CliError::system(
+                "upgrade_state_unverifiable",
+                format!("invalid inhibit marker at {}", marker.display()),
+            ));
+        }
+    } else {
+        ensure_not_inhibited(&root)?;
+    }
     let checked = quiescent(&root)?;
+    if !recover {
+        inhibit(&root)?;
+    }
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     // Activation output belongs on stderr; stdout is reserved for the JSON
@@ -140,7 +230,7 @@ pub(super) fn upgrade(
             let _ = child.kill();
             let _ = child.wait();
             return Err(CliError::system("upgrade_command_timeout", format!(
-                "activation exceeded {command_timeout_secs}s; immediate child terminated; inspect installation and roll back under a new gate before retrying"
+                "activation exceeded {command_timeout_secs}s; admission remains inhibited; inspect detached descendants and reconcile before recovery"
             )));
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -153,6 +243,7 @@ pub(super) fn upgrade(
             ),
         ));
     }
+    clear_inhibit(&root)?;
     let result = UpgradeResult {
         quiescent: true,
         checked_runs: checked,

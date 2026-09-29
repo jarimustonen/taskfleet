@@ -116,8 +116,20 @@ fn unpublished_state_refuses_upgrade_and_crashed_lease_is_released() {
         &home,
         &["run", "upgrade-lock", "--wait-secs", "0", "--", "/bin/true"],
     );
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("upgrade_state_unverifiable"));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("upgrade_inhibited"));
     std::fs::remove_dir_all(staging.join("orphan")).unwrap();
+    let stale = call(
+        &home,
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--",
+            "/bin/true",
+        ],
+    );
+    assert!(stale.status.success());
     let timed_out = call(
         &home,
         &[
@@ -131,13 +143,169 @@ fn unpublished_state_refuses_upgrade_and_crashed_lease_is_released() {
         ],
     );
     assert!(String::from_utf8_lossy(&timed_out.stderr).contains("upgrade_command_timeout"));
+    let blocked = call(
+        &home,
+        &[
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "blocked",
+            "--skip-materialize",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("upgrade_inhibited"));
     let ok = call(
         &home,
-        &["run", "upgrade-lock", "--wait-secs", "0", "--", "/bin/true"],
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--wait-secs",
+            "0",
+            "--",
+            "/bin/true",
+        ],
     );
     assert!(
         ok.status.success(),
         "{}",
         String::from_utf8_lossy(&ok.stderr)
     );
+}
+
+#[test]
+fn detached_writer_survives_timeout_but_cannot_admit_until_verified_recovery() {
+    let home = TempDir::new().unwrap();
+    let live = home.path().join("live");
+    let done = home.path().join("done");
+    // setsid creates a new session; the child closes the inherited lock FD
+    // before the parent times out. Its delayed write is real, not inferred
+    // from a PID or process-group lookup.
+    let script = format!(
+        "import os,time; p=os.fork();\nif p==0:\n os.setsid(); os.closerange(3,4096); open({:?},'w').close(); time.sleep(3); open({:?},'w').close(); os._exit(0)\ntime.sleep(10)",
+        live.display().to_string(), done.display().to_string()
+    );
+    let status = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
+        .args([
+            "run",
+            "upgrade-lock",
+            "--command-timeout-secs",
+            "1",
+            "--",
+            "python3",
+            "-c",
+            &script,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    wait_for(&live);
+    let create = || {
+        call(
+            &home,
+            &[
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--title",
+                "blocked",
+                "--skip-materialize",
+            ],
+        )
+    };
+    assert!(String::from_utf8_lossy(&create().stderr).contains("upgrade_inhibited"));
+    let recovery = || {
+        call(
+            &home,
+            &[
+                "run",
+                "upgrade-lock",
+                "--recover",
+                "--confirm-quiescent",
+                "--",
+                "/bin/sh",
+                "-c",
+                &format!("test -f {}", done.display()),
+            ],
+        )
+    };
+    assert!(
+        !recovery().status.success(),
+        "reconciliation must fail while writer is live"
+    );
+    assert!(String::from_utf8_lossy(&create().stderr).contains("upgrade_inhibited"));
+    wait_for(&done);
+    assert!(recovery().status.success());
+    assert!(create().status.success());
+}
+
+#[test]
+fn hard_kill_and_compromised_marker_fail_closed() {
+    let home = TempDir::new().unwrap();
+    let ready = home.path().join("ready");
+    let mut gate = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
+        .args(["run", "upgrade-lock", "--", "/bin/sh", "-c"])
+        .arg(format!("touch {}; sleep 10", ready.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(&ready);
+    gate.kill().unwrap();
+    gate.wait().unwrap();
+    // Even after inherited flock holders exit, the durable marker remains.
+    let marker = home.path().join(".worker-admission-inhibited");
+    wait_for(&marker);
+    let blocked = call(
+        &home,
+        &[
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "blocked",
+            "--skip-materialize",
+        ],
+    );
+    assert!(!blocked.status.success());
+    std::fs::remove_file(&marker).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &marker).unwrap();
+    let blocked = call(
+        &home,
+        &[
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "blocked",
+            "--skip-materialize",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("upgrade_inhibited"));
+    let recover = call(
+        &home,
+        &[
+            "run",
+            "upgrade-lock",
+            "--recover",
+            "--confirm-quiescent",
+            "--",
+            "/bin/true",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&recover.stderr).contains("upgrade_state_unverifiable"));
+    // Cleanup the test's sleeper without signaling a group or other workers.
+    std::thread::sleep(Duration::from_secs(10));
 }

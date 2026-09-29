@@ -180,6 +180,15 @@ pub enum RunAction {
         /// Trusted activation executable and arguments; no shell interpretation.
         #[arg(required = true, last = true, num_args = 1..)]
         command: Vec<String>,
+        /// Recover an inhibited upgrade under EX after stopping/identifying all
+        /// previous activation writers. Command must synchronously reconcile
+        /// the installation and return success only when safe for admissions.
+        #[arg(long, requires = "confirm_quiescent")]
+        recover: bool,
+        /// Explicit operator attestation that prior activation descendants
+        /// cannot mutate the installation; not inferred from the parent PID.
+        #[arg(long, requires = "recover")]
+        confirm_quiescent: bool,
     },
     /// List runs on disk.
     List {
@@ -394,7 +403,17 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             wait_secs,
             command_timeout_secs,
             command,
-        } => admission::upgrade(wait_secs, command_timeout_secs, command, spec, warnings),
+            recover,
+            confirm_quiescent,
+        } => admission::upgrade(
+            wait_secs,
+            command_timeout_secs,
+            command,
+            recover,
+            confirm_quiescent,
+            spec,
+            warnings,
+        ),
         RunAction::List { status, kind, repo } => list::run(list::Args {
             status,
             kind,

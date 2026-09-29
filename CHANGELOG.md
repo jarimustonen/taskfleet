@@ -14,6 +14,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.11.5] - 2026-09-29
+
+### Changed
+
+- Add worker admission interlock for safe upgrades (`worker-admission-upgrade-lock`).
+- Admit Shipshape 0.12.4 in the release wrapper (`surprisingly-full-need`).
+
 ## [0.11.4] - 2026-09-28
 
 ### Added

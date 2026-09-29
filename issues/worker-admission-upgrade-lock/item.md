@@ -3,10 +3,11 @@ created: 2026-09-29
 updated: 2026-09-29
 type: task
 reporter: jari
-status: open
+status: done
 priority: high
 lane: run-state
 collision: [crates/taskfleet/src/run/create.rs, crates/taskfleet-core/src/lock.rs]
+closed: 2026-09-29
 ---
 
 # Add worker admission interlock for safe upgrades
@@ -20,3 +21,9 @@ Homebase latest-stable Taskfleet promotion cannot use a run-list snapshot: run c
 ### 2026-09-29T05:47:12Z · @agent
 
 2026-09-29: Worker run 01m3nrx25hv44m48xnc23e7env preserved a reviewed admission gate (release-mode nextest 1128 pass), but required scripts/validate-local-release.sh did not complete: cargo-deny was missing. Conductor provisioned disposable cargo-deny 0.20.2 and checksum-verified cargo-dist 0.33.0 under /var/tmp/taskfleet-release-tools; further preflight reveals scripts/shipshape-release.sh rejects installed/published Shipshape 0.12.4 and still allows only 0.12.3 while Homebrew stable is 0.12.4. Release wrapper admission is a separate existing untriaged intake item @surprisingly-full-need; do not bypass the required gate, fake public tap state or merge until policy and gate are reconciled.
+
+## Resolution
+
+### 2026-09-29T07:19:07Z · @issuectl
+
+Admission-aware creation and trusted exclusive upgrade lock implemented; release gate passed (1128/1128 nextest) on 35e134af.

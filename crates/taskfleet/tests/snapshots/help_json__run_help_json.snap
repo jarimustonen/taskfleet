@@ -173,6 +173,14 @@ expression: value
         "has_subcommands": false
       },
       {
+        "command": "taskfleet run upgrade-lock",
+        "about": "Exclude new worker admissions and run a trusted fleet activation only when quiescent",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
         "command": "taskfleet run wait",
         "about": "Block until one or more runs reach a terminal state (`done | failed | cancelled`) and emit a structured summary, so callers stop hand-rolling `run show` poll loops. Read-only: never mutates run state. Exit codes: `0` condition met, `1` usage/unknown run, `2` timeout, `3` (`--fail-on-error`) a settled run failed",
         "aliases": [],

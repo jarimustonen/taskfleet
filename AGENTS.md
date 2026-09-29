@@ -228,10 +228,11 @@ because Shipshape's own protocol has no pause between its bump commit and its
 tag push: the wrapper journals a held tag push, advances `main` to the bump
 commit, runs `scripts/validate-local-release.sh` on that exact clean `HEAD`,
 rechecks local and remote `main`, creates the protected authorization ref that
-both workflows verify, and only then resumes. It also checks the public
-Shipshape tap on every operation and admits only the exact validated 0.12.3
-build, failing closed if the tap cannot be read or has advanced beyond the
-validated protocol. Two traps follow from this design. A bare
+both workflows verify, and only then resumes. It checks the published stable Shipshape formula, release digest, source tag,
+and executable bytes on every operation; the local gate exercises the current
+release engine against a disposable held-tag protocol fixture. Unverifiable
+artifacts, a stale installed version, or an incompatible protocol fail closed
+without pinning routine compatible upgrades to a numbered allowlist. Two traps follow from this design. A bare
 `shipshape release resume` while the tag is still local skips the gate; use
 the wrapper's `resume`. And once the journal says the tag was pushed,
 publishing may already be underway: resume and verify the existing run

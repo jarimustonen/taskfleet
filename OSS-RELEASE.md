@@ -41,8 +41,14 @@ commit, exact-commit local validation, authorization ref, and tag push. Never in
 publication locally, push a release tag manually, or use a bare Shipshape resume
 while a tag is held locally.
 
-The wrapper checks the public `jarimustonen/homebrew-shipshape` tap formula via GitHub API for the current Homebrew stable version on every plan/cut/resume/verify (including hosts without `brew`). Failure to verify, or a newer stable version, blocks release operations until the protocol is revalidated and the allowlist updated. It admits only Shipshape 0.12.3 build
-`1cf7bbc9243f0d32e7128c5c8465061c2fa12949`. Shipshape owns the stored bump
+The wrapper checks the canonical published `jarimustonen/homebrew-shipshape`
+formula, GitHub release artifact digest and annotated source tag, and compares the
+installed executable byte-for-byte with the verified release artifact. The
+current stable binary must pass the disposable real-engine held-tag protocol
+fixture in `scripts/validate-local-release.sh`; compatible future releases need
+no manual allowlist update. Unavailable or inconsistent publication, changed
+protocol, or a stale installed binary fails closed before release operations.
+Shipshape owns the stored bump
 plan and, after destination verification, idempotently records default-branch
 advancement. The Taskfleet adapter must still hold the tag because Taskfleet's
 tag starts both publishing workflows: it first advances `main` to the bump

@@ -185,6 +185,21 @@ fn open_existing_lock(lock_path: &Path) -> Result<File> {
 }
 
 impl RunLock<Shared> {
+    /// Non-blocking read probe on an existing lock. Unlike the ordinary read
+    /// path, absence is an error: upgrade preflight cannot treat a missing
+    /// writer witness in a published run as proof of quiescence.
+    pub fn try_acquire_shared_existing(lock_path: &Path) -> Result<Option<Self>> {
+        let file = open_existing_lock(lock_path)?;
+        match <File as FileExt>::try_lock_shared(&file) {
+            Ok(()) => Ok(Some(Self {
+                file: Some(file),
+                _mode: PhantomData,
+            })),
+            Err(fs4::TryLockError::WouldBlock) => Ok(None),
+            Err(fs4::TryLockError::Error(error)) => Err(Error::io(lock_path, error)),
+        }
+    }
+
     /// Acquire a **shared** (`LOCK_SH`) lock on an existing `<run-dir>/.lock`,
     /// blocking until no writer holds the exclusive lock. The mirror of
     /// [`RunLock::acquire`] for the read side: many readers may hold the shared
@@ -313,6 +328,28 @@ mod tests {
         std::fs::create_dir_all(&run).unwrap();
         std::fs::write(&lock, []).unwrap();
         assert!(RunLock::acquire_existing(&lock).is_ok());
+    }
+
+    #[test]
+    fn nonblocking_shared_probe_accepts_readers_but_refuses_writer_or_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let lock = tmp.path().join(".lock");
+        assert!(RunLock::<Shared>::try_acquire_shared_existing(&lock).is_err());
+        let first = RunLock::<Shared>::acquire_shared(&lock).unwrap();
+        assert!(first.file.is_none());
+        drop(RunLock::acquire(&lock).unwrap());
+        let first = RunLock::<Shared>::try_acquire_shared_existing(&lock)
+            .unwrap()
+            .unwrap();
+        let second = RunLock::<Shared>::try_acquire_shared_existing(&lock).unwrap();
+        assert!(second.is_some());
+        drop(first);
+        drop(second);
+        let writer = RunLock::acquire(&lock).unwrap();
+        assert!(RunLock::<Shared>::try_acquire_shared_existing(&lock)
+            .unwrap()
+            .is_none());
+        drop(writer);
     }
 
     /// A manually-held exclusive guard ([`RunLock::acquire`]) can mint a witness

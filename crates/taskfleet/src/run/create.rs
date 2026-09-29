@@ -204,6 +204,12 @@ struct SpawnResult {
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let title = require_nonempty(&args.title, "title")?;
+    // Admission precedes all idempotency paths, including replay repair and
+    // reclaim. Never wait for this gate while holding a per-run lock.
+    let root = crate::home::root_dir()?;
+    let _admission = (!args.dry_run)
+        .then(|| super::admission::admit(&root))
+        .transpose()?;
 
     // How-run state is a TOLD fact from the explicit `--interactive` flag, not
     // inferred from `kind` (design.md §2/§6). `--interactive` → interactive; the
@@ -371,8 +377,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let parent_node_id = parent_node_id_typed
         .as_ref()
         .map(|n| n.as_str().to_string());
-
-    let root = crate::home::root_dir()?;
 
     let run_id = new_run_id();
     // Validate the freshly generated id (infallible in practice) so run_dir

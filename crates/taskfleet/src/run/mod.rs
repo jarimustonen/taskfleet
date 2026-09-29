@@ -4,6 +4,7 @@
 //! `spinoff` will follow: one file per verb, shared types in `mod.rs`,
 //! single `dispatch` entry point called from `cli.rs`.
 
+mod admission;
 pub mod attention;
 pub mod awaiting_input;
 pub mod cancel;
@@ -167,6 +168,18 @@ pub enum RunAction {
         /// window, and supervisor.
         #[arg(long, hide = true)]
         skip_materialize: bool,
+    },
+    /// Exclude new worker admissions and run a trusted fleet activation only when quiescent.
+    UpgradeLock {
+        /// Maximum seconds to wait for in-flight creations (0–600).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(0..=600), default_value_t = 10)]
+        wait_secs: u64,
+        /// Maximum seconds for the activation program before it is terminated (1–3600).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=3600), default_value_t = 600)]
+        command_timeout_secs: u64,
+        /// Trusted activation executable and arguments; no shell interpretation.
+        #[arg(required = true, last = true, num_args = 1..)]
+        command: Vec<String>,
     },
     /// List runs on disk.
     List {
@@ -377,6 +390,11 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             spec,
             warnings,
         }),
+        RunAction::UpgradeLock {
+            wait_secs,
+            command_timeout_secs,
+            command,
+        } => admission::upgrade(wait_secs, command_timeout_secs, command, spec, warnings),
         RunAction::List { status, kind, repo } => list::run(list::Args {
             status,
             kind,

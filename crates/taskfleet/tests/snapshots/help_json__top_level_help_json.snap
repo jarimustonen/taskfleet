@@ -4386,6 +4386,186 @@ expression: value
             "subcommands": []
           },
           {
+            "command": "taskfleet run upgrade-lock",
+            "about": "Exclude new worker admissions and run a trusted fleet activation only when quiescent",
+            "aliases": [],
+            "hidden": false,
+            "deprecated": false,
+            "flags": [
+              {
+                "name": "command_timeout_secs",
+                "long": "command-timeout-secs",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Maximum seconds for the activation program before it is terminated (1–3600)",
+                "value_names": [
+                  "COMMAND_TIMEOUT_SECS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "600"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "help",
+                "long": "help",
+                "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "output",
+                "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "wait_secs",
+                "long": "wait-secs",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Maximum seconds to wait for in-flight creations (0–600)",
+                "value_names": [
+                  "WAIT_SECS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "10"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              }
+            ],
+            "positionals": [
+              {
+                "name": "command",
+                "help": "Trusted activation executable and arguments; no shell interpretation",
+                "value_names": [
+                  "COMMAND"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": true,
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
+                "deprecated": false
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "command": "taskfleet run wait",
             "about": "Block until one or more runs reach a terminal state (`done | failed | cancelled`) and emit a structured summary, so callers stop hand-rolling `run show` poll loops. Read-only: never mutates run state. Exit codes: `0` condition met, `1` usage/unknown run, `2` timeout, `3` (`--fail-on-error`) a settled run failed",
             "aliases": [],

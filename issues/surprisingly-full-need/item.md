@@ -1,12 +1,14 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
+updated: 2026-09-29
 type: task
 reporter: agent
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: homebase rethink-all-instructions session
+lane: release-tooling
+collision: [scripts/shipshape-release.sh]
 ---
 
 # Admit Shipshape 0.12.4 in the release wrapper

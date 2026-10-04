@@ -4094,7 +4094,7 @@ mod tests {
         reconcile_child_spawns(&root, &parent_paths, &mut child_spawns, &mut state, now);
 
         // Never confirmed, and the last failure is flagged final.
-        assert!(state.spawned_children.is_empty());
+        assert_eq!(state.spawned_children.len(), 0);
         let raw = std::fs::read_to_string(parent_paths.events()).unwrap();
         assert!(
             raw.contains("\"final\":true"),

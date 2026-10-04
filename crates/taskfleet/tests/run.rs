@@ -1337,7 +1337,7 @@ fn list_filters_by_kind_and_status() {
 
     // Filter that matches nothing returns an empty list (not an error).
     let v = run_ok(bin(&home).args(["--output", "json", "run", "list", "--status", "done"]));
-    assert!(v["data"]["runs"].as_array().unwrap().is_empty());
+    assert_eq!(v["data"]["runs"].as_array().unwrap().len(), 0);
 }
 
 #[test]
@@ -1345,7 +1345,7 @@ fn list_when_root_missing_returns_empty() {
     let home = TestHome::new();
     // No runs created — runs/ dir does not exist yet.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
-    assert!(v["data"]["runs"].as_array().unwrap().is_empty());
+    assert_eq!(v["data"]["runs"].as_array().unwrap().len(), 0);
 }
 
 /// `run list` flags a *stillborn* run — created, but its supervisor died before
@@ -1602,7 +1602,7 @@ fn recancel_fully_converged_run_reports_no_new_changes() {
     // Second cancel: already cancelled, nothing left to converge.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
     assert_eq!(v["data"]["already_cancelled"], true);
-    assert!(v["data"]["cancelled_nodes"].as_array().unwrap().is_empty());
+    assert_eq!(v["data"]["cancelled_nodes"].as_array().unwrap().len(), 0);
     assert_eq!(
         v["data"]["nodes_already_terminal"].as_array().unwrap(),
         &vec![Value::from("n-0001")]

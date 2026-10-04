@@ -287,7 +287,7 @@ fn json_emits_section18_bundled_shape() {
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(v["schema_version"], 1);
     let checks = v["data"]["checks"].as_array().expect("checks array");
-    assert!(!checks.is_empty());
+    assert_ne!(checks.len(), 0);
     // Each check has the §18 fields.
     for c in checks {
         assert!(c["id"].is_string());

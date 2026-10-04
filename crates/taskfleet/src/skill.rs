@@ -3036,7 +3036,10 @@ mod tests {
         let recorded = read_managed_companions(&marker);
         assert_eq!(recorded, vec!["A.md".to_string(), "B.md".to_string()]);
         // A markerless dir records nothing.
-        assert!(read_managed_companions(&dir.path().join("nope")).is_empty());
+        assert_eq!(
+            read_managed_companions(&dir.path().join("nope")),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -3098,7 +3101,7 @@ mod tests {
         recorded.push("GONE.md".to_string());
         write_marker(&dir.path().join(MANAGED_MARKER_FILENAME), skill, &recorded).unwrap();
         // `GONE.md` is NOT written to disk.
-        assert!(orphan_companions(skill, dir.path()).is_empty());
+        assert_eq!(orphan_companions(skill, dir.path()), Vec::<String>::new());
     }
 
     #[test]
@@ -3123,8 +3126,14 @@ mod tests {
         );
         // An absent marker records nothing for either key.
         let missing = dir.path().join("nope");
-        assert!(read_marker_records(&missing, "prompt").is_empty());
-        assert!(read_marker_records(&missing, "companion").is_empty());
+        assert_eq!(
+            read_marker_records(&missing, "prompt"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            read_marker_records(&missing, "companion"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -3296,16 +3305,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Missing file → empty default.
         let missing = dir.path().join("nope.json");
-        assert!(read_pi_provenance(&missing).skills.is_empty());
+        assert_eq!(read_pi_provenance(&missing).skills, BTreeMap::new());
         // Unparseable content → empty default (err toward NOT managing).
         let garbage = dir.path().join("garbage.json");
         fs::write(&garbage, "{ not json").unwrap();
-        assert!(read_pi_provenance(&garbage).skills.is_empty());
+        assert_eq!(read_pi_provenance(&garbage).skills, BTreeMap::new());
         // Future-schema record → lenient reader treats it as empty (doctor
         // must not audit a record a newer binary wrote).
         let future = dir.path().join("future.json");
         fs::write(&future, r#"{"schema_version":999,"skills":{}}"#).unwrap();
-        assert!(read_pi_provenance(&future).skills.is_empty());
+        assert_eq!(read_pi_provenance(&future).skills, BTreeMap::new());
     }
 
     #[test]

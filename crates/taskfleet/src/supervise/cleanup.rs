@@ -1663,7 +1663,7 @@ mod tests {
             !paths.nodes_dir().exists(),
             "zero-node run has no node directory"
         );
-        assert!(list_nodes(&paths).unwrap().is_empty());
+        assert_eq!(list_nodes(&paths).unwrap().len(), 0);
         assert!(cleanup_terminal_nodes(&paths));
     }
 
@@ -1755,7 +1755,10 @@ mod tests {
         let log = tmux_log(tmp.path());
         assert!(log.contains("kill-window -t @42"), "log={log:?}");
         assert!(!log.contains("list-windows"), "must not probe on success");
-        assert!(window_missing_events(&paths).is_empty());
+        assert_eq!(
+            window_missing_events(&paths),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// The "window already gone" path: the recorded target is missing and no
@@ -2036,7 +2039,10 @@ mod tests {
             !branch_exists(&repo, "wt/foo"),
             "an explicit-merge node's branch is force-deleted as before"
         );
-        assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.branch_preserved"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// The durable agent-pane capture (`<run-dir>/agent.log`, issue
@@ -2175,7 +2181,10 @@ mod tests {
             "the reason must distinguish this from a blocked report"
         );
         // No worktree removal was attempted, so no worktree_missing / remove_failed.
-        assert!(events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.branch_remove_failed"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// The source check must NOT preserve a branch with nothing unmerged: a
@@ -2218,7 +2227,10 @@ mod tests {
             !branch_exists(&repo, "wt/foo"),
             "a source-merged branch is deleted"
         );
-        assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.branch_preserved"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// Write an executable fake `git` that always exits non-zero, so a test can
@@ -2898,7 +2910,10 @@ mod tests {
             events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty(),
             "branch delete must be skipped after a removal refusal"
         );
-        assert!(events_of_kind(&paths, "cleanup.worktree_missing").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.worktree_missing"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// The typed outcome table (design §2.6) is what `cleanup_node` reads for its
@@ -3085,7 +3100,10 @@ mod tests {
             !log.contains("kill-session"),
             "a live sibling agent window must keep the session alive: {log:?}"
         );
-        assert!(events_of_kind(&paths, "cleanup.session_killed").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.session_killed"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// Safety gate #2: a human attached to the session means it is left alone —
@@ -3133,8 +3151,14 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("tmux.log")).is_err(),
             "tmux must not be invoked for a foreground run"
         );
-        assert!(events_of_kind(&paths, "cleanup.session_killed").is_empty());
-        assert!(events_of_kind(&paths, "cleanup.session_retained").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.session_killed"),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.session_retained"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// An already-gone session (its last window WAS the agent's, no bootstrap
@@ -3151,8 +3175,14 @@ mod tests {
 
         let log = tmux_log(tmp.path());
         assert!(!log.contains("kill-session"), "log={log:?}");
-        assert!(events_of_kind(&paths, "cleanup.session_killed").is_empty());
-        assert!(events_of_kind(&paths, "cleanup.session_retained").is_empty());
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.session_killed"),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.session_retained"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     /// The `session_killed` audit event is idempotent across supervisor restarts:

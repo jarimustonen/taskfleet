@@ -744,7 +744,10 @@ fn orchestrator_decision_and_discuss_critical_are_appended_and_visible_in_tail()
     ]));
     assert_eq!(v["data"]["kind"], "discuss.critical");
     assert_eq!(v["data"]["seq"].as_u64().unwrap(), 3);
-    assert!(v["data"]["projections"].as_array().unwrap().is_empty());
+    assert_eq!(
+        v["data"]["projections"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
 
     // Both events are durable and visible in `event tail`.
     let (stdout, _) =

@@ -286,7 +286,7 @@ mod tests {
                 assert!(status.success());
                 assert_eq!(stdout.bytes, b"hello");
                 assert!(!stdout.truncated);
-                assert!(stderr.bytes.is_empty());
+                assert_eq!(stderr.bytes, Vec::<u8>::new());
             }
             _ => panic!("expected Exited"),
         }

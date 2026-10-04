@@ -102,7 +102,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let s = load(dir.path()).unwrap();
         assert_eq!(s.last_seq_own, 0);
-        assert!(s.last_processed_report_seq_by_child.is_empty());
+        assert_eq!(s.last_processed_report_seq_by_child.len(), 0);
     }
 
     #[test]
@@ -139,6 +139,6 @@ mod tests {
         .unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.last_seq_own, 5);
-        assert!(loaded.captured_armed.is_empty());
+        assert_eq!(loaded.captured_armed.len(), 0);
     }
 }

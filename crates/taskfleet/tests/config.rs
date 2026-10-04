@@ -342,7 +342,7 @@ fn config_show_unparseable_toml_remains_a_hard_error() {
         .output()
         .expect("spawn");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     let stderr = String::from_utf8(output.stderr).unwrap();
     let value: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
     assert_eq!(value["error"]["code"], "invalid_config");

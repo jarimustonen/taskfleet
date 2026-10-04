@@ -1099,7 +1099,7 @@ fn advisory_read_failure_does_not_hide_canonical_run_rows() {
     let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", &broken]));
     assert_eq!(shown["data"]["status"], "pending");
     assert_eq!(shown["data"]["telemetry_available"], false);
-    assert!(shown["data"]["telemetry"].as_array().unwrap().is_empty());
+    assert_eq!(shown["data"]["telemetry"].as_array().unwrap().len(), 0);
     assert!(shown["warnings"][0]
         .as_str()
         .unwrap()

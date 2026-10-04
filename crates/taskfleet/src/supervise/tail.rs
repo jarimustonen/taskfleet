@@ -265,7 +265,7 @@ mod tests {
     fn missing_file_yields_empty() {
         let dir = TempDir::new().unwrap();
         let mut t = EventTail::new(dir.path().join("missing.jsonl"), 0);
-        assert!(t.poll().unwrap().is_empty());
+        assert_eq!(t.poll().unwrap().len(), 0);
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(first[1].seq, 2);
 
         // Second poll: nothing new.
-        assert!(t.poll().unwrap().is_empty());
+        assert_eq!(t.poll().unwrap().len(), 0);
 
         // Append more.
         write_line(&p, 3, "child.spawned");
@@ -322,8 +322,8 @@ mod tests {
         assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1]);
         // While parked, repeated polls yield nothing AND never error — this
         // is the broken-loop fix (old behavior: a hard error every tick).
-        assert!(t.poll().unwrap().is_empty());
-        assert!(t.poll().unwrap().is_empty());
+        assert_eq!(t.poll().unwrap().len(), 0);
+        assert_eq!(t.poll().unwrap().len(), 0);
         // The caller reports-and-skips the corrupt line exactly once.
         let c = t.take_new_corrupt().expect("a corrupt line is parked");
         assert!(c.byte_offset > 0);
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![2]);
         // Nothing more is parked.
         assert!(t.take_new_corrupt().is_none());
-        assert!(t.poll().unwrap().is_empty());
+        assert_eq!(t.poll().unwrap().len(), 0);
     }
 
     #[test]

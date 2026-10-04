@@ -1753,7 +1753,7 @@ fn skill_install_all_keeps_registered_skills() {
         "still-registered skill was pruned"
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+    assert_eq!(v["data"]["pruned"].as_array().expect("pruned").len(), 0);
 }
 
 #[test]
@@ -1783,7 +1783,7 @@ fn skill_install_named_does_not_prune() {
         "targeted install pruned an orphan — must be scoped to install-all"
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+    assert_eq!(v["data"]["pruned"].as_array().expect("pruned").len(), 0);
 }
 
 #[test]
@@ -1803,7 +1803,7 @@ fn skill_install_all_without_force_does_not_prune() {
     assert!(out.status.success(), "install-all failed: {out:?}");
     assert!(orphan.exists(), "prune ran without --force");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+    assert_eq!(v["data"]["pruned"].as_array().expect("pruned").len(), 0);
 }
 
 #[test]
@@ -1829,7 +1829,7 @@ fn skill_install_all_spares_copied_and_renamed_managed_skill() {
         "a copied-and-renamed managed skill was deleted — name-binding guard failed"
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+    assert_eq!(v["data"]["pruned"].as_array().expect("pruned").len(), 0);
 }
 
 #[cfg(unix)]
@@ -1858,7 +1858,7 @@ fn skill_install_all_does_not_follow_symlinked_orphan() {
         "remove_dir_all followed a symlink and deleted an outside directory"
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+    assert_eq!(v["data"]["pruned"].as_array().expect("pruned").len(), 0);
 }
 
 // --- pi.dev mirror lifecycle (out-of-band provenance) --------------------

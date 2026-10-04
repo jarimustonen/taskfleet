@@ -1181,7 +1181,7 @@ mod tests {
             "wrap_up_recommendations": ["rebase"],
         });
         let out = sanitize_report_advisory(&v).unwrap();
-        assert!(out.warnings.is_empty());
+        assert_eq!(out.warnings.len(), 0);
         assert_eq!(out.report, v);
     }
 

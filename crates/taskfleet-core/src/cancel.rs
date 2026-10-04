@@ -1014,7 +1014,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["n-0001", "n-0002"]
         );
-        assert!(out.nodes_already_terminal.is_empty());
+        assert_eq!(out.nodes_already_terminal.len(), 0);
         assert_eq!(node_status(&paths, "n-0001"), Status::Cancelled);
         assert_eq!(
             crate::read_manifest(&paths).unwrap().status,
@@ -1190,8 +1190,8 @@ mod tests {
 
         let out = cancel_run(&paths, None).unwrap();
         assert!(!out.run_was_already_cancelled);
-        assert!(out.nodes_cancelled.is_empty());
-        assert!(out.nodes_already_terminal.is_empty());
+        assert_eq!(out.nodes_cancelled.len(), 0);
+        assert_eq!(out.nodes_already_terminal.len(), 0);
         assert_eq!(
             crate::read_manifest(&paths).unwrap().status,
             Status::Cancelled
@@ -1293,7 +1293,7 @@ mod tests {
             vec!["n-0001", "n-0002"],
             "the node with a missing projection is still cancelled"
         );
-        assert!(out.nodes_already_terminal.is_empty());
+        assert_eq!(out.nodes_already_terminal.len(), 0);
         // The source-of-truth log now carries a terminal cancel report for the
         // node whose projection was missing — so a rebuild reconstructs it as
         // Cancelled, not live.

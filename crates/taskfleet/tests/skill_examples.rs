@@ -545,15 +545,15 @@ mod extractor_tests {
     #[test]
     fn honours_skip_marker_above_and_inline() {
         let above = "```\n# skill-example-ci: skip\ntaskfleet frobnicate --wat\n```\n";
-        assert!(extract_invocations("x", above).is_empty());
+        assert_eq!(extract_invocations("x", above).len(), 0);
         let inline = "```\ntaskfleet frobnicate --wat # skill-example-ci: skip\n```\n";
-        assert!(extract_invocations("x", inline).is_empty());
+        assert_eq!(extract_invocations("x", inline).len(), 0);
     }
 
     #[test]
     fn ignores_taskfleet_outside_fences() {
         let prose = "Run `taskfleet run list` to see runs.\n";
-        assert!(extract_invocations("x", prose).is_empty());
+        assert_eq!(extract_invocations("x", prose).len(), 0);
     }
 
     #[test]

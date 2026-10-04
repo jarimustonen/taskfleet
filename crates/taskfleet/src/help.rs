@@ -1462,7 +1462,7 @@ mod tests {
             build_flag(&cmd, arg)
         };
         assert_eq!(flag("a").requires, vec!["b".to_string()]);
-        assert!(flag("b").requires.is_empty());
+        assert_eq!(flag("b").requires, Vec::<String>::new());
     }
 
     #[test]
@@ -1533,8 +1533,8 @@ mod tests {
         cmd.build();
         let arg = cmd.get_arguments().find(|a| a.get_id() == "a").unwrap();
         let flag = build_flag(&cmd, arg);
-        assert!(flag.requires.is_empty());
-        assert!(flag.required_unless_present.is_empty());
+        assert_eq!(flag.requires, Vec::<String>::new());
+        assert_eq!(flag.required_unless_present, Vec::<String>::new());
     }
 
     #[test]

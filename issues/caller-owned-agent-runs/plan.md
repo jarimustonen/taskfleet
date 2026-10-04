@@ -1,32 +1,96 @@
-# Preliminary implementation plan — caller-owned agent runs
+# Implementation plan — caller-owned agent runs
 
-Status: planning draft, not authorization to implement. Based on the approved option B in native-agent-host's `decide-taskfleet-browser-integration/design.md` and Taskfleet source as of 2026-10-04. The issue is sufficient to establish the goal and ownership boundary, **not** to hand to an implementation worker unchanged. Settle the contracts and failure cases below first.
+## Problem and agreed direction
 
-## Boundary and existing behavior
+Omega Habitat needs worktree agents that a person can create and control in
+the browser. Taskfleet currently starts a terminal worker; the browser cannot
+control that worker through Pi RPC.
 
-Taskfleet creates/records the run, branch and checkout, owns merge/cancel/discard and supervisor cleanup. Omega Habitat's per-user daemon starts and controls its own Pi RPC child in the verified checkout; stopping Pi or restarting the daemon does not settle the Taskfleet run. The browser must not launch a second terminal worker or infer run ownership from branch names or session-file timestamps.
+Jari approved option B on 2026-10-04: Taskfleet creates and settles the run and
+worktree, while the host's per-user daemon starts and controls a separate Pi
+process in the verified checkout. Implementation may proceed on that basis.
+The approval is recorded in native-agent-host's
+`issues/decide-taskfleet-browser-integration/item.md` and
+`docs/decisions/adr-0010-taskfleet-worktree-agents.md`; this issue's
+[item.md](item.md) describes the Taskfleet outcome.
 
-Current `run create` always resolves a harness/profile and task, uses `workmux add -a <generated launcher>` to make both checkout and tmux worker, requires a live PID handshake before `node.created`, then publishes staged state and starts a detached supervisor. `--interactive` changes terminalization, **not** launch ownership; `--skip-materialize` makes a test skeleton, **not** a production workspace-only run. The supervisor's no-worker guard, worker watchdog/retry, evidence capture and teardown presume a worker or its tmux window. Existing idempotency reservations cover published replays and some dead-creator recovery, but must be evaluated with workspace-only partial side effects. Double-fork/setsid in `run/supervisor_spawn.rs` does not escape a systemd service cgroup. Native Pi evidence belongs to the Taskfleet-launched worker; a caller-owned session needs a distinct binding rather than a forged worker handshake/evidence record.
+The division of responsibility determines what must survive a failure.
+Stopping Pi or restarting the daemon leaves the Taskfleet run and unmerged
+work available for explicit settlement. Retrying an interrupted creation must
+recover the original run or explain why recovery needs attention, without
+silently creating a duplicate. The supervisor needs a lifetime independent
+of the daemon, and the run needs a durable link to its Pi session so the
+conversation remains findable after worktree teardown.
 
-## Contracts to decide before coding
+## Proposed implementation
 
-1. **Creation surface and run type.** Specify a named, explicit caller-owned/workspace-only creation mode (not a reinterpretation of `--interactive`). Define allowed kinds (start with one single-node spinoff), required source repository/branch, task/title, idempotency key, and rejected combinations (profiles, harness, tmux/window flags, parent/child runs unless separately designed). Record the immutable mode in `run.created`/manifest and `node.created`/node so supervisors and old readers can distinguish it from an absent worker in a broken normal run. Publish one real node with verified checkout/branch/base/source and no PID/window. Define `run create --json`, `run show/list`, `node show`, dry-run and idempotent-replay identity fields; an idempotent replay must return the **same node and checkout**, not merely a run ID. Decide whether the mode is `interactive` with an orthogonal ownership field; do not introduce a third progress status or infer completion from Pi liveness.
-2. **Worktree creation and placement.** Determine a supported workmux worktree-only operation (or a narrowly scoped Git creation path with matching workmux merge/cleanup semantics); verify installed and target workmux capabilities in a disposable repository. Do not call normal `workmux add -a` and kill its worker. Check effective `worktree_dir` precedence and collision behavior, `workmux path`, source branch and merge behavior with checkout directly under `~/src` versus default sibling directory. Agree with the host on one placement/discovery strategy; Taskfleet should return and verify the actual absolute checkout, not promise a directory derived from a name. Placement must not relocate existing worktrees implicitly.
-3. **Publication, retries and recovery.** Enumerate every crash boundary (reservation, branch/worktree created, node recorded in staging, publish rename, supervisor boot, response lost). Decide which partial resources are safely reclaimable and how provenance is recorded durably *before* external side effects; preserve rather than delete dirty, modified, untracked, or unverifiable work. A retry with the same key must either return the original published identity, finish a safe interrupted creation, or fail with a machine-readable ambiguous/recovery-needed result; it must never create a duplicate and silently discard the original checkout. Define mismatched-key/input behavior, cross-process contention and the recovery operator path. Test kill-at-boundary scenarios, not only clean errors.
-4. **Supervisor and settlement.** A caller-owned node with no PID is a valid running/awaiting-settlement node. Exempt it *by recorded mode* from the no-worker and worker-death/retry logic; leave it non-terminal across Pi exit, daemon restart and supervisor reattach. Only explicit Taskfleet `run merge` makes it done; `run cancel` and `run discard` retain their distinct semantics. Review merge transaction/recovery, `TerminalOutcome`, cleanup and evidence gates for the PID-less/window-less path; do not let a missing worker count as permission to delete work. Specify a writer-quiescence handshake/authorization at merge, cancel and especially discard: Taskfleet cannot prove a separate Pi process stopped merely from its own PID fields. If that cannot be proven safely, block destructive finalization or require an explicit human acknowledgement and document the residual race; do not silently assume browser close means no writer.
-5. **Native Pi session binding.** Provide a dedicated, durable, typed run/node → Pi session registration/read contract, owned by Taskfleet's locked event/reducer path. Specify unique session ID, exact checked path or other stable native identifier, original cwd, attempt/replacement rules, idempotent retry, what proof the same-UID daemon supplies, conflict handling and path-containment/symlink checks. The daemon starts Pi; Taskfleet does not introspect Pi's private manager. Registration must remain readable after worktree teardown. Decide explicitly whether Taskfleet archives caller-owned transcripts or only retains a verified binding: existing `worker.evidence` archival assumes a Taskfleet-owned session and can quiesce only the worker PID, so it cannot simply be reused. Coordinate the host's post-teardown read route and history retention policy.
-6. **Supervisor process lifetime.** The Taskfleet side should report a confirmed supervisor and support `run reattach`; the host/deployment must launch `taskfleet run create` outside the daemon service cgroup (e.g. a separately managed per-user systemd scope/service) and arrange reconciliation/reattach after daemon restart. Verify with a disposable per-user systemd setup that restart/stop of the daemon does not terminate the supervisor. Double-fork alone is insufficient. Define what happens if supervisor creation fails *after* run publication: show the recoverable run and exact reattach instruction, not success with an invisible orphan.
+Start with one caller-owned spinoff and extend the existing creation and
+settlement paths. This is a proposed first slice; the exact CLI, event fields
+and session-binding representation remain implementation choices. Record the
+consumer-facing contract in a design document under this issue as it takes
+shape, coordinating with native-agent-host's `manage-agent-worktrees` work.
+Resolve each contract when its implementation needs it.
 
-## Implementation slices (after contract agreement)
+### 1. Create a worktree and settle its run
 
-1. Record the accepted API, compatibility/read-only behavior for older runs, JSON examples and failure matrix in a design document under this issue. Coordinate input/output shapes and placement with the host owner before schema changes.
-2. Build a walking slice: workspace-only creation in a disposable repo, one verified node, stable JSON identity, no terminal worker, supervisor alive, explicit merge through the existing transaction, full teardown. Keep the old create path unchanged.
-3. Add durable keyed creation/recovery, including crash injection around external side effects and replay/ambiguity tests. Do not ship creation to the host until this works.
-4. Add typed caller-owned session binding and post-teardown read semantics, plus supervisor lifecycle/cancel/discard safeguards. Validate daemon-owned writer interference and restart behavior with the host.
-5. Exercise the integration contract against a synthetic host consumer: create, Pi launch, registration, stop/restart, continue where safe, merge, cancel/retain, discard authorization, and retained history after teardown. Verify same-UID writer and cross-UID refusal; do not touch real sessions or user worktrees. Document recovery commands and capability detection.
+Build a complete path in a disposable repository: create a run and node,
+return their identities and the actual checkout path, then explicitly merge
+through Taskfleet's existing transaction and cleanup.
 
-Validation for every Taskfleet implementation worktree: `scripts/validate-local-release.sh` before merge, plus focused integration fixtures for normal and caller-owned runs (including old-run deserialization and JSON snapshots). Run the gate again on integrated main. This plan authorizes neither installing the built Taskfleet nor editing the host repository from a Taskfleet worker.
+Creation needs an explicit way to select caller ownership and supervision
+needs a durable way to recognize it. A missing worker PID is expected for
+these runs; it must not trigger worker-death or retry handling. The existing
+`--interactive` flag changes terminalization, but does not provide creation
+without a worker. The test-only `--skip-materialize` path is not sufficient
+either.
 
-## Planning exit criteria
+Verify whether workmux supports the required worktree-only operation and
+placement. If it does not, choose a creation path compatible with Taskfleet's
+merge and cleanup. Return the verified absolute checkout path so the host can
+check it against the run and node. Placement and discovery under `~/src`
+remain coordinated host implementation choices.
 
-Before implementation, resolve: (a) actual workmux worktree-only and placement capability or chosen replacement; (b) exact mode and CLI/event/JSON shape; (c) crash-boundary recovery and what is never auto-removed; (d) writer-quiescence and destructive-operation authority; (e) session binding, archival and history-read ownership; (f) an independently managed supervisor launch and restart test. Treat unknowns as design tasks, not defaults inferred from existing terminal-worker code.
+### 2. Make interruption recoverable
+
+Extend keyed creation to cover partial worktree creation and a lost response.
+A retry should return the original run, node and checkout, finish a safely
+recoverable creation, or report an actionable uncertain state. Preserve work
+whose ownership or safety cannot be established.
+
+Exercise interruptions around external side effects and publication, including
+concurrent retries. Decide the required durable recovery records from those
+cases. Also cover supervisor startup failure after publication: the caller
+needs the recoverable run identity and a supported reattach route.
+
+Arrange supervisor launch outside the daemon's service cgroup with the host.
+Taskfleet's double-fork does not provide that separation. Verify supervisor
+survival and run reconciliation across daemon stop and restart in a disposable
+service setup.
+
+### 3. Connect the Pi session and safe settlement
+
+Add a durable run/node-to-Pi-session binding through Taskfleet's locked state
+updates. Agree its registration, replacement and read behavior with the host,
+including how history is read after the checkout disappears. Pi owns its
+conversation history; whether Taskfleet also archives a copy is an open
+implementation choice.
+
+The daemon owns the Pi writer, so Taskfleet's worker PID cannot establish
+that writing has stopped. Coordinate merge, cancel and discard with that
+owner so settlement cannot destroy work still being written. A dedicated
+quiescence handshake is one possible mechanism, not a settled requirement.
+Keep Taskfleet's existing distinctions between successful merge, cancellation
+with retained work, and explicit discard.
+
+## Completion
+
+Demonstrate the host journey with disposable data: creation, Pi startup,
+session binding, interrupted creation, daemon restart, explicit settlement
+and readable history after teardown. Include ownership mismatches and a Pi
+process still writing during settlement. Verify existing runs and normal
+Taskfleet-launched workers continue to behave correctly.
+
+Use the repository's validation gate, `scripts/validate-local-release.sh`,
+with focused integration fixtures and JSON snapshots for the new contract.
+Which settlement actions appear in the browser remains the host's decision;
+Taskfleet supplies the supported operations and their outcomes.

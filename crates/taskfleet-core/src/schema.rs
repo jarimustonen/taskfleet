@@ -836,7 +836,23 @@ pub struct RetainedDisplay {
     pub expired_at: Option<DateTime<Utc>>,
 }
 
-/// `nodes/<node-id>.json` (design.md §1.3).
+/// Immutable caller-owned native Pi session identity. This is an association,
+/// not evidence of writer quiescence, history retention, or settlement authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallerPiSession {
+    /// Native Pi UUID.
+    pub pi_session_id: String,
+    /// Absolute native session JSONL path (a locator, not a history guarantee).
+    pub session_path: String,
+    /// Checkout recorded when binding, immutable after teardown.
+    pub original_cwd: String,
+    /// Native file device at registration; catches path replacement on retry.
+    pub file_dev: u64,
+    /// Native file inode at registration; append growth is permitted.
+    pub file_ino: u64,
+}
+
+/// Durable `nodes/<node-id>.json` projection (design.md §1.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     /// State-schema version this file was written with.
@@ -890,6 +906,9 @@ pub struct Node {
     /// publication and advanced only by locked evidence events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<WorkerEvidence>,
+    /// Separate from Taskfleet-launched worker evidence; survives checkout removal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pi_session: Option<CallerPiSession>,
     /// Inert completed-window identity, when this run opted into retention.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_display: Option<Box<RetainedDisplay>>,

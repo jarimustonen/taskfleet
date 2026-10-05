@@ -21,6 +21,7 @@ pub mod ownership;
 pub mod reattach;
 pub mod retained;
 pub mod salvage;
+pub mod session;
 pub mod show;
 pub mod spawn;
 pub mod stalled;
@@ -246,6 +247,11 @@ pub enum RunAction {
         #[arg(long)]
         current: bool,
     },
+    /// Manage a caller-owned native Pi session association (not writer authority).
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Cancel a run (all live nodes → `run.status: cancelled`), or a single
     /// live node with `--node <id>` (branch-preserving; the run stays live
     /// while siblings run and the supervisor rolls it up once every node
@@ -384,6 +390,27 @@ pub enum RunAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum SessionAction {
+    /// Bind one verified native Pi session to a caller-owned run/node. Immutable;
+    /// an identical retry succeeds after revalidating the source. No Pi is launched.
+    Bind {
+        /// Exact full 26-character run ID (prefixes are not accepted).
+        run_id: String,
+        #[arg(long)]
+        node: String,
+        #[arg(long)]
+        pi_session_id: String,
+        #[arg(long)]
+        session_path: String,
+        #[arg(long)]
+        checkout: String,
+        /// No truthful dry run can reserve an open native file or its writer.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match action {
         RunAction::Create {
@@ -467,6 +494,26 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             };
             show::run(&run_id, spec, warnings)
         }
+        RunAction::Session {
+            action:
+                SessionAction::Bind {
+                    run_id,
+                    node,
+                    pi_session_id,
+                    session_path,
+                    checkout,
+                    dry_run,
+                },
+        } => session::bind(
+            dry_run,
+            &run_id,
+            &node,
+            &pi_session_id,
+            &session_path,
+            &checkout,
+            spec,
+            warnings,
+        ),
         RunAction::Cancel { run_id, node, note } => {
             cancel::run(&run_id, node.as_deref(), note.as_deref(), spec, warnings)
         }

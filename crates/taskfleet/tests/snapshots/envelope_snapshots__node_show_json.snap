@@ -1,6 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 233
+assertion_line: 234
 expression: value
 ---
 {
@@ -24,7 +24,8 @@ expression: value
     "started_at": "[TS]",
     "updated_at": "[TS]",
     "last_report": null,
-    "report": null
+    "report": null,
+    "caller_pi_session": null
   },
   "warnings": []
 }

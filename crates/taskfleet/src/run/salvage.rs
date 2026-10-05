@@ -561,6 +561,7 @@ mod tests {
             tmux_window: None,
             tmux_identity: None,
             evidence: None,
+            caller_pi_session: None,
             retained_display: None,
             retention_unavailable: None,
             agent_pid,

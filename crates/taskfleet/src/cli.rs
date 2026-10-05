@@ -400,7 +400,10 @@ fn command_writes_state(command: &Command) -> bool {
             crate::run::RunAction::Create { dry_run, .. }
             | crate::run::RunAction::Merge { dry_run, .. }
             | crate::run::RunAction::Salvage { dry_run, .. }
-            | crate::run::RunAction::Discard { dry_run, .. } => !dry_run,
+            | crate::run::RunAction::Discard { dry_run, .. }
+            | crate::run::RunAction::Session {
+                action: crate::run::SessionAction::Bind { dry_run, .. },
+            } => !dry_run,
             crate::run::RunAction::Cancel { .. }
             | crate::run::RunAction::Reattach { .. }
             | crate::run::RunAction::UpgradeLock { .. } => true,

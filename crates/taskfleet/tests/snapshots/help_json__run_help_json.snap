@@ -165,6 +165,14 @@ expression: value
         "has_subcommands": false
       },
       {
+        "command": "taskfleet run session",
+        "about": "Manage a caller-owned native Pi session association (not writer authority)",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": true
+      },
+      {
         "command": "taskfleet run show",
         "about": "Show one run's manifest and counters. Pass an id, or use `--current` inside a worker worktree to resolve its exact owning run from durable node ownership metadata (never from the branch's short run-id prefix)",
         "aliases": [],

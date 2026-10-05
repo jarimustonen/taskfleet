@@ -275,3 +275,135 @@ fn killed_creator_reuses_the_exact_reservation_and_preserves_dirty_work() {
         assert!(!workspace.path().join("forbidden").exists());
     }
 }
+
+#[test]
+fn native_pi_binding_is_immutable_and_readable_after_checkout_removal() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "bind", None);
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = value["data"]["run_id"].as_str().unwrap();
+    let checkout = value["data"]["worktree_path"].as_str().unwrap();
+    let native_home = workspace.path().join("native-home");
+    let store = native_home.join(".pi/agent/sessions/project");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::set_permissions(
+        native_home.join(".pi/agent/sessions"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let id = "b30d3508-a8d4-4aa7-bafa-7f5dfef72014";
+    let path = store.join("session.jsonl");
+    std::fs::write(
+        &path,
+        format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"cwd\":\"{checkout}\"}}\n"),
+    )
+    .unwrap();
+    let call = |run: &str, node: &str, path: &Path, checkout: &str| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args([
+                "--output",
+                "json",
+                "run",
+                "session",
+                "bind",
+                run,
+                "--node",
+                node,
+                "--pi-session-id",
+                id,
+                "--session-path",
+            ])
+            .arg(path)
+            .args(["--checkout", checkout])
+            .env("HOME", &native_home)
+            .env("TASKFLEET_HOME", home.path())
+            .output()
+            .unwrap()
+    };
+    let first = call(run, "n-0001", &path, checkout);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let replay = call(run, "n-0001", &path, checkout);
+    assert!(replay.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(v["data"]["idempotent_replay"], true);
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(run).join("events.jsonl")).unwrap();
+    assert_eq!(events.matches("caller.pi.session_bound").count(), 1);
+    let bad =
+        |o: Output, code: &str| assert!(String::from_utf8_lossy(&o.stderr).contains(code), "{o:?}");
+    bad(call(run, "n-0002", &path, checkout), "node_not_found");
+    bad(
+        call("01arz3ndektsv4rrffq69g5fav", "n-0001", &path, checkout),
+        "run_not_found",
+    );
+    bad(
+        call(run, "n-0001", &path, "/different/checkout"),
+        "pi_session_conflict",
+    );
+    let other = store.join("other.jsonl");
+    std::fs::copy(&path, &other).unwrap();
+    bad(call(run, "n-0001", &other, checkout), "pi_session_conflict");
+    std::fs::rename(&path, store.join("held.jsonl")).unwrap();
+    std::fs::copy(&other, &path).unwrap();
+    bad(call(run, "n-0001", &path, checkout), "pi_session_conflict");
+    std::fs::write(&path, "not-json\n").unwrap();
+    bad(call(run, "n-0001", &path, checkout), "invalid_pi_session");
+    std::fs::remove_file(&path).unwrap();
+    symlink(&other, &path).unwrap();
+    bad(call(run, "n-0001", &path, checkout), "invalid_pi_session");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, "x".repeat(16385)).unwrap();
+    bad(call(run, "n-0001", &path, checkout), "invalid_pi_session");
+    std::fs::remove_file(&path).unwrap();
+    let linked = store.parent().unwrap().join("linked");
+    symlink(&store, &linked).unwrap();
+    bad(
+        call(run, "n-0001", &linked.join("other.jsonl"), checkout),
+        "invalid_pi_session",
+    ); // symlinked parent is never followed
+    std::fs::write(
+        &path,
+        format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"cwd\":\"{checkout}\"}}\n"),
+    )
+    .unwrap();
+    git(
+        &workspace.path().join("repo"),
+        &["worktree", "remove", "--force", checkout],
+    );
+    let shown = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .args(["--output", "json", "node", "show", run, "n-0001"])
+        .env("TASKFLEET_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(shown.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(v["data"]["caller_pi_session"]["original_cwd"], checkout);
+    let run_shown = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .args(["--output", "json", "run", "show", run])
+        .env("TASKFLEET_HOME", home.path())
+        .env("GIT_BIN", fixture_git_binary())
+        .output()
+        .unwrap();
+    assert!(
+        run_shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run_shown.stderr)
+    );
+    let run_view: serde_json::Value = serde_json::from_slice(&run_shown.stdout).unwrap();
+    assert_eq!(
+        run_view["data"]["caller_pi_session"]["original_cwd"],
+        checkout
+    );
+    assert!(v["data"]["evidence"].is_null());
+    bad(call(run, "n-0001", &path, checkout), "pi_session_conflict"); // no new binds after teardown
+}

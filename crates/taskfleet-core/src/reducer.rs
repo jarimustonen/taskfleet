@@ -55,8 +55,9 @@ use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::report::ReportOrigin;
 use crate::schema::{
-    ChildRef, Event, EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node,
-    NodeId, RunId, Status, TmuxIdentity, WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION,
+    CallerPiSession, ChildRef, Event, EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest,
+    MergeTxn, Node, NodeId, RunId, Status, TmuxIdentity, WorkerEvidence, WorkerExit,
+    STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -295,6 +296,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.status" => reduce_node_status(paths, ev),
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
+        "caller.pi.session_bound" => reduce_caller_pi_session_bound(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
         "worker.evidence.archived" => reduce_worker_evidence_archived(paths, ev),
         "worker.evidence.failed" => reduce_worker_evidence_failed(paths, ev),
@@ -801,6 +803,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
             .map(str::to_string),
         tmux_identity: tmux_identity_from_data(d).map(Box::new),
         evidence: worker_evidence_from_spawn_data(&events_path, ev, d)?,
+        caller_pi_session: None,
         retained_display: None,
         retention_unavailable: None,
         agent_pid: optional_i32(d, "agent_pid", &events_path, ev)?,
@@ -838,6 +841,38 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         ops.push(ProjectionOp::Manifest(m));
     }
     Ok(ops)
+}
+
+/// Binding is immutable even if the worktree later disappears. The CLI validates
+/// the native file at admission; replay only checks the recorded identity.
+fn reduce_caller_pi_session_bound(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let bad = |reason: &str| Error::CorruptEventLog {
+        path: paths.events(),
+        reason: format!("event seq={} caller.pi.session_bound: {reason}", ev.seq),
+    };
+    let id = require_envelope_node_id(&paths.events(), ev)?;
+    let manifest = read_manifest_opt(paths)?.ok_or_else(|| bad("missing run"))?;
+    if manifest.agent_owner != crate::schema::AgentOwner::Caller {
+        return Err(bad("not a caller-owned run"));
+    }
+    let mut node = read_node_opt(paths, &id)?.ok_or_else(|| bad("missing node"))?;
+    let binding: CallerPiSession =
+        serde_json::from_value(ev.data.clone()).map_err(|_| bad("invalid binding"))?;
+    if binding.original_cwd != node.worktree_path.as_deref().unwrap_or("")
+        || binding.original_cwd.is_empty()
+        || binding.pi_session_id.is_empty()
+        || binding.session_path.is_empty()
+    {
+        return Err(bad("binding identity does not match node"));
+    }
+    match &node.caller_pi_session {
+        Some(existing) if existing == &binding => return Ok(vec![]),
+        Some(_) => return Err(bad("binding already exists with different identity")),
+        None => {}
+    }
+    node.caller_pi_session = Some(binding);
+    node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
 }
 
 /// Rewire an existing node to a freshly re-spawned agent after an empty-handed

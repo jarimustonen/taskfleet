@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
-use taskfleet_core::schema::TmuxIdentity;
+use taskfleet_core::schema::{CallerPiSession, TmuxIdentity};
 use taskfleet_core::{ChildRef, Node, NodeId, RunId};
 
 use crate::run::{kind_kebab, status_kebab};
@@ -59,6 +59,7 @@ pub struct NodeView<'a> {
     /// Unlike `last_report`, this does not expose that the projection stores
     /// only the latest report. Both fields intentionally carry identical data.
     pub report: &'a Option<Value>,
+    pub caller_pi_session: &'a Option<CallerPiSession>,
 }
 
 impl<'a> From<&'a Node> for NodeView<'a> {
@@ -83,6 +84,7 @@ impl<'a> From<&'a Node> for NodeView<'a> {
             updated_at: n.updated_at,
             last_report: &n.last_report,
             report: &n.last_report,
+            caller_pi_session: &n.caller_pi_session,
         }
     }
 }
@@ -138,6 +140,7 @@ mod tests {
             tmux_window: Some("seed-win".to_string()),
             tmux_identity: None,
             evidence: None,
+            caller_pi_session: None,
             retained_display: None,
             retention_unavailable: None,
             agent_pid: Some(4242),
@@ -182,6 +185,7 @@ mod tests {
                 "updated_at": "2024-01-01T00:00:00Z",
                 "last_report": null,
                 "report": null,
+                "caller_pi_session": null,
             })
         );
     }

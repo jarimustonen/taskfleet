@@ -399,7 +399,10 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
     {
         return preserve("caller cleanup receipt could not be recorded");
     }
-    if exists && !remove_worktree(repo, checkout, &git, false) {
+    if exists
+        && (authority.verify(node, repo, source).is_err()
+            || !remove_worktree(repo, checkout, &git, false))
+    {
         return preserve("caller worktree not cleanly removable");
     }
     if authority.revalidate().is_err()

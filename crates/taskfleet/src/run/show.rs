@@ -362,7 +362,18 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     crate::run::merge_recovery::read_oid(&git, repo, source).is_some()
                         && crate::run::merge_recovery::read_oid(&git, repo, branch).is_none()
                 });
-            if manifest.status == Status::Done && checkout_gone && branch_gone {
+            let verified_report =
+                manifest
+                    .caller_settlement_intent
+                    .as_ref()
+                    .is_some_and(|intent| {
+                        let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("constant node id");
+                        crate::run::merge_recovery::verified_caller_transaction(
+                            &paths, &node_id, intent, true,
+                        )
+                        .is_some()
+                    });
+            if manifest.status == Status::Done && checkout_gone && branch_gone && verified_report {
                 "complete"
             } else {
                 "pending"

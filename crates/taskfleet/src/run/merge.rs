@@ -1520,6 +1520,12 @@ mod caller_merge_tests {
     }
     impl Fixture {
         fn new() -> Self {
+            Self::new_internal(false)
+        }
+        fn new_with_pi() -> Self {
+            Self::new_internal(true)
+        }
+        fn new_internal(with_pi: bool) -> Self {
             let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
             let repo = tmp.path().join("repo");
             fs::create_dir(&repo).unwrap();
@@ -1575,6 +1581,48 @@ mod caller_merge_tests {
                 }),
             )
             .unwrap();
+            if with_pi {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let store =
+                    Path::new(&std::env::var_os("HOME").unwrap()).join(".pi/agent/sessions");
+                fs::create_dir_all(&store).unwrap();
+                fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
+                let id = "b30d3508-a8d4-4aa7-bafa-7f5dfef72014";
+                let timestamp = "2026-08-01T10:20:30.000Z";
+                let path = store.join(format!(
+                    "{}_{}.jsonl",
+                    timestamp.replace([':', '.'], "-"),
+                    id
+                ));
+                fs::write(&path, format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"timestamp\":\"{timestamp}\",\"cwd\":\"{}\"}}\n", checkout.display())).unwrap();
+                append_and_apply_event(
+                    &paths,
+                    "caller.pi.lifecycle",
+                    Some(&node),
+                    None,
+                    json!({"generation":1,"pi_session_id":id,"state":"reserved","reason":null}),
+                )
+                .unwrap();
+                let meta = fs::metadata(&path).unwrap();
+                append_and_apply_event(
+                    &paths,
+                    "caller.pi.session_bound",
+                    Some(&node),
+                    None,
+                    json!({"pi_session_id":id,"session_path":path,"original_cwd":checkout,
+                        "file_dev":meta.dev(),"file_ino":meta.ino(),"generation":1}),
+                )
+                .unwrap();
+                append_and_apply_event(
+                    &paths,
+                    "caller.pi.lifecycle",
+                    Some(&node),
+                    None,
+                    json!({"generation":1,"pi_session_id":id,"session_path":path,
+                        "state":"started","reason":null}),
+                )
+                .unwrap();
+            }
             writer_fence::record_intent(
                 &paths,
                 &node,
@@ -1758,6 +1806,66 @@ mod caller_merge_tests {
         fs::write(f.paths.root.join("writer.lock"), "").unwrap();
         assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
         assert!(f.checkout.exists());
+    }
+
+    #[test]
+    fn native_history_survives_git_only_cleanup_and_missing_history_preserves() {
+        // HOME is process-global. Run the real producer/consumer in an isolated
+        // test process rather than changing the parallel nextest worker's HOME.
+        let home = tempfile::tempdir_in("/var/tmp").unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::merge::caller_merge_tests::native_history_child")
+            .env("TASKFLEET_CALLER_HISTORY_FIXTURE", "1")
+            .env("HOME", home.path())
+            .status()
+            .unwrap();
+        assert!(child.success());
+    }
+
+    #[test]
+    fn native_history_child() {
+        if std::env::var_os("TASKFLEET_CALLER_HISTORY_FIXTURE").is_none() {
+            return;
+        }
+        use std::os::unix::fs::MetadataExt;
+        let f = Fixture::new_with_pi();
+        let binding = read_node_opt(&f.paths, &f.node)
+            .unwrap()
+            .unwrap()
+            .caller_pi_session
+            .unwrap();
+        let path = Path::new(&binding.session_path);
+        let meta = fs::metadata(path).unwrap();
+        assert_eq!(
+            f.drive("merge-key").unwrap(),
+            read_all_events(&f.paths.events())
+                .unwrap()
+                .iter()
+                .find(|e| e.kind == "node.report")
+                .unwrap()
+                .seq
+        );
+        append_and_apply_event(&f.paths, "run.status", None, None, json!({"status":"done"}))
+            .unwrap();
+        let moved = path.with_extension("held");
+        fs::rename(path, &moved).unwrap();
+        assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(f.checkout.exists());
+        fs::rename(&moved, path).unwrap();
+        let replaced = path.with_extension("original");
+        fs::rename(path, &replaced).unwrap();
+        fs::copy(&replaced, path).unwrap();
+        assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(f.checkout.exists());
+        fs::remove_file(path).unwrap();
+        fs::rename(&replaced, path).unwrap();
+        assert!(cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(!f.checkout.exists());
+        assert_eq!(fs::metadata(path).unwrap().ino(), meta.ino());
+        assert!(fs::read_to_string(path)
+            .unwrap()
+            .contains(&binding.pi_session_id));
     }
 
     #[test]

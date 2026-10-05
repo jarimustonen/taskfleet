@@ -863,7 +863,7 @@ mod tests {
         .is_err());
         assert_eq!(
             recover_node(&paths, &nid, &git_bin()),
-            Recovery::CannotVerify
+            Recovery::NothingPending
         );
         let node = read_node_opt(&paths, &nid).unwrap().unwrap();
         assert!(node.pending_merge.is_none());

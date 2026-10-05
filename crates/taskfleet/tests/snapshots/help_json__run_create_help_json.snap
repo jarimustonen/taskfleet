@@ -18,7 +18,7 @@ expression: value
         "long": "agent-owner",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned Fenced merge, cancel and salvage are separate settlement commands; discard remains unavailable",
+        "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned Fenced merge, cancel, salvage and force discard are separate settlement commands",
         "value_names": [
           "AGENT_OWNER"
         ],

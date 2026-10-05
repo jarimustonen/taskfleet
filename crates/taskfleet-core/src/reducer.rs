@@ -895,7 +895,11 @@ fn reduce_caller_settlement_intent(paths: &RunPaths, ev: &Event) -> Result<Vec<P
             && node.status == Status::Failed
             && manifest.node_count == 1
             && id.as_str() == "n-0001"
-            && intent.operation == crate::schema::SettlementOperation::Merge)
+            && matches!(
+                intent.operation,
+                crate::schema::SettlementOperation::Merge
+                    | crate::schema::SettlementOperation::Discard
+            ))
     {
         return Err(bad("terminal run"));
     }

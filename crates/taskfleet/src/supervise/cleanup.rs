@@ -314,6 +314,26 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
         record_branch_preserved(paths, node, node.branch.as_deref(), checkout, reason);
         false
     };
+    if matches!(manifest.status, Status::Failed | Status::Cancelled)
+        && taskfleet_core::read_all_events(&paths.events()).is_ok_and(|events| {
+            events
+                .iter()
+                .any(|e| e.kind == "cleanup.discard_authorized" && e.run_id == paths.run_id)
+        })
+    {
+        // An audit record alone cannot authorize deletion. The operator CLI
+        // owns mutation; supervisor only confirms complete absence under EX.
+        let Some(intent) = manifest.caller_settlement_intent.clone() else {
+            return preserve("caller discard intent missing");
+        };
+        let Ok(authority) = CallerMergeAuthority::acquire(paths, intent.clone()) else {
+            return preserve("caller discard writer lease unavailable");
+        };
+        if crate::run::caller_discard::completed(paths, &intent, &authority) {
+            return true;
+        }
+        return preserve("caller discard incomplete or unverifiable");
+    }
     if manifest.status == Status::Cancelled {
         use taskfleet_core::schema::SettlementOperation;
         let Some(intent) = manifest.caller_settlement_intent.clone() else {

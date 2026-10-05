@@ -19,6 +19,7 @@ const EVENT_KIND: &str = "cleanup.discard_authorized";
 
 pub struct Args<'a> {
     pub run_id: String,
+    pub settlement_key: Option<String>,
     pub node: Option<String>,
     pub reason: String,
     pub force: bool,
@@ -94,6 +95,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
     let paths = run_paths_from_cli_arg(&root, &args.run_id)?;
     let run_id = paths.run_id.as_str().to_string();
+    let caller = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok(read_manifest_opt(&paths)?
+            .is_some_and(|m| m.agent_owner == taskfleet_core::AgentOwner::Caller))
+    })
+    .map_err(from_core)?;
+    if caller {
+        return super::caller_discard::run(&args, &paths);
+    }
+    if args.settlement_key.is_some() {
+        return Err(CliError::user(
+            "invalid_settlement_key",
+            "--settlement-key is only for caller-owned runs",
+        ));
+    }
     let git = Git::with_bin(crate::supervise::cleanup::git_bin());
 
     let lock = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;

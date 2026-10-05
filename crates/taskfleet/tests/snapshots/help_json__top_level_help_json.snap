@@ -2531,7 +2531,7 @@ expression: value
                 "long": "agent-owner",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned Fenced merge, cancel and salvage are separate settlement commands; discard remains unavailable",
+                "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned Fenced merge, cancel, salvage and force discard are separate settlement commands",
                 "value_names": [
                   "AGENT_OWNER"
                 ],
@@ -3242,7 +3242,7 @@ expression: value
           },
           {
             "command": "taskfleet run discard",
-            "about": "Remove one failed/cancelled node's retained worktree and branch after recording explicit durable authorization. This never changes run status or marks work landed",
+            "about": "Remove a failed/cancelled node's retained work after durable authorization. Caller-owned runs require --force and --settlement-key; never changes status",
             "aliases": [],
             "hidden": false,
             "deprecated": false,
@@ -3438,6 +3438,35 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "settlement_key",
+                "long": "settlement-key",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Stable key for caller-owned discard; on cancelled runs reuse the cancel key",
+                "value_names": [
+                  "SETTLEMENT_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
                 "is_global": false,
                 "hidden": false,
                 "deprecated": false,

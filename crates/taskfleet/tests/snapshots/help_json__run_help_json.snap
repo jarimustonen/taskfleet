@@ -126,7 +126,7 @@ expression: value
       },
       {
         "command": "taskfleet run discard",
-        "about": "Remove one failed/cancelled node's retained worktree and branch after recording explicit durable authorization. This never changes run status or marks work landed",
+        "about": "Remove a failed/cancelled node's retained work after durable authorization. Caller-owned runs require --force and --settlement-key; never changes status",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

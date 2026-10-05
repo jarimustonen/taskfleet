@@ -192,6 +192,22 @@ owns the timer unit. A unit that binds to the shared tmux server with
 `Requires=` or `PartOf=` would let maintenance start or restart the user's
 server, which is the one thing the command itself refuses to do.
 
+## Caller-owned force discard
+
+`run discard <full-id> --force --reason ... --settlement-key ...` is a
+separate, destructive operator action for a failed/cancelled single-node caller
+run. A Failed run can record a sticky Discard intent after terminalization;
+a Cancelled run reuses its existing Cancel intent and original key without
+replacing it. The new `run/caller_discard.rs` path holds the recorded writer
+inode under an exclusive lease, verifies Pi history (including the event-log
+proof that no Pi was ever reserved), source Git identity and source-relative
+retained work, then writes a target/OID-pinned audit receipt *before* Git-only
+force removal. It repeats checks between worktree and branch removal; a
+partial result is retried with the same key and reason, never retargeted.
+Supervisor cleanup only acknowledges verified absence under the lease; it
+never performs the caller's discard. The host's gate-held Pi launch remains a
+separate integration requirement; CLI intent/lease alone does not launch Pi.
+
 ## Worker prompt context and ownership discovery
 
 Every materialized prompt gets a preamble from

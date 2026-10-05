@@ -395,6 +395,27 @@ pub(super) fn record_intent(
         seq: 0,
     };
     if let Some(old) = manifest.caller_settlement_intent {
+        // Cancellation is already a sticky admission fence. Discard is a
+        // separate authorization, not a replacement intent; it must reuse
+        // that exact fence and the caller's original settlement key.
+        if operation == taskfleet_core::schema::SettlementOperation::Discard
+            && old.operation == taskfleet_core::schema::SettlementOperation::Cancel
+            && manifest.status == taskfleet_core::Status::Cancelled
+            && node.status == taskfleet_core::Status::Cancelled
+            && old.key == key
+            && old.run_id == paths.run_id
+            && old.node_id == *node_id
+            && old.writer_dev == intent.writer_dev
+            && old.writer_ino == intent.writer_ino
+            && old.gate_dev == intent.gate_dev
+            && old.gate_ino == intent.gate_ino
+            && old.generation == intent.generation
+            && node.pending_merge.is_none()
+            && manifest.node_count == 1
+            && node_id.as_str() == "n-0001"
+        {
+            return Ok(old);
+        }
         if old.key == key
             && old.operation == operation
             && old.actor == actor
@@ -413,6 +434,23 @@ pub(super) fn record_intent(
             "different settlement intent already persisted; inspect the run",
         ));
     }
+    if operation == taskfleet_core::schema::SettlementOperation::Discard
+        && (node.pending_merge.is_some()
+            || manifest.node_count != 1
+            || node_id.as_str() != "n-0001"
+            || !matches!(
+                manifest.status,
+                taskfleet_core::Status::Failed | taskfleet_core::Status::Cancelled
+            )
+            || node.status != manifest.status
+            || !matches!(taskfleet_core::read_node_status_facts(paths, None)
+                .map_err(super::from_core)?.as_slice(), [fact] if fact.node_id == *node_id && fact.status == manifest.status))
+    {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "discard requires one matching terminal node and no pending merge transaction",
+        ));
+    }
     if operation == taskfleet_core::schema::SettlementOperation::Cancel
         && manifest.caller_settlement_intent.is_none()
         && (manifest.node_count != 1
@@ -427,7 +465,11 @@ pub(super) fn record_intent(
     }
     if manifest.status.is_terminal()
         && !(allow_failed
-            && operation == taskfleet_core::schema::SettlementOperation::Merge
+            && matches!(
+                operation,
+                taskfleet_core::schema::SettlementOperation::Merge
+                    | taskfleet_core::schema::SettlementOperation::Discard
+            )
             && manifest.status == taskfleet_core::Status::Failed
             && node.status == taskfleet_core::Status::Failed
             && manifest.node_count == 1

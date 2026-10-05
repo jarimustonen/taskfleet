@@ -8,6 +8,7 @@ mod admission;
 pub mod attention;
 pub mod awaiting_input;
 mod caller_create;
+pub(crate) mod caller_discard;
 pub mod cancel;
 pub mod create;
 pub mod discard;
@@ -109,7 +110,7 @@ pub enum RunAction {
         /// Provision a Git-only worktree without launching an agent. Caller-owned JSON
         /// returns persistent lock identities, NOT Pi launch admission: host-held
         /// launch gate and inherited writer lease are not integrated yet. Caller-owned
-        /// Fenced merge, cancel and salvage are separate settlement commands; discard remains unavailable.
+        /// Fenced merge, cancel, salvage and force discard are separate settlement commands.
         #[arg(long, value_enum, default_value = "taskfleet")]
         agent_owner: AgentOwnerArg,
         #[arg(long, value_enum)]
@@ -339,11 +340,13 @@ pub enum RunAction {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Remove one failed/cancelled node's retained worktree and branch after
-    /// recording explicit durable authorization. This never changes run status
-    /// or marks work landed.
+    /// Remove a failed/cancelled node's retained work after durable authorization.
+    /// Caller-owned runs require --force and --settlement-key; never changes status.
     Discard {
         run_id: String,
+        /// Stable key for caller-owned discard; on cancelled runs reuse the cancel key.
+        #[arg(long)]
+        settlement_key: Option<String>,
         /// Select one retained node. Required when more than one is present.
         #[arg(long)]
         node: Option<String>,
@@ -742,12 +745,14 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
         }),
         RunAction::Discard {
             run_id,
+            settlement_key,
             node,
             reason,
             force,
             dry_run,
         } => discard::run(discard::Args {
             run_id,
+            settlement_key,
             node,
             reason,
             force,

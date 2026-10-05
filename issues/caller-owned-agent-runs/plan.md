@@ -44,11 +44,16 @@ these runs; it must not trigger worker-death or retry handling. The existing
 without a worker. The test-only `--skip-materialize` path is not sufficient
 either.
 
-Verify whether workmux supports the required worktree-only operation and
-placement. If it does not, choose a creation path compatible with Taskfleet's
-merge and cleanup. Return the verified absolute checkout path so the host can
-check it against the run and node. Placement and discovery under `~/src`
-remain coordinated host implementation choices.
+Caller-owned creation must use a Taskfleet-owned Git worktree path and never
+invoke workmux, even for retry, merge or cleanup. Agree a collision-safe
+checkout location and return its verified absolute path so the host can check
+it against the run and node. Replace the embedded `merge.sh` driver with
+Rust-owned merge orchestration before caller-owned settlement: preserve the
+existing serialization, source-OID guard, transaction recovery and supervisor
+cleanup while invoking Git for its own operations. Ordinary worker creation
+may continue to use workmux; remove the script only once both modes pass the
+same merge-safety tests. Placement and discovery under `~/src` remain
+coordinated host implementation choices.
 
 ### 2. Make interruption recoverable
 

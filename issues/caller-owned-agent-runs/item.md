@@ -1,6 +1,6 @@
 ---
 created: 2026-10-04
-updated: 2026-10-04
+updated: 2026-10-05
 type: feature
 reporter: jari
 status: untriaged
@@ -44,3 +44,9 @@ Demonstrate creation without a terminal worker, recovery after interrupted
 creation or daemon restart, explicit settlement that preserves unmerged work,
 and a session binding that survives teardown. The existing run-state and merge
 invariants in `AGENTS.md` remain the basis for this lifecycle.
+
+## Decisions
+
+### 2026-10-05T12:29:56Z · @jari
+
+Caller-owned runs must not invoke workmux at all, including create, retry, merge and teardown. Taskfleet owns Git worktree provisioning and Git-only settlement. Move merge orchestration from the embedded merge.sh into Rust while preserving the existing transaction, CAS, locking and cleanup invariants; ordinary terminal-worker creation may continue to use workmux. See design.md for the updated proposal.

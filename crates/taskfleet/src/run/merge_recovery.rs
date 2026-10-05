@@ -423,7 +423,10 @@ fn recover_caller_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Recover
     let Some(recorded) = verified_caller_transaction(paths, node_id, &intent, false) else {
         return Recovery::CannotVerify;
     };
-    if &recorded != txn.as_ref() || driver_is_alive(txn) {
+    if &recorded != txn.as_ref() {
+        return Recovery::CannotVerify;
+    }
+    if driver_is_alive(txn) {
         return Recovery::DriverAlive;
     }
     let (Some(repo), Some(source)) = (
@@ -455,7 +458,9 @@ fn recover_caller_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Recover
                 .as_ref()
                 .and_then(|m| m.caller_settlement_intent.as_ref())
                 != Some(&intent)
-            || fresh.as_ref().is_none_or(|n| n.status.is_terminal())
+            || fresh.as_ref().is_none_or(|n| {
+                n.status.is_terminal() && n.status != taskfleet_core::Status::Failed
+            })
         {
             return Ok(Recovery::Superseded);
         }

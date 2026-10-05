@@ -2531,7 +2531,7 @@ expression: value
                 "long": "agent-owner",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned merge/cancel/salvage/discard remain unavailable",
+                "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned Fenced merge, cancel and salvage are separate settlement commands; discard remains unavailable",
                 "value_names": [
                   "AGENT_OWNER"
                 ],
@@ -4131,7 +4131,7 @@ expression: value
           },
           {
             "command": "taskfleet run salvage",
-            "about": "Salvage a stuck single-worker run: fence its prior worker (verifying identity first) and drive `run merge` from the preserved worktree's current git state — the fenced manual finish for an `attention-required` run (a worker that exited cleanly but skipped `run merge`) or a `failed` run whose branch was preserved. Refuses an already-`done`/`cancelled` run, a multi-node run, a run with no preserved worktree/branch, and a live worker it cannot safely fence",
+            "about": "Salvage a stuck single-worker run: fence its prior worker (verifying identity first) and drive `run merge` from the preserved worktree's current git state — the fenced manual finish for an `attention-required` run (a worker that exited cleanly but skipped `run merge`) or a `failed` run whose branch was preserved. Refuses an already-`done`/`cancelled` run, a multi-node run, a run with no preserved worktree/branch, and a live worker it cannot safely fence. Caller-owned salvage instead uses a sticky merge intent and EX writer lease, never signals Pi, and requires --settlement-key",
             "aliases": [],
             "hidden": false,
             "deprecated": false,
@@ -4304,6 +4304,35 @@ expression: value
                 "defaults": [],
                 "accepted_values": [],
                 "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "settlement_key",
+                "long": "settlement-key",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Stable operation key required for caller-owned salvage",
+                "value_names": [
+                  "SETTLEMENT_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
                 "conflicts_with": [],
                 "requires": [],
                 "required_unless_present": [],

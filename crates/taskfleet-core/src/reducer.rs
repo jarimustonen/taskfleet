@@ -890,7 +890,13 @@ fn reduce_caller_settlement_intent(paths: &RunPaths, ev: &Event) -> Result<Vec<P
             Err(bad("intent already recorded"))
         };
     }
-    if manifest.status.is_terminal() {
+    if manifest.status.is_terminal()
+        && !(manifest.status == Status::Failed
+            && node.status == Status::Failed
+            && manifest.node_count == 1
+            && id.as_str() == "n-0001"
+            && intent.operation == crate::schema::SettlementOperation::Merge)
+    {
         return Err(bad("terminal run"));
     }
     manifest.caller_settlement_intent = Some(intent);
@@ -1777,7 +1783,15 @@ fn reduce_merge_started(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
     // A terminal node has no in-flight merge to track — `run merge` is refused on
     // a terminal run at the CLI, so this is a dead/duplicate event. Ignore it
     // (never resurrect the projection).
-    if n.status.is_terminal() {
+    if n.status.is_terminal()
+        && !(manifest.agent_owner == crate::schema::AgentOwner::Caller
+            && n.status == Status::Failed
+            && manifest.status == Status::Failed
+            && manifest.node_count == 1
+            && manifest.caller_settlement_intent.as_ref().is_some_and(|i| {
+                i.operation == crate::schema::SettlementOperation::Merge && i.node_id == node_id
+            }))
+    {
         return Ok(vec![]);
     }
     // Idempotent: re-folding the SAME transaction on replay must not churn

@@ -1,6 +1,9 @@
 //! `run salvage` — the fenced manual resume/finish operation (design.md §2.2 /
 //! A3, issue `run-salvage-command`).
 //!
+//! Caller-owned salvage uses the sticky intent and exclusive writer lease of
+//! `run merge`; unlike Taskfleet-owned salvage, it never signals a PID.
+//!
 //! The thin supervisor deliberately drops the *automatic* rescue of a run that
 //! finished-but-skipped-`run merge`, or whose worker wedged. Its replacement is
 //! this human-invoked verb: the PO sees an `attention-required` run (design.md
@@ -107,6 +110,7 @@ pub struct Args<'a> {
     /// ever when its start-time identity matches). Without it, a live worker is a
     /// refusal — salvage never kills a process implicitly.
     pub fence: bool,
+    pub settlement_key: Option<String>,
     /// Resolve inputs and report the planned salvage (worker state, whether a
     /// fence would fire, the planned merge) without fencing or merging anything.
     pub dry_run: bool,
@@ -234,6 +238,40 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // A run recorded under a removed kind is read-only (ADR §D7) — refuse before
     // any fence/merge so we never rewrite its manifest / destroy its provenance.
     crate::run::reject_legacy_kind(manifest.kind, &run_id)?;
+    if manifest.agent_owner == taskfleet_core::AgentOwner::Caller {
+        let key = args.settlement_key.ok_or_else(|| {
+            CliError::user(
+                "invalid_settlement_key",
+                "caller salvage requires --settlement-key",
+            )
+        })?;
+        if args.fence {
+            return Err(CliError::user(
+                "invalid_fence",
+                "caller salvage cannot signal a Pi or worker; the writer lease is the only fence",
+            ));
+        }
+        return merge::run_caller_salvage(
+            merge::Args {
+                run_id: args.run_id,
+                source: args.source,
+                node_id: Some(DEFAULT_NODE_ID.into()),
+                report_file: args.report_file,
+                settlement_key: Some(key),
+                actor: None,
+                dry_run: args.dry_run,
+                spec: args.spec,
+                warnings: args.warnings,
+            },
+            &paths,
+        );
+    }
+    if args.settlement_key.is_some() {
+        return Err(CliError::user(
+            "invalid_settlement_key",
+            "--settlement-key is only for caller-owned salvage",
+        ));
+    }
     crate::run::require_writer_fence(&manifest)?;
 
     // Refuse the terminal states there is nothing to salvage from.

@@ -158,7 +158,7 @@ expression: value
       },
       {
         "command": "taskfleet run salvage",
-        "about": "Salvage a stuck single-worker run: fence its prior worker (verifying identity first) and drive `run merge` from the preserved worktree's current git state — the fenced manual finish for an `attention-required` run (a worker that exited cleanly but skipped `run merge`) or a `failed` run whose branch was preserved. Refuses an already-`done`/`cancelled` run, a multi-node run, a run with no preserved worktree/branch, and a live worker it cannot safely fence",
+        "about": "Salvage a stuck single-worker run: fence its prior worker (verifying identity first) and drive `run merge` from the preserved worktree's current git state — the fenced manual finish for an `attention-required` run (a worker that exited cleanly but skipped `run merge`) or a `failed` run whose branch was preserved. Refuses an already-`done`/`cancelled` run, a multi-node run, a run with no preserved worktree/branch, and a live worker it cannot safely fence. Caller-owned salvage instead uses a sticky merge intent and EX writer lease, never signals Pi, and requires --settlement-key",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

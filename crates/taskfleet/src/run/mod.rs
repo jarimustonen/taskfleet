@@ -82,11 +82,11 @@ impl From<AgentOwnerArg> for taskfleet_core::AgentOwner {
     }
 }
 
-/// Refuse settlement until a cross-process writer fence is implemented.
+/// Guard legacy callers that have not entered the fenced settlement path.
 pub fn require_writer_fence(manifest: &taskfleet_core::Manifest) -> Result<(), CliError> {
     if manifest.agent_owner == taskfleet_core::AgentOwner::Caller {
         return Err(CliError::user("writer_fence_unavailable", format!(
-            "caller-owned run {} cannot be merged, cancelled, salvaged or discarded until a writer fence is implemented; preserve its checkout and inspect it manually",
+            "caller-owned run {} requires a fenced settlement path; preserve its checkout and inspect it manually",
             manifest.run_id
         )).with_invalid_value(manifest.run_id.to_string()));
     }
@@ -109,7 +109,7 @@ pub enum RunAction {
         /// Provision a Git-only worktree without launching an agent. Caller-owned JSON
         /// returns persistent lock identities, NOT Pi launch admission: host-held
         /// launch gate and inherited writer lease are not integrated yet. Caller-owned
-        /// merge/cancel/salvage/discard remain unavailable.
+        /// Fenced merge, cancel and salvage are separate settlement commands; discard remains unavailable.
         #[arg(long, value_enum, default_value = "taskfleet")]
         agent_owner: AgentOwnerArg,
         #[arg(long, value_enum)]
@@ -313,6 +313,8 @@ pub enum RunAction {
     /// `run merge`) or a `failed` run whose branch was preserved. Refuses an
     /// already-`done`/`cancelled` run, a multi-node run, a run with no
     /// preserved worktree/branch, and a live worker it cannot safely fence.
+    /// Caller-owned salvage instead uses a sticky merge intent and EX writer lease,
+    /// never signals Pi, and requires --settlement-key.
     Salvage {
         run_id: String,
         /// Merge target branch. Defaults to the run's recorded `source_branch`.
@@ -328,6 +330,9 @@ pub enum RunAction {
         /// running worker implicitly.
         #[arg(long)]
         fence: bool,
+        /// Stable operation key required for caller-owned salvage.
+        #[arg(long)]
+        settlement_key: Option<String>,
         /// Resolve inputs and report the planned salvage (worker state,
         /// whether a fence would fire, the planned merge) without fencing or
         /// merging anything.
@@ -723,12 +728,14 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             source,
             report_file,
             fence,
+            settlement_key,
             dry_run,
         } => salvage::run(salvage::Args {
             run_id,
             source,
             report_file,
             fence,
+            settlement_key,
             dry_run,
             spec,
             warnings,

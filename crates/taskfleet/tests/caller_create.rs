@@ -1450,3 +1450,136 @@ fn caller_cancel_refuses_replaced_lock_and_unrelated_terminal_report() {
         .unwrap()
         .contains("caller.settlement_intent"));
 }
+
+#[test]
+fn failed_caller_salvage_adopts_merge_and_cleans_without_host_tools() {
+    use std::os::fd::AsRawFd;
+    use taskfleet_core::{append_and_apply_event, NodeId, RunPaths};
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "salvage-failed", None);
+    assert!(created.status.success(), "{created:?}");
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let checkout = data["data"]["worktree_path"].as_str().unwrap();
+    let branch = data["data"]["branch"].as_str().unwrap();
+    let dir = home.path().join("runs").join(run);
+    let paths = RunPaths::new(dir.clone(), run).unwrap();
+    let nid = NodeId::parse_str("n-0001").unwrap();
+    std::fs::write(Path::new(checkout).join("change.txt"), "salvaged\n").unwrap();
+    git(Path::new(checkout), &["add", "change.txt"]);
+    git(
+        Path::new(checkout),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "change",
+        ],
+    );
+    append_and_apply_event(
+        &paths,
+        "node.report",
+        Some(&nid),
+        None,
+        serde_json::json!({"success":false,"summary":"writer failed"}),
+    )
+    .unwrap();
+    append_and_apply_event(
+        &paths,
+        "run.status",
+        None,
+        None,
+        serde_json::json!({"status":"failed"}),
+    )
+    .unwrap();
+    let command = |key: &str, extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args([
+                "--output",
+                "json",
+                "run",
+                "salvage",
+                run,
+                "--settlement-key",
+                key,
+            ])
+            .args(extra)
+            .env("TASKFLEET_HOME", home.path())
+            .env("GIT_BIN", fixture_git_binary())
+            .env("TMUX_BIN", tools.path().join("tmux"))
+            .env("WORKMUX_BIN", tools.path().join("workmux"))
+            .env(
+                "TASKFLEET_TEST_FORBIDDEN",
+                workspace.path().join("forbidden"),
+            )
+            .env("PATH", tools.path())
+            .output()
+            .unwrap()
+    };
+    assert!(!command("key", &["--fence"]).status.success());
+    let dry = command("key", &["--dry-run"]);
+    assert!(dry.status.success(), "{dry:?}");
+    assert!(!std::fs::read_to_string(paths.events())
+        .unwrap()
+        .contains("caller.settlement_intent"));
+    let fd = std::fs::File::open(dir.join("writer.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_SH) }, 0);
+    let busy = command("key", &[]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&busy.stderr).unwrap()["error"]["code"],
+        "writer_active"
+    );
+    assert!(Path::new(checkout).exists());
+    drop(fd);
+    let ok = command("key", &[]);
+    assert!(ok.status.success(), "{ok:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&ok.stdout).unwrap()["data"]["merged"],
+        true
+    );
+    assert!(!command("different", &[]).status.success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let m = taskfleet_core::read_manifest_opt(&paths).unwrap().unwrap();
+        if m.status == taskfleet_core::Status::Done
+            && !Path::new(checkout).exists()
+            && !Command::new(fixture_git_binary())
+                .args([
+                    "-C",
+                    workspace.path().join("repo").to_str().unwrap(),
+                    "show-ref",
+                    "--verify",
+                    &format!("refs/heads/{branch}"),
+                ])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "salvage did not converge: {m:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(!workspace.path().join("forbidden").exists());
+    let events = std::fs::read_to_string(paths.events()).unwrap();
+    assert_eq!(events.matches("\"kind\":\"merge.started\"").count(), 1);
+    assert!(events.contains("cleanup.caller_verified"));
+    assert!(!Command::new(fixture_git_binary())
+        .args([
+            "-C",
+            workspace.path().join("repo").to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            &format!("refs/heads/{branch}")
+        ])
+        .status()
+        .unwrap()
+        .success());
+}

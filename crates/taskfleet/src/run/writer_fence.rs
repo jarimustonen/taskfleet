@@ -1,6 +1,6 @@
 //! Durable lock identity for caller-owned runs. This is NOT launch admission:
 //! the host must hold the gate through Pi Start and pass the shared lease FD.
-//! Intent recording and lease probing exist; destructive settlement is disabled.
+//! Intent recording and held exclusive leases guard merge, salvage and cancellation.
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
@@ -273,8 +273,8 @@ impl ExclusiveWriter {
     }
 }
 
-/// Nonblocking bounded acquisition, outside both gate and run locks. Caller
-/// settlement is still disabled: this helper grants NO destructive authority.
+/// Nonblocking bounded acquisition, outside both gate and run locks. An EX
+/// lease alone grants no authority without persisted intent and Git/history proof.
 pub(super) fn acquire_exclusive(
     paths: &RunPaths,
     intent: &taskfleet_core::schema::CallerSettlementIntent,
@@ -308,8 +308,7 @@ pub(super) fn acquire_exclusive(
     }
 }
 
-/// Internal-only settlement foundation. There is deliberately no CLI command
-/// that performs a destructive caller-owned action in this slice.
+/// Persist sticky settlement intent under launch gate and run lock.
 pub(super) fn record_intent(
     paths: &RunPaths,
     node_id: &taskfleet_core::NodeId,
@@ -317,6 +316,7 @@ pub(super) fn record_intent(
     operation: taskfleet_core::schema::SettlementOperation,
     actor: &str,
     reason: Option<&str>,
+    allow_failed: bool,
 ) -> Result<taskfleet_core::schema::CallerSettlementIntent, CliError> {
     use taskfleet_core::schema::{AgentOwner, CallerSettlementIntent};
     use taskfleet_core::{append_and_apply_unlocked, read_manifest_opt, read_node_opt, RunLock};
@@ -425,7 +425,14 @@ pub(super) fn record_intent(
             "caller node already terminal or run is not single-node",
         ));
     }
-    if manifest.status.is_terminal() {
+    if manifest.status.is_terminal()
+        && !(allow_failed
+            && operation == taskfleet_core::schema::SettlementOperation::Merge
+            && manifest.status == taskfleet_core::Status::Failed
+            && node.status == taskfleet_core::Status::Failed
+            && manifest.node_count == 1
+            && node_id.as_str() == "n-0001")
+    {
         return Err(CliError::user(
             "settlement_conflict",
             "terminal caller run has no settlement intent",
@@ -488,7 +495,7 @@ pub(super) fn settlement_intent(
     let run_id = super::parse_run_id(run)?;
     let node_id = super::parse_node_id(node)?;
     let paths = super::run_paths_exact(&crate::home::root_dir()?, &run_id)?;
-    let intent = record_intent(&paths, &node_id, key, operation, actor, reason)?;
+    let intent = record_intent(&paths, &node_id, key, operation, actor, reason, false)?;
     let command = recovery(&intent);
     match acquire_exclusive(&paths, &intent) {
         Ok(lease) => {

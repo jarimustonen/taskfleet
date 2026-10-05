@@ -208,6 +208,7 @@ fn cancel_caller(
         SettlementOperation::Cancel,
         "caller-cli",
         Some(note),
+        false,
     )?;
     let lease = crate::run::writer_fence::acquire_exclusive(paths, &intent).map_err(|e| {
         e.with_details(json!({

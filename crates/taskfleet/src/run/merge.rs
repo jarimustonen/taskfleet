@@ -177,7 +177,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     })
     .map_err(from_core)?;
     if owner == Some(AgentOwner::Caller) {
-        return run_caller(args, &paths);
+        return run_caller(args, &paths, false);
     }
     if args.settlement_key.is_some() || args.actor.is_some() {
         return Err(CliError::user(
@@ -203,7 +203,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
 /// Public caller-owned merge uses the sticky intent as the admission fence and
 /// only the internal producer (or immutable-OID recovery) as Git authority.
-fn run_caller(args: Args<'_>, paths: &taskfleet_core::RunPaths) -> Result<(), CliError> {
+pub(crate) fn run_caller_salvage(
+    args: Args<'_>,
+    paths: &taskfleet_core::RunPaths,
+) -> Result<(), CliError> {
+    run_caller(args, paths, true)
+}
+
+fn run_caller(
+    args: Args<'_>,
+    paths: &taskfleet_core::RunPaths,
+    salvage: bool,
+) -> Result<(), CliError> {
     let run_id = crate::run::parse_run_id(&args.run_id)?;
     if run_id != paths.run_id {
         return Err(CliError::user(
@@ -239,6 +250,31 @@ fn run_caller(args: Args<'_>, paths: &taskfleet_core::RunPaths) -> Result<(), Cl
     .map_err(from_core)?;
     let manifest = manifest.ok_or_else(|| CliError::user("run_not_found", "caller run missing"))?;
     let node = node.ok_or_else(|| CliError::user("node_not_found", "caller node missing"))?;
+    if manifest.node_count != 1 || node.run_id != run_id || node.node_id != node_id {
+        return Err(CliError::user(
+            "ambiguous_multi_node",
+            "caller settlement requires exactly one verified node",
+        ));
+    }
+    if matches!(
+        manifest.status,
+        taskfleet_core::Status::Cancelled | taskfleet_core::Status::Done
+    ) && manifest.caller_settlement_intent.is_none()
+    {
+        return Err(CliError::user(
+            "run_already_terminal",
+            "caller run is already settled",
+        ));
+    }
+    if manifest.status == taskfleet_core::Status::Failed
+        && !salvage
+        && manifest.caller_settlement_intent.is_none()
+    {
+        return Err(CliError::user(
+            "run_already_terminal",
+            "use run salvage for a failed caller run",
+        ));
+    }
     let source = manifest
         .source_branch
         .as_deref()
@@ -303,6 +339,7 @@ fn run_caller(args: Args<'_>, paths: &taskfleet_core::RunPaths) -> Result<(), Cl
         SettlementOperation::Merge,
         actor,
         None,
+        salvage,
     )?;
     let recovery_command = format!(
         "taskfleet run merge {} --node-id {} --settlement-key '{}' --actor '{}'",
@@ -332,8 +369,8 @@ fn run_caller(args: Args<'_>, paths: &taskfleet_core::RunPaths) -> Result<(), Cl
                 CliError::user("merge_recovery_unverifiable", "caller report event missing")
             })?
     } else if fresh_node.pending_merge.is_some()
-        || fresh_node.status.is_terminal()
-        || fresh.status.is_terminal()
+        || (fresh_node.status.is_terminal() && fresh_node.status != taskfleet_core::Status::Failed)
+        || (fresh.status.is_terminal() && fresh.status != taskfleet_core::Status::Failed)
     {
         merge_recovery::recover_run(paths, &git_bin());
         if merge_recovery::verified_caller_transaction(paths, &node_id, &intent, true).is_none() {
@@ -930,9 +967,8 @@ impl<'a> CallerMergeAuthority<'a> {
     }
 }
 
-/// Private production merge producer; deliberately not routed from the CLI.
+/// Fenced caller merge producer, shared by merge and salvage.
 /// The caller must already have durably recorded this exact merge intent.
-#[allow(dead_code)] // Next slice wires the public settlement endpoint after supervisor fencing.
 fn execute_caller_merge(
     paths: &taskfleet_core::RunPaths,
     node_id: &NodeId,
@@ -963,8 +999,10 @@ fn execute_caller_merge(
     let manifest = manifest.ok_or_else(|| CliError::user("run_not_found", "caller run missing"))?;
     let node = node.ok_or_else(|| CliError::user("node_not_found", "caller node missing"))?;
     if manifest.agent_owner != AgentOwner::Caller
-        || manifest.status.is_terminal()
-        || node.status.is_terminal()
+        || (manifest.status.is_terminal() && manifest.status != taskfleet_core::Status::Failed)
+        || (node.status.is_terminal() && node.status != taskfleet_core::Status::Failed)
+        || (manifest.status == taskfleet_core::Status::Failed)
+            != (node.status == taskfleet_core::Status::Failed)
         || node.pending_merge.is_some()
     {
         return Err(CliError::user(
@@ -1872,6 +1910,7 @@ mod caller_merge_tests {
                 SettlementOperation::Merge,
                 "test",
                 None,
+                false,
             )
             .unwrap();
             Self {

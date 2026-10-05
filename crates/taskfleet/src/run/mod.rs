@@ -292,6 +292,12 @@ pub enum RunAction {
         /// a minimal `{success, summary}` report.
         #[arg(long)]
         report_file: Option<std::path::PathBuf>,
+        /// Stable operation key; required for caller-owned runs and rejected for ordinary runs.
+        #[arg(long)]
+        settlement_key: Option<String>,
+        /// Stable audit actor for caller-owned merge (defaults to caller-cli).
+        #[arg(long, requires = "settlement_key")]
+        actor: Option<String>,
         /// Resolve inputs and report the planned merge without running it
         /// or appending any event.
         #[arg(long)]
@@ -685,12 +691,16 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             source,
             node_id,
             report_file,
+            settlement_key,
+            actor,
             dry_run,
         } => merge::run(merge::Args {
             run_id,
             source,
             node_id,
             report_file,
+            settlement_key,
+            actor,
             dry_run,
             spec,
             warnings,

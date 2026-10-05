@@ -368,11 +368,12 @@ pub(super) fn record_intent(
         || node.run_id != paths.run_id
         || node.worktree_path.is_none()
         || node.branch.is_none()
-        || node.worktree_path.as_ref().is_none_or(|checkout| {
-            !Path::new(checkout)
-                .canonicalize()
-                .is_ok_and(|canonical| canonical == Path::new(checkout))
-        })
+        || (manifest.caller_settlement_intent.is_none()
+            && node.worktree_path.as_ref().is_none_or(|checkout| {
+                !Path::new(checkout)
+                    .canonicalize()
+                    .is_ok_and(|canonical| canonical == Path::new(checkout))
+            }))
     {
         return Err(unavailable("not a verified caller run/node"));
     }

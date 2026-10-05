@@ -422,7 +422,7 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
     true
 }
 
-fn caller_history_retained(node: &Node, checkout: &str) -> bool {
+pub(crate) fn caller_history_retained(node: &Node, checkout: &str) -> bool {
     let Some(pi) = node.caller_pi_lifecycle.as_ref() else {
         return node.caller_pi_session.is_none();
     };

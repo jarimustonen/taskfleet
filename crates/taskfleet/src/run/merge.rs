@@ -85,6 +85,8 @@ pub struct Args<'a> {
     /// that merges. When absent, a minimal `{success, summary, via}` report
     /// is submitted (enough for a simple spinoff).
     pub report_file: Option<PathBuf>,
+    pub settlement_key: Option<String>,
+    pub actor: Option<String>,
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
@@ -168,6 +170,21 @@ pub(crate) struct MergeOutcome {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
+    let root = crate::home::root_dir()?;
+    let paths = run_paths_from_cli_arg(&root, &args.run_id)?;
+    let owner = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok(read_manifest_opt(&paths)?.map(|m| m.agent_owner))
+    })
+    .map_err(from_core)?;
+    if owner == Some(AgentOwner::Caller) {
+        return run_caller(args, &paths);
+    }
+    if args.settlement_key.is_some() || args.actor.is_some() {
+        return Err(CliError::user(
+            "invalid_settlement_key",
+            "--settlement-key and --actor are only supported for caller-owned runs",
+        ));
+    }
     let spec = args.spec;
     let outcome = execute(&args)?;
     let payload = MergePayload {
@@ -182,6 +199,219 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         dry_run: outcome.dry_run.then_some(true),
     };
     emit(&payload, spec, &outcome.warnings)
+}
+
+/// Public caller-owned merge uses the sticky intent as the admission fence and
+/// only the internal producer (or immutable-OID recovery) as Git authority.
+fn run_caller(args: Args<'_>, paths: &taskfleet_core::RunPaths) -> Result<(), CliError> {
+    let run_id = crate::run::parse_run_id(&args.run_id)?;
+    if run_id != paths.run_id {
+        return Err(CliError::user(
+            "invalid_run_id",
+            "caller merge requires the full run id",
+        ));
+    }
+    let node_id = crate::run::parse_node_id(args.node_id.as_deref().ok_or_else(|| {
+        CliError::user("invalid_node_id", "caller merge requires --node-id n-0001")
+    })?)?;
+    if node_id.as_str() != DEFAULT_NODE_ID {
+        return Err(CliError::user(
+            "invalid_node_id",
+            "caller merge requires n-0001",
+        ));
+    }
+    let key = args.settlement_key.as_deref().ok_or_else(|| {
+        CliError::user(
+            "invalid_settlement_key",
+            "caller merge requires --settlement-key",
+        )
+    })?;
+    if key.trim().is_empty() || key.len() > 256 {
+        return Err(CliError::user(
+            "invalid_settlement_key",
+            "settlement key must be nonblank and at most 256 bytes",
+        ));
+    }
+    let actor = args.actor.as_deref().unwrap_or("caller-cli");
+    let (manifest, node) = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((read_manifest_opt(paths)?, read_node_opt(paths, &node_id)?))
+    })
+    .map_err(from_core)?;
+    let manifest = manifest.ok_or_else(|| CliError::user("run_not_found", "caller run missing"))?;
+    let node = node.ok_or_else(|| CliError::user("node_not_found", "caller node missing"))?;
+    let source = manifest
+        .source_branch
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "caller source branch missing"))?;
+    if args.source.as_deref().is_some_and(|s| s != source) {
+        return Err(CliError::user(
+            "checkout_mismatch",
+            "caller merge cannot override the recorded source branch",
+        ));
+    }
+    let branch = node
+        .branch
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "caller branch missing"))?;
+    let checkout = node
+        .worktree_path
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "caller checkout missing"))?;
+    if !cleanup::caller_history_retained(&node, checkout) {
+        return Err(CliError::user(
+            "history_unavailable",
+            "caller Pi generation is unbound or native history changed; preserve checkout",
+        ));
+    }
+    // Validate the report before the sticky intent: malformed input must not
+    // permanently close launch admission. Dry-run never locks the writer or writes.
+    let (_, advisory) = build_report(args.report_file.as_deref(), branch, Some(source))?;
+    let warnings: Vec<String> = args
+        .warnings
+        .iter()
+        .cloned()
+        .chain(advisory.iter().map(AdvisoryWarning::to_message))
+        .collect();
+    if args.dry_run {
+        if manifest
+            .caller_settlement_intent
+            .as_ref()
+            .is_some_and(|i| i.key != key || i.operation != SettlementOperation::Merge)
+        {
+            return Err(CliError::user(
+                "settlement_conflict",
+                "another settlement intent is recorded",
+            ));
+        }
+        let checkout = node
+            .worktree_path
+            .as_deref()
+            .ok_or_else(|| CliError::user("checkout_mismatch", "caller checkout missing"))?;
+        validate_dry_run_target(checkout, branch, Some(source))?;
+        return output::emit_envelope(
+            &json!({"run_id":run_id,"node_id":node_id,
+            "branch":branch,"source":source,"dry_run":true,"merged":false,
+            "writer_fence":{"state":"not-claimed"}}),
+            args.spec,
+            &warnings,
+        );
+    }
+    let intent = writer_fence::record_intent(
+        paths,
+        &node_id,
+        key,
+        SettlementOperation::Merge,
+        actor,
+        None,
+    )?;
+    let recovery_command = format!(
+        "taskfleet run merge {} --node-id {} --settlement-key '{}' --actor '{}'",
+        run_id,
+        node_id,
+        key.replace('\'', "'\\''"),
+        actor.replace('\'', "'\\''")
+    );
+    let (fresh, fresh_node) = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((read_manifest_opt(paths)?, read_node_opt(paths, &node_id)?))
+    })
+    .map_err(from_core)?;
+    let fresh = fresh.ok_or_else(|| CliError::user("run_not_found", "caller run missing"))?;
+    let fresh_node =
+        fresh_node.ok_or_else(|| CliError::user("node_not_found", "caller node missing"))?;
+    let report_seq = if merge_recovery::verified_caller_transaction(paths, &node_id, &intent, true)
+        .is_some()
+    {
+        // The original response may have been lost after report/cleanup.
+        taskfleet_core::read_all_events(&paths.events())
+            .map_err(from_core)?
+            .into_iter()
+            .rev()
+            .find(|e| e.kind == "node.report" && e.node_id.as_ref() == Some(&node_id))
+            .map(|e| e.seq)
+            .ok_or_else(|| {
+                CliError::user("merge_recovery_unverifiable", "caller report event missing")
+            })?
+    } else if fresh_node.pending_merge.is_some()
+        || fresh_node.status.is_terminal()
+        || fresh.status.is_terminal()
+    {
+        merge_recovery::recover_run(paths, &git_bin());
+        if merge_recovery::verified_caller_transaction(paths, &node_id, &intent, true).is_none() {
+            return Err(CliError::user("merge_recovery_unverifiable", "caller transaction not recoverable; work preserved")
+                .with_details(json!({"phase":"intent-recorded","intent_seq":intent.seq,"recovery_command":recovery_command})));
+        }
+        taskfleet_core::read_all_events(&paths.events())
+            .map_err(from_core)?
+            .into_iter()
+            .rev()
+            .find(|e| e.kind == "node.report" && e.node_id.as_ref() == Some(&node_id))
+            .map(|e| e.seq)
+            .ok_or_else(|| {
+                CliError::user("merge_recovery_unverifiable", "caller report event missing")
+            })?
+    } else {
+        match execute_caller_merge(paths, &node_id, key, args.report_file.as_deref()) {
+            Ok(seq) => seq,
+            Err(e) => return Err(e.with_details(json!({"phase":"intent-recorded","intent_seq":intent.seq,"recovery_command":recovery_command}))),
+        }
+    };
+    let checkout = node
+        .worktree_path
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "caller checkout missing"))?;
+    // A reply retry must not treat a stale report projection as authority: the
+    // original native history and the immutable Git integration still matter.
+    let txn = merge_recovery::verified_caller_transaction(paths, &node_id, &intent, true)
+        .ok_or_else(|| {
+            CliError::user(
+                "merge_recovery_unverifiable",
+                "caller merge report/transaction changed",
+            )
+        })?;
+    let repo = manifest
+        .source_repo
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "caller source repository missing"))?;
+    if !cleanup::caller_history_retained(&node, checkout)
+        || !merge_recovery::caller_landed(&txn, repo, &git_bin())
+    {
+        return Err(CliError::user(
+            "merge_recovery_unverifiable",
+            "caller history or immutable landing cannot be verified; work preserved",
+        )
+        .with_details(
+            json!({"phase":"reported","intent_seq":intent.seq,"recovery_command":recovery_command}),
+        ));
+    }
+    let (consumer, mut warnings) = ensure_report_consumer(paths, run_id.as_str(), &warnings);
+    let cleanup_receipt = taskfleet_core::read_all_events(&paths.events())
+        .map_err(from_core)?
+        .iter()
+        .any(|e| {
+            e.kind == "cleanup.caller_verified"
+                && e.run_id == run_id
+                && e.node_id.as_ref() == Some(&node_id)
+                && e.data["op_id"] == txn.op_id
+                && e.data["worker_oid"] == txn.worker_oid
+        });
+    let cleanup = if cleanup_receipt
+        && !Path::new(checkout).exists()
+        && merge_recovery::read_oid(&git_bin(), repo, branch).is_none()
+    {
+        "complete"
+    } else {
+        "pending"
+    };
+    let payload = json!({"run_id":run_id,"node_id":node_id,"branch":branch,
+        "source":source,"operation":"merge","phase":"reported","intent_seq":intent.seq,
+        "merged":true,"report_seq":report_seq,"cleanup":cleanup,
+        "recovery_command":format!("taskfleet run reattach {run_id}"),"supervisor":consumer});
+    if cleanup == "pending" {
+        warnings.push(format!(
+            "cleanup pending; taskfleet run reattach {run_id} if supervisor is not alive"
+        ));
+    }
+    output::emit_envelope(&payload, args.spec, &warnings)
 }
 
 /// Drive the full merge lifecycle and return the owned [`MergeOutcome`] without

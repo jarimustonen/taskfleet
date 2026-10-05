@@ -160,7 +160,11 @@ fn git_only_create_and_replay_fence_settlement() {
             .unwrap();
         assert!(!output.status.success());
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("writer_fence_unavailable"),
+            String::from_utf8_lossy(&output.stderr).contains(if verb == "merge" {
+                "invalid_node_id"
+            } else {
+                "writer_fence_unavailable"
+            }),
             "{verb}: {output:?}"
         );
     }
@@ -654,7 +658,13 @@ fn caller_pi_told_wait_and_generation_contract() {
     assert_eq!(multiple["data"]["runs"].as_array().unwrap().len(), 2);
     for verb in ["cancel", "merge"] {
         let refused = command(&[verb, run]);
-        assert!(String::from_utf8_lossy(&refused.stderr).contains("writer_fence_unavailable"));
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains(if verb == "merge" {
+                "invalid_node_id"
+            } else {
+                "writer_fence_unavailable"
+            })
+        );
     }
     let events =
         std::fs::read_to_string(home.path().join("runs").join(run).join("events.jsonl")).unwrap();
@@ -1213,4 +1223,93 @@ fn inherited_child_shared_fd_blocks_exclusive_until_exit() {
         .unwrap()
         .status
         .success());
+}
+
+#[test]
+fn public_caller_merge_is_keyed_fenced_and_retriable() {
+    use std::os::fd::AsRawFd;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "merge-cli", None);
+    assert!(created.status.success(), "{created:?}");
+    let value: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = value["data"]["run_id"].as_str().unwrap();
+    let checkout = value["data"]["worktree_path"].as_str().unwrap();
+    std::fs::write(Path::new(checkout).join("change.txt"), "new work\n").unwrap();
+    git(Path::new(checkout), &["add", "change.txt"]);
+    git(
+        Path::new(checkout),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "change",
+        ],
+    );
+    let command = |key: &str, dry: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+        cmd.args([
+            "--output",
+            "json",
+            "run",
+            "merge",
+            run,
+            "--node-id",
+            "n-0001",
+            "--settlement-key",
+            key,
+        ])
+        .env("TASKFLEET_HOME", home.path())
+        .env("GIT_BIN", fixture_git_binary())
+        .env("TMUX_BIN", tools.path().join("tmux"))
+        .env("WORKMUX_BIN", tools.path().join("workmux"))
+        .env(
+            "TASKFLEET_TEST_FORBIDDEN",
+            workspace.path().join("forbidden"),
+        )
+        .env("PATH", tools.path());
+        if dry {
+            cmd.arg("--dry-run");
+        }
+        cmd.output().unwrap()
+    };
+    let preview = command("stable", true);
+    assert!(preview.status.success(), "{preview:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&preview.stdout).unwrap()["data"]
+            ["writer_fence"]["state"],
+        "not-claimed"
+    );
+    let lock = std::fs::File::open(home.path().join("runs").join(run).join("writer.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH) }, 0);
+    let busy = command("stable", false);
+    assert!(!busy.status.success(), "{busy:?}");
+    let err: serde_json::Value = serde_json::from_slice(&busy.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "writer_active");
+    assert_eq!(err["error"]["details"]["phase"], "intent-recorded");
+    assert!(!command("other", false).status.success());
+    drop(lock);
+    let merged = command("stable", false);
+    assert!(merged.status.success(), "{merged:?}");
+    let result: serde_json::Value = serde_json::from_slice(&merged.stdout).unwrap();
+    assert_eq!(result["data"]["merged"], true);
+    assert!(matches!(
+        result["data"]["cleanup"].as_str(),
+        Some("pending" | "complete")
+    ));
+    let retried = command("stable", false);
+    assert!(retried.status.success(), "{retried:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&retried.stdout).unwrap()["data"]["merged"],
+        true
+    );
+    assert!(!workspace.path().join("forbidden").exists());
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(run).join("events.jsonl")).unwrap();
+    for line in events.lines() {
+        let _: serde_json::Value = serde_json::from_str(line).unwrap();
+    }
+    assert_eq!(events.matches("\"kind\":\"merge.started\"").count(), 1);
 }

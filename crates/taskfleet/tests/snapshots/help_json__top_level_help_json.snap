@@ -3640,6 +3640,37 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "actor",
+                "long": "actor",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Stable audit actor for caller-owned merge (defaults to caller-cli)",
+                "value_names": [
+                  "ACTOR"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "settlement_key"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "dry_run",
                 "long": "dry-run",
                 "long_aliases": [],
@@ -3807,6 +3838,35 @@ expression: value
                 "defaults": [],
                 "accepted_values": [],
                 "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "settlement_key",
+                "long": "settlement-key",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Stable operation key; required for caller-owned runs and rejected for ordinary runs",
+                "value_names": [
+                  "SETTLEMENT_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
                 "conflicts_with": [],
                 "requires": [],
                 "required_unless_present": [],

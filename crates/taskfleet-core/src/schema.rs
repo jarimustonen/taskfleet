@@ -373,6 +373,8 @@ pub enum AgentOwner {
 
 impl AgentOwner {
     /// Keep the historical projection shape byte-compatible for normal runs.
+    /// Serde's `skip_serializing_if` passes a reference even for `Copy` types.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn is_taskfleet(&self) -> bool {
         *self == Self::Taskfleet
     }

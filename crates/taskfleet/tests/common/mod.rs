@@ -103,15 +103,16 @@ case "$1" in
   add)
     /bin/pwd -P > "$NATIVE_TEST_WORKMUX_CWD"
     printf '%s' "$NATIVE_TEST_WORKMUX_CONFIGURED_WINDOW_NAME" > "$NATIVE_TEST_WINDOW_NAME_STATE"
-    shift; branch=$1; shift; agent=; prompt=
+    shift; branch=$1; shift; agent=; prompt=; base=HEAD
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -a) agent=$2; shift 2 ;;
         -P) prompt=$2; shift 2 ;;
+        --base) base=$2; shift 2 ;;
         *) shift ;;
       esac
     done
-    "$GIT_BIN" -C "$NATIVE_TEST_REPO" worktree add -q -b "$branch" "$NATIVE_TEST_WORKTREE" || exit 1
+    "$GIT_BIN" -C "$NATIVE_TEST_REPO" worktree add -q -b "$branch" "$NATIVE_TEST_WORKTREE" "$base" || exit 1
     text=$(/bin/cat "$prompt")
     TMUX_PANE=%77 "$agent" -- "$text" </dev/null >"$NATIVE_TEST_AGENT_STDOUT" 2>"$NATIVE_TEST_AGENT_STDERR" &
     pid=$!

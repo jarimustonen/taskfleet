@@ -194,6 +194,17 @@ fn named_source_branch_is_preserved_by_native_spawn() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
+    let branch = Command::new(common::fixture_git_binary())
+        .arg("-C")
+        .arg(tools.repo_path())
+        .args(["branch", "integration"])
+        .output()
+        .unwrap();
+    assert!(
+        branch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&branch.stderr)
+    );
     profile(&home, &scratch);
     let worktree = tools.worktree("worktree");
     let created = run_ok(command(&home, &tools, &worktree, "fixture").args([

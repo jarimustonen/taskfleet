@@ -528,6 +528,7 @@ pub fn fence(
     let _lock = RunLock::acquire_shared(&paths.lock()).map_err(from_core)?;
     let _ = launch_identity(&paths, &nid, checkout)?;
     let identity = super::writer_fence::inspect(&paths)?;
+    check_creation_fence(&paths, &identity)?;
     output::emit_envelope(
         &serde_json::json!({"run_id":run,"node_id":node,"checkout":checkout,
         "launch_gate":{"path":paths.root.join("launch-gate.lock"),"identity":identity.launch_gate},
@@ -570,15 +571,7 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
     let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
     let (_, node) = launch_identity(&paths, &nid, args.checkout)?;
     let identity = super::writer_fence::check_launch_fds(&paths, args.gate_fd, args.writer_fd)?;
-    let events = taskfleet_core::read_all_events(&paths.events()).map_err(from_core)?;
-    if events
-        .iter()
-        .find(|e| e.kind == "run.created")
-        .and_then(|e| e.data.get("writer_fence"))
-        != Some(&serde_json::json!(identity))
-    {
-        return Err(conflict("writer fence differs from run creation event"));
-    }
+    check_creation_fence(&paths, &identity)?;
     let fact = CallerPiLifecycle {
         generation: args.generation,
         pi_session_id: args.pi_id.into(),
@@ -608,6 +601,9 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
                 .map_err(|e| CliError::system("internal_serialize", e.to_string()))?,
         )
         .map_err(|e| conflict(format!("reservation refused: {e}")))?;
+        if std::env::var_os("TASKFLEET_TEST_CALLER_RESERVE_CRASH_AFTER_APPEND").is_some() {
+            std::process::exit(71);
+        }
     }
     drop(guard);
     output::emit_envelope(
@@ -617,4 +613,20 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
         args.spec,
         args.warnings,
     )
+}
+
+fn check_creation_fence(
+    paths: &taskfleet_core::RunPaths,
+    identity: &super::writer_fence::Fence,
+) -> Result<(), CliError> {
+    let events = taskfleet_core::read_all_events(&paths.events()).map_err(from_core)?;
+    if events
+        .iter()
+        .find(|e| e.kind == "run.created")
+        .and_then(|e| e.data.get("writer_fence"))
+        != Some(&serde_json::json!(identity))
+    {
+        return Err(conflict("writer fence differs from run creation event"));
+    }
+    Ok(())
 }

@@ -717,7 +717,7 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
     );
     let gate = std::fs::File::open(dir.join("launch-gate.lock")).unwrap();
     let writer = std::fs::File::open(dir.join("writer.lock")).unwrap();
-    let invoke = |generation: &str, supplied: bool| {
+    let invoke = |generation: &str, supplied: bool, crash: bool| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
         cmd.args([
             "--output",
@@ -743,6 +743,9 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         ])
         .env("HOME", &native_home)
         .env("TASKFLEET_HOME", home.path());
+        if crash {
+            cmd.env("TASKFLEET_TEST_CALLER_RESERVE_CRASH_AFTER_APPEND", "1");
+        }
         if supplied {
             // SAFETY: dup2 only in the child between fork and exec; parent retains both locks.
             let gate_raw = gate.as_raw_fd();
@@ -758,7 +761,7 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         }
         cmd.output().unwrap()
     };
-    assert!(!invoke("1", false).status.success());
+    assert!(!invoke("1", false, false).status.success());
     assert_eq!(
         unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
@@ -767,7 +770,10 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
         0
     );
-    let first = invoke("1", true);
+    let killed = invoke("1", true, true);
+    assert_eq!(killed.status.code(), Some(71));
+    assert!(!path.exists());
+    let first = invoke("1", true, false);
     assert!(first.status.success(), "{first:?}");
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&first.stdout).unwrap()["data"]
@@ -775,21 +781,33 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         false
     );
     assert!(!path.exists());
-    let replay = invoke("1", true);
+    let replay = invoke("1", true, false);
     assert!(replay.status.success(), "{replay:?}");
+    std::thread::scope(|s| {
+        let a = s.spawn(|| invoke("1", true, false));
+        let b = s.spawn(|| invoke("1", true, false));
+        for result in [a.join().unwrap(), b.join().unwrap()] {
+            assert!(result.status.success(), "{result:?}");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap()["data"]
+                    ["idempotent_replay"],
+                true
+            );
+        }
+    });
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&replay.stdout).unwrap()["data"]
             ["idempotent_replay"],
         true
     );
-    assert!(!invoke("2", true).status.success());
+    assert!(!invoke("2", true, false).status.success());
     // A held FD cannot conceal replacement of its recorded pathname.
     let writer_path = dir.join("writer.lock");
     let moved = dir.join("writer.saved");
     std::fs::rename(&writer_path, &moved).unwrap();
     std::fs::write(&writer_path, "").unwrap();
     std::fs::set_permissions(&writer_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(!invoke("1", true).status.success());
+    assert!(!invoke("1", true, false).status.success());
     std::fs::remove_file(&writer_path).unwrap();
     std::fs::rename(&moved, &writer_path).unwrap();
     let command = |args: &[&str]| {
@@ -845,6 +863,13 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
     ])
     .status
     .success());
+    let still_pending = command(&["wait", run, "--timeout", "0", "--fail-on-error"]);
+    assert_eq!(still_pending.status.code(), Some(2));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&still_pending.stdout).unwrap()["data"]["runs"]
+            [0]["caller_agent"]["state"],
+        "reserved"
+    );
     assert!(command(&[
         "session",
         "update",
@@ -864,7 +889,7 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
     ])
     .status
     .success());
-    assert!(!invoke("1", true).status.success());
+    assert!(!invoke("1", true, false).status.success());
     assert!(!workspace.path().join("forbidden").exists());
     drop(gate);
     drop(writer);

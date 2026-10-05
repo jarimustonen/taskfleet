@@ -8,13 +8,10 @@
 //! kinds) never tore the window down. `run merge` does both halves in one
 //! call:
 //!
-//!   1. **Merge mechanics** — shell out to the bundled `merge.sh`
-//!      (embedded below, materialized to a temp file at runtime). It owns
-//!      the rebase, the cross-worktree `flock`, and the `workmux merge`. v1
-//!      deliberately wraps the script rather than re-implementing git
-//!      wrappers in Rust (issue §4); v2 can move it into core. The worktree /
-//!      window / branch teardown is NOT merge.sh's — it belongs to the
-//!      supervisor (state-integrity invariant #5).
+//!   1. **Merge mechanics** — resolve exact registered worktrees, serialize in
+//!      the shared git directory, then rebase and fast-forward through Git
+//!      subprocesses. Only the supervisor tears down worktrees and windows
+//!      (state-integrity invariant #5).
 //!   2. **Terminal report** — on a clean merge, append a `node.report`
 //!      with `via: "explicit-merge"`. That flag is the signal the
 //!      supervisor's cleanup gate checks to extend teardown to
@@ -39,10 +36,10 @@
 //! NOT submitted — the node stays live so the agent can recover (e.g.
 //! `/complex-rebase`) and re-run `run merge`.
 
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::PermissionsExt as _;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -64,12 +61,6 @@ use crate::run::dto::SupervisorView;
 use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths_from_cli_arg};
 use crate::supervise::cleanup;
 
-/// The bundled merge backend, embedded at compile time so the binary is
-/// self-contained (the external `merge.sh` is sunset). Materialized to a
-/// temp file and executed per invocation. Tests override the resolved
-/// script via `TASKFLEET_MERGE_SH`.
-const MERGE_SH: &str = include_str!("../../scripts/merge.sh");
-
 /// Default reporting node for a single-worker run. Every worktree kind
 /// `run merge` targets has exactly one node.
 const DEFAULT_NODE_ID: &str = "n-0001";
@@ -77,28 +68,10 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 /// Cap on `--report-file` size, mirroring `node report`'s 1 MiB bound.
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 
-/// The exit status `merge.sh` reserves for "could not acquire the merge lock in
-/// time" — another self-merge into the SAME target branch held the serializing
-/// lock past the timeout (issue `concurrent-self-merge-race`). It is the sole
-/// producer of this status in the script (the mkdir-lock acquire loop is the
-/// only path that emits 75, and the `workmux` invocation normalizes its exit so
-/// a downstream 75 can't leak), so mapping it to a distinct,
-/// retryable `merge_in_progress` code is unambiguous. Value is `EX_TEMPFAIL`
-/// (75) from sysexits(3): "temporary failure, the user is invited to retry".
-const MERGE_SH_LOCK_TIMEOUT_EXIT: i32 = 75;
-
-/// The exit status `merge.sh` reserves for a compare-and-swap mismatch — the
-/// target branch moved off the recorded `expected_source_oid` between the moment
-/// `run merge` opened the transaction and the moment merge.sh held the merge lock
-/// (design.md §2.1b / A2). Distinct from the dirty-tree/conflict failure (1) and
-/// the lock-timeout retry (75), so it maps to its own retryable `merge_source_moved`
-/// code: the agent rebases onto the moved source and re-runs `run merge`.
-const MERGE_SH_CAS_MISMATCH_EXIT: i32 = 76;
-
 pub struct Args<'a> {
     pub run_id: String,
     /// Override the merge target branch. Falls back to the manifest's
-    /// `source_branch`, then to merge.sh's own main/master auto-detection.
+    /// `source_branch`, then registered main/master checkout discovery.
     pub source: Option<String>,
     /// Reporting node id; defaults to `n-0001`.
     pub node_id: Option<String>,
@@ -119,8 +92,7 @@ struct MergePayload<'a> {
     run_id: &'a str,
     node_id: &'a str,
     branch: &'a str,
-    /// The resolved merge target, or `null` when left to merge.sh's
-    /// main/master auto-detection.
+    /// The resolved merge target.
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'a str>,
     merged: bool,
@@ -169,7 +141,7 @@ pub(crate) enum ConsumerOutcome {
 ///
 /// It exists so a second caller — `run salvage` (issue `run-salvage-command`,
 /// design.md §2.2) — can drive the *identical* merge machinery (crash-recovery,
-/// CAS-guarded `merge.sh`, the `via: "explicit-merge"` terminal report,
+/// CAS-guarded the Rust Git driver, the `via: "explicit-merge"` terminal report,
 /// supervisor reattach) and then fold this result into its OWN envelope, instead
 /// of re-implementing a raw git self-merge that would bypass the merge-transaction
 /// record and the teardown gate. Every field is owned so it outlives the borrowed
@@ -273,11 +245,8 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     //
     // A run that is already done merges its worktree away: the supervisor tears
     // the worktree down and exits when the run rolls up terminal (invariant #5).
-    // A later `run merge` would then materialize merge.sh and `cd` into a
-    // directory that no longer exists, failing with a misleading
-    // `merge_spawn_failed: … No such file or directory` that fingers the temp
-    // script instead of the real cause (the run is already finished). Refuse up
-    // front with a clear code and NO spawn attempt.
+    // A later `run merge` would then attempt to inspect a checkout that no longer exists, masking the
+    // fact that the run is already finished. Refuse up front with a clear code.
     //
     // The discriminator is deliberately worktree EXISTENCE, not "was there an
     // explicit-merge report" — the latter would (a) wrongly refuse the ONE
@@ -313,7 +282,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         .with_invalid_value(&run_id));
     }
 
-    // `--dry-run` is a read-only preview that never spawns merge.sh, so it is
+    // `--dry-run` is a read-only preview that never mutates Git, so it is
     // exempt from the remaining worktree-existence checks.
     if !args.dry_run {
         // try_exists returns Ok(false) only for a definitely-absent path; an
@@ -353,7 +322,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
             }
             // A still-live run whose worktree has vanished is a distinct,
             // actionable state — surface it plainly instead of the misleading
-            // merge.sh spawn failure. If the run actually finished but its
+            // Git failure. If the run actually finished but its
             // supervisor has not rolled the manifest up yet, `run reattach`
             // completes the transition.
             return Err(CliError::user(
@@ -375,9 +344,19 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
 
     // Resolve the merge target: explicit `--source` wins, else the
     // manifest's source_branch (the integration branch for an orchestrated
-    // child, `main` for a code worktree), else None → merge.sh detects
-    // main/master itself.
-    let effective_source = source.clone().or_else(|| manifest.source_branch.clone());
+    // child, `main` for a code worktree), else discover a registered main/master checkout.
+    let effective_source = source
+        .clone()
+        .or_else(|| manifest.source_branch.clone())
+        .or_else(|| {
+            Git::with_bin(git_bin())
+                .worktree_registrations(worktree_path)?
+                .into_iter()
+                .find_map(|row| match row.branch.as_deref() {
+                    Some("main" | "master") => row.branch,
+                    _ => None,
+                })
+        });
 
     // Build the terminal report up front — BEFORE the merge — so a malformed
     // `--report-file` is rejected without having already merged. The report
@@ -431,7 +410,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // previous `run merge` recorded `merge.started`, mutated git, then crashed
     // before appending its terminal report, the worker's work already landed in
     // source — complete that transaction here instead of re-merging (a re-merge of
-    // already-merged work would fail merge.sh's "refusing to merge into itself" /
+    // already-merged work would fail Rust Git driver's "refusing to merge into itself" /
     // "0 commits" checks). A rejected/unverifiable prior transaction is cleared and
     // we fall through to a fresh merge. Cheap when nothing is pending.
     match merge_recovery::recover_node(&paths, &node_id, &git) {
@@ -486,10 +465,8 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
 
     // Record the merge transaction BEFORE mutating git (design.md §2.1b / A2), so a
     // crash after the git merge but before the terminal report can be recovered
-    // deterministically by OID. Best-effort: if the source ref can't be read (e.g. a
-    // stubbed test git, or no concrete source branch), the transaction is skipped
-    // and the merge proceeds exactly as before — no recovery protection, no behavior
-    // change.
+    // deterministically by OID. If either ref cannot be read, refuse before
+    // mutation; an unrecorded merge cannot be recovered after a driver crash.
     let merge_start = record_merge_start(
         &paths,
         &node_id,
@@ -503,9 +480,9 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // Run the merge. A non-zero exit (conflict, dirty tree, lock timeout)
     // surfaces as a CliError and the report is NOT submitted — the node
     // stays live for the agent to recover and retry. The source ref mutation is
-    // guarded by the recorded `expected_source_oid` (compare-and-swap): merge.sh
+    // guarded by the recorded `expected_source_oid` (compare-and-swap): the driver
     // refuses if the source branch moved since we recorded the transaction.
-    if let Err(e) = run_merge_sh(
+    if let Err(e) = run_git_merge(
         Path::new(worktree_path),
         branch,
         effective_source.as_deref(),
@@ -597,7 +574,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
 
 /// Perform the read-only part of merge target eligibility for `--dry-run`.
 ///
-/// Target resolution mirrors merge.sh: an explicit/resolved source names the
+/// Target resolution mirrors the real driver: an explicit/resolved source names the
 /// checked-out branch, while an absent source auto-detects the first main/master
 /// worktree. The real operation repeats cleanliness under its merge lock; this
 /// preview intentionally does not acquire that mkdir lock because dry-run has a
@@ -652,13 +629,12 @@ fn validate_dry_run_target(
     }
 }
 
-/// Build the stable error shape shared by Rust-side merge eligibility checks and
-/// the merge.sh exit adapter.
+/// Build the stable error shape for Git merge eligibility failures.
 fn merge_failed(branch: &str, detail: impl Into<String>) -> CliError {
     CliError {
         kind: ExitKind::User,
         code: "merge_failed".to_string(),
-        message: format!("merge.sh exited 1 merging {branch}: {}", detail.into()),
+        message: format!("git merge failed merging {branch}: {}", detail.into()),
         invalid_value: Some(branch.to_string()),
         expected: None,
         details: None,
@@ -831,7 +807,7 @@ struct MergeStartHandle {
     /// The transaction's unique id, for a targeted `merge.aborted` on failure.
     op_id: String,
     /// The source ref OID recorded before the merge — the compare half of the
-    /// compare-and-swap, forwarded to merge.sh.
+    /// compare-and-swap, checked under the Git merge lock.
     expected_source_oid: String,
     /// The worker tip OID the merge integrates — stamped into the terminal
     /// report's typed `RunMerge` origin for provenance (issue `typed-report-origin`).
@@ -843,12 +819,8 @@ struct MergeStartHandle {
 /// deterministically by OID (design.md §2.1b / A2, issue
 /// `merge-transaction-recovery`).
 ///
-/// Returns `Ok(None)` — and the merge proceeds exactly as before A2, without CAS
-/// or recovery protection — ONLY in the genuinely-unrecoverable cases: no concrete
-/// source branch to compare against (merge.sh's main/master auto-detect path), or
-/// git cannot resolve the source/worker OIDs (a stubbed test git, a torn-down
-/// repo). In those cases the merge itself would need the same git anyway, so a
-/// missing transaction reflects a repo that recovery could not act on regardless.
+/// An unresolvable source or worker ref is an error, never permission to
+/// merge without a recoverable transaction.
 ///
 /// A durable-append FAILURE (lock/IO) is NOT downgraded: it returns `Err`, failing
 /// the merge BEFORE any git mutation (/llm-review finding). If the event log cannot
@@ -864,22 +836,16 @@ fn record_merge_start(
     source_branch: Option<&str>,
     git: &str,
 ) -> Result<Option<MergeStartHandle>, CliError> {
-    // A concrete source branch is required: it is the ref recovery reads and the
-    // CAS compares. Without it (merge.sh's main/master auto-detect path) we cannot
-    // record a recoverable transaction, so fall back to the legacy unguarded merge.
-    let Some(source_branch) = source_branch else {
-        return Ok(None);
-    };
-    let Some(expected_source_oid) = merge_recovery::read_oid(git, worktree_path, source_branch)
-    else {
-        return Ok(None);
-    };
-    // The worker's tip: prefer the recorded branch, fall back to HEAD.
-    let Some(worker_oid) = merge_recovery::read_oid(git, worktree_path, worker_branch)
-        .or_else(|| merge_recovery::read_oid(git, worktree_path, "HEAD"))
-    else {
-        return Ok(None);
-    };
+    let source_branch = source_branch.ok_or_else(|| {
+        merge_failed(
+            worker_branch,
+            "cannot record a merge without a source branch",
+        )
+    })?;
+    let expected_source_oid = merge_recovery::read_oid(git, worktree_path, source_branch)
+        .ok_or_else(|| merge_failed(worker_branch, "cannot resolve source ref for transaction"))?;
+    let worker_oid = merge_recovery::read_oid(git, worktree_path, worker_branch)
+        .ok_or_else(|| merge_failed(worker_branch, "cannot resolve worker ref for transaction"))?;
     let pid = std::process::id();
     let txn = MergeTxn {
         op_id: taskfleet_core::new_op_id(),
@@ -1069,151 +1035,189 @@ fn read_report_file(path: &Path) -> Result<Value, CliError> {
     })
 }
 
-/// Resolve the merge backend: `TASKFLEET_MERGE_SH` override (tests) or the
-/// embedded script materialized to a temp file with the exec bit set.
-/// Returns the temp-file guard so it lives until the command has run.
-fn materialize_merge_sh() -> Result<MergeScript, CliError> {
-    if let Ok(path) = std::env::var("TASKFLEET_MERGE_SH") {
-        return Ok(MergeScript::External(path.into()));
-    }
-    let mut tmp = tempfile::Builder::new()
-        .prefix("taskfleet-merge-")
-        .suffix(".sh")
-        .tempfile()
-        .map_err(|e| {
-            CliError::system("tempfile_failed", format!("create merge.sh tempfile: {e}"))
-        })?;
-    tmp.write_all(MERGE_SH.as_bytes())
-        .map_err(|e| CliError::system("write_failed", format!("write merge.sh tempfile: {e}")))?;
-    tmp.flush()
-        .map_err(|e| CliError::system("write_failed", format!("flush merge.sh tempfile: {e}")))?;
-    let perms = std::fs::Permissions::from_mode(0o700);
-    std::fs::set_permissions(tmp.path(), perms)
-        .map_err(|e| CliError::system("chmod_failed", format!("chmod merge.sh tempfile: {e}")))?;
+/// A portable, atomic directory lock in the shared git directory. Never reclaim
+/// an apparently stale lock automatically: removal could race a new owner.
+struct MergeLock(PathBuf);
 
-    // Linux refuses to execute a script whose inode is still open for writing
-    // (`ETXTBSY`). Converting to `TempPath` closes the writable descriptor while
-    // retaining ownership of the private pathname, so it remains present for the
-    // child invocation and is removed automatically afterward.
-    Ok(MergeScript::Temp(tmp.into_temp_path()))
-}
-
-/// Where the materialized merge backend lives — an external override path
-/// or an owned temp path that must outlive the command invocation. The temp
-/// path deliberately owns no open file descriptor: Linux rejects exec of a
-/// write-open script with `ETXTBSY`.
-enum MergeScript {
-    External(std::path::PathBuf),
-    Temp(tempfile::TempPath),
-}
-
-impl MergeScript {
-    fn path(&self) -> &Path {
-        match self {
-            MergeScript::External(p) => p.as_path(),
-            MergeScript::Temp(t) => t.as_ref(),
+impl Drop for MergeLock {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir(&self.0) {
+            tracing::warn!(path = %self.0.display(), error = %e, "merge lock release failed");
         }
     }
 }
 
-/// Invoke the merge backend from inside `worktree_path`, inheriting the
-/// environment (notably `$TMUX`/`$TMUX_PANE`, which the backend uses to
-/// close the agent's window). On a non-zero exit, the captured stderr
-/// becomes the error message and the report is skipped by the caller.
-fn run_merge_sh(
+fn git_output(git: &str, dir: &Path, args: &[&str], branch: &str) -> Result<String, CliError> {
+    let out = Command::new(git)
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| merge_failed(branch, format!("git {args:?}: {e}")))?;
+    if !out.status.success() {
+        return Err(merge_failed(
+            branch,
+            format!(
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn run_git_merge(
     worktree_path: &Path,
     branch: &str,
     source: Option<&str>,
     expected_source_oid: Option<&str>,
 ) -> Result<(), CliError> {
-    let script = materialize_merge_sh()?;
-    let mut cmd = Command::new(script.path());
-    cmd.current_dir(worktree_path);
-    if let Some(src) = source {
-        cmd.arg("--target").arg(src);
+    let git = git_bin();
+    let g = Git::with_bin(&git);
+    if matches!(branch, "main" | "master") {
+        return Err(merge_failed(branch, "Cannot merge from main/master branch"));
     }
-    // Compare-and-swap guard (design.md §2.1b / A2): merge.sh verifies the target
-    // branch is still at this OID after acquiring the merge lock, and refuses the
-    // FF if it moved — so the source ref mutation only lands when the compare half
-    // still holds.
-    if let Some(oid) = expected_source_oid {
-        cmd.arg("--expected-source-oid").arg(oid);
+    // Use the recorded identity, never an ambient HEAD or a prefix-matched
+    // worktree listing. A moved/detached worker must not merge somebody else's work.
+    if g.head_branch(worktree_path.to_str().unwrap_or_default())
+        .as_deref()
+        != Some(branch)
+    {
+        return Err(merge_failed(
+            branch,
+            "worktree is not checked out on the recorded branch",
+        ));
     }
-    // Orphan-race guard (/llm-review finding): merge.sh is our child but survives if
-    // we (the driver) are killed. Pass our PID so merge.sh re-checks our liveness
-    // immediately before the source-ref mutation and aborts if we died — otherwise a
-    // recovery run, seeing the driver dead but the orphaned merge.sh still about to
-    // fast-forward, could reject a merge that then lands, stranding the work.
-    cmd.arg("--driver-pid").arg(std::process::id().to_string());
-    cmd.arg(branch);
-
-    let output = cmd.output().map_err(|e| {
-        // The pre-flight guard in `run` refuses a torn-down worktree up front,
-        // but the worktree can still vanish in the TOCTOU window between that
-        // check and this spawn (the supervisor tearing a just-terminalized run
-        // down). A `NotFound` here can be the missing `current_dir` OR a missing
-        // executable (e.g. an `TASKFLEET_MERGE_SH` override pointing nowhere, or a
-        // missing shebang interpreter), so disambiguate by stat-ing the worktree
-        // instead of blindly blaming either one.
-        if e.kind() == std::io::ErrorKind::NotFound
-            && worktree_path.try_exists().is_ok_and(|exists| !exists)
-        {
-            CliError::user(
-                "worktree_missing",
+    let rows = g
+        .worktree_registrations(worktree_path.to_str().unwrap_or_default())
+        .ok_or_else(|| merge_failed(branch, "could not inspect registered worktrees"))?;
+    if !rows
+        .iter()
+        .any(|r| Path::new(&r.path) == worktree_path && r.branch.as_deref() == Some(branch))
+    {
+        return Err(merge_failed(
+            branch,
+            "worker checkout is not a registered worktree for this repository",
+        ));
+    }
+    let target = if let Some(source) = source {
+        rows.iter()
+            .find(|r| r.branch.as_deref() == Some(source))
+            .ok_or_else(|| {
+                merge_failed(
+                    branch,
+                    format!("target branch '{source}' is not checked out in any worktree"),
+                )
+            })?
+    } else {
+        rows.iter()
+            .find(|r| matches!(r.branch.as_deref(), Some("main" | "master")))
+            .ok_or_else(|| merge_failed(branch, "Could not find main worktree"))?
+    };
+    let source = target
+        .branch
+        .as_deref()
+        .expect("selected branch registration");
+    if branch == source {
+        return Err(merge_failed(
+            branch,
+            "refusing to merge a branch into itself",
+        ));
+    }
+    if g.worktree_status_clean(worktree_path.to_str().unwrap_or_default()) != Some(true) {
+        return Err(merge_failed(
+            branch,
+            "Uncommitted changes in worktree (or status unavailable); commit first",
+        ));
+    }
+    let common = git_output(
+        &git,
+        worktree_path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        branch,
+    )?;
+    let lock_path = Path::new(&common).join("worktree-merge.lock");
+    let timeout = std::env::var("MERGE_LOCK_TIMEOUT").unwrap_or_else(|_| "600".to_string());
+    let seconds: u64 = timeout
+        .parse()
+        .ok()
+        .filter(|n| (1..=86400).contains(n))
+        .filter(|_| timeout.len() <= 5 && timeout.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or_else(|| {
+            merge_failed(
+                branch,
                 format!(
-                    "worktree {} no longer exists — it was likely torn down as the run \
-                     finished; no merge is needed",
-                    worktree_path.display()
+                    "MERGE_LOCK_TIMEOUT must be an integer between 1 and 86400 (got '{timeout}')"
                 ),
             )
-        } else {
-            CliError::system(
-                "merge_spawn_failed",
-                format!("invoke merge.sh ({}): {}", script.path().display(), e),
-            )
+        })?;
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let _lock = loop {
+        match std::fs::create_dir(&lock_path) {
+            Ok(()) => break MergeLock(lock_path.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && lock_path.is_dir() => {
+                if Instant::now() >= deadline {
+                    return Err(CliError::user("merge_in_progress", format!(
+                        "another merge is holding the target branch '{source}'; lock {} timed out after {seconds}s (if stale, inspect before removing it)", lock_path.display())));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(merge_failed(
+                    branch,
+                    format!("could not create merge lock {}: {e}", lock_path.display()),
+                ))
+            }
         }
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // merge.sh refuses on preconditions (on main, dirty tree, same
-        // branch, lock timeout) and fails on a rebase conflict from
-        // `workmux merge`. Both are user-actionable: the agent recovers
-        // (commit / resolve / `/complex-rebase`) and retries `run merge`.
-        let detail = stderr.trim();
-        let detail = if detail.is_empty() {
-            stdout.trim()
-        } else {
-            detail
-        };
-        let exit_code = output.status.code().unwrap_or(-1);
-        // merge.sh reserves EX_TEMPFAIL for "could not acquire the merge lock in
-        // time" — a concurrent self-merge into the SAME target branch held the
-        // serializing lock past the timeout (issue concurrent-self-merge-race).
-        // Surface it under a distinct `merge_in_progress` code so a caller can
-        // tell a transient serialization conflict (retry) apart from a genuine
-        // dirty tree / conflict (commit / resolve). It is retryable, not a hard
-        // failure. See MERGE_SH_LOCK_TIMEOUT_EXIT for why 75 is unambiguous.
-        let code = if exit_code == MERGE_SH_LOCK_TIMEOUT_EXIT {
-            "merge_in_progress"
-        } else if exit_code == MERGE_SH_CAS_MISMATCH_EXIT {
-            "merge_source_moved"
-        } else {
-            "merge_failed"
-        };
-        if exit_code == 1 {
-            return Err(merge_failed(branch, detail));
-        }
-        return Err(CliError {
-            kind: ExitKind::User,
-            code: code.to_string(),
-            message: format!("merge.sh exited {exit_code} merging {branch}: {detail}"),
-            invalid_value: Some(branch.to_string()),
-            expected: None,
-            details: None,
-        });
+    };
+    let target_path = Path::new(&target.path);
+    if g.head_branch(&target.path).as_deref() != Some(source) {
+        return Err(merge_failed(branch, "target worktree changed branch"));
     }
+    if g.worktree_status_clean(&target.path) != Some(true) {
+        return Err(merge_failed(
+            branch,
+            format!(
+                "Uncommitted changes in target worktree ({}) (or status unavailable)",
+                target.path
+            ),
+        ));
+    }
+    // The source OID was recorded before the lock. Refuse if another writer
+    // advanced it while we waited. Check again just before the FF below.
+    let check_source = || -> Result<(), CliError> {
+        if let Some(expected) = expected_source_oid {
+            let actual = merge_recovery::read_oid(&git, &target.path, source)
+                .ok_or_else(|| merge_failed(branch, "could not resolve target branch for CAS"))?;
+            if actual != expected {
+                return Err(CliError::user("merge_source_moved", format!(
+                    "target branch '{source}' moved from expected {expected} to {actual}; rebase and retry")));
+            }
+        }
+        Ok(())
+    };
+    check_source()?;
+    // The previous backend rebased the worker then fast-forwarded
+    // the checked-out target. Git does the same operations here; conflicts leave
+    // the worker checkout for manual resolution and never submit a report.
+    // An already integrated branch needs no rebase (idempotent retry).
+    let worker_oid = merge_recovery::read_oid(&git, &target.path, branch)
+        .ok_or_else(|| merge_failed(branch, "could not resolve worker branch"))?;
+    let source_oid = merge_recovery::read_oid(&git, &target.path, source)
+        .ok_or_else(|| merge_failed(branch, "could not resolve source branch"))?;
+    if worker_oid != source_oid {
+        git_output(&git, worktree_path, &["rebase", "--", source], branch)?;
+    }
+    check_source()?;
+    // No separate shell driver survives us. A git child may survive a SIGKILL
+    // between this point and wait(), as in the old script's final merge call;
+    // the recorded OIDs allow recovery to decide whether the ref moved.
+    git_output(
+        &git,
+        target_path,
+        &["merge", "--ff-only", "--", branch],
+        branch,
+    )?;
     Ok(())
 }
 

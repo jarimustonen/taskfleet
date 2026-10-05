@@ -64,7 +64,7 @@
 //!   external `run reattach` between them is not re-detected. The merge itself is
 //!   still crash-atomic and OID-CAS-guarded.
 //! - **Concurrent salvage.** Two `run salvage` invocations are not mutually
-//!   excluded before the merge; `merge.sh`'s file lock + the merge transaction
+//!   excluded before the merge; the Rust merge driver's file lock + the merge transaction
 //!   serialize the actual git mutation (one wins, the other gets
 //!   `merge_in_progress`/`merge_source_moved`), so no double-merge, but both may
 //!   redundantly `SIGTERM` the same dying worker.

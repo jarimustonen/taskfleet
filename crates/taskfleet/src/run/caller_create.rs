@@ -305,7 +305,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
                 ))
             })
             .map_err(from_core)?;
-            let _fence_read = RunLock::acquire_shared(&staging.lock()).map_err(from_core)?;
+            let fence_read = RunLock::acquire_shared(&staging.lock()).map_err(from_core)?;
             let fence = super::writer_fence::inspect(&staging)?;
             let recorded = taskfleet_core::read_all_events(&staging.events()).map_err(from_core)?;
             if recorded
@@ -334,7 +334,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
                     "staged run is incomplete or inconsistent",
                 ));
             }
-            drop(_fence_read);
+            drop(fence_read);
             if n.is_none() {
                 taskfleet_core::append_and_apply_event(&staging, "node.created", Some(&parse_node_id("n-0001")?), None,
                     json!({"kind":"spinoff","branch":plan.branch,"worktree_path":plan.checkout,"source_branch":source,"base_sha":plan.base_sha,"task":task,"attempt":0})).map_err(from_core)?;
@@ -400,7 +400,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
             "published run/node does not match the reservation",
         ));
     }
-    let _fence_read = RunLock::acquire_shared(&public.lock()).map_err(from_core)?;
+    let fence_read = RunLock::acquire_shared(&public.lock()).map_err(from_core)?;
     let fence = super::writer_fence::inspect(&public)?;
     let recorded = taskfleet_core::read_all_events(&public.events()).map_err(from_core)?;
     if recorded
@@ -415,7 +415,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
             "published fence identity differs from run.created",
         ));
     }
-    drop(_fence_read);
+    drop(fence_read);
     verify(&repo, &source, plan).map_err(|e| uncertain(id, plan, &e.message))?;
     // Keep same-key calls serialized through boot, but never let the detached
     // supervisor inherit this flock across exec after a killed creator.

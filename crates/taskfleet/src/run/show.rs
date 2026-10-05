@@ -355,14 +355,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             let branch_gone = landing
                 .source_repo
                 .as_deref()
+                .zip(landing.source_branch.as_deref())
                 .zip(landing.branch.as_deref())
-                .is_some_and(|(repo, branch)| {
-                    crate::run::merge_recovery::read_oid(
-                        &crate::supervise::cleanup::git_bin(),
-                        repo,
-                        branch,
-                    )
-                    .is_none()
+                .is_some_and(|((repo, source), branch)| {
+                    let git = crate::supervise::cleanup::git_bin();
+                    crate::run::merge_recovery::read_oid(&git, repo, source).is_some()
+                        && crate::run::merge_recovery::read_oid(&git, repo, branch).is_none()
                 });
             if manifest.status == Status::Done && checkout_gone && branch_gone {
                 "complete"

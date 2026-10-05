@@ -140,7 +140,8 @@ pub(crate) fn verified_caller_transaction(
     let txns: Vec<_> = events
         .iter()
         .filter(|e| {
-            e.kind == taskfleet_core::KIND_MERGE_STARTED
+            e.seq > intent.seq
+                && e.kind == taskfleet_core::KIND_MERGE_STARTED
                 && e.run_id == paths.run_id
                 && e.node_id.as_ref() == Some(node_id)
         })
@@ -182,9 +183,23 @@ pub(crate) fn verified_caller_transaction(
         if reports.len() != 1 {
             return None;
         }
+        let report_seq = reports[0].seq;
         let matching: Vec<_> = txns
             .into_iter()
-            .filter(|t| t.op_id == op && t.worker_oid == oid)
+            .filter(|t| {
+                t.op_id == op
+                    && t.worker_oid == oid
+                    && events.iter().any(|e| {
+                        e.kind == taskfleet_core::KIND_MERGE_STARTED
+                            && e.seq > intent.seq
+                            && e.seq < report_seq
+                            && e.node_id.as_ref() == Some(node_id)
+                            && serde_json::from_value::<MergeTxn>(e.data.clone())
+                                .ok()
+                                .as_ref()
+                                == Some(t)
+                    })
+            })
             .collect();
         if matching.len() != 1 {
             return None;

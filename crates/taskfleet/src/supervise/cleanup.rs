@@ -383,8 +383,9 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
     if authority.revalidate().is_err() {
         return preserve("caller intent or writer inode changed");
     }
-    if exists && !authorized {
-        if append_and_apply_event(
+    if exists
+        && !authorized
+        && append_and_apply_event(
             paths,
             "cleanup.caller_verified",
             Some(&node.node_id),
@@ -395,9 +396,8 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
             json!({"op_id":txn.op_id, "worker_oid":txn.worker_oid}),
         )
         .is_err()
-        {
-            return preserve("caller cleanup receipt could not be recorded");
-        }
+    {
+        return preserve("caller cleanup receipt could not be recorded");
     }
     if exists && !remove_worktree(repo, checkout, &git, false) {
         return preserve("caller worktree not cleanly removable");

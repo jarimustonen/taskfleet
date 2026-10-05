@@ -191,6 +191,8 @@ pub struct ManifestView<'a> {
     pub lifecycle: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_owner: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_settlement_intent: Option<&'a taskfleet_core::schema::CallerSettlementIntent>,
     pub title: &'a str,
     pub status: &'static str,
     pub created_at: DateTime<Utc>,
@@ -218,6 +220,7 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             kind: kind_kebab(m.kind),
             lifecycle: lifecycle_kebab(m.lifecycle),
             agent_owner: (m.agent_owner == taskfleet_core::AgentOwner::Caller).then_some("caller"),
+            caller_settlement_intent: m.caller_settlement_intent.as_ref(),
             title: &m.title,
             status: status_kebab(m.status),
             created_at: m.created_at,
@@ -482,6 +485,7 @@ mod tests {
             run_id: RunId::parse_str("01arz3ndektsv4rrffq69g5fav").unwrap(),
             kind: Kind::Spinoff,
             lifecycle: Lifecycle::Autonomous,
+            caller_settlement_intent: None,
             agent_owner: taskfleet_core::AgentOwner::Taskfleet,
             title: "seed-run".to_string(),
             status: Status::Pending,

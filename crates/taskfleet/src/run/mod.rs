@@ -345,6 +345,22 @@ pub enum RunAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Record a sticky caller-owned settlement intent and probe the writer lease.
+    /// Does NOT merge, cancel, salvage, discard or authorize cleanup.
+    SettlementIntent {
+        /// Exact full run ID.
+        run_id: String,
+        #[arg(long)]
+        node: String,
+        #[arg(long, value_enum)]
+        operation: SettlementOperationArg,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Block until one or more runs reach a terminal state
     /// (`done | failed | cancelled`) and emit a structured summary, so
     /// callers stop hand-rolling `run show` poll loops. Read-only: never
@@ -391,6 +407,25 @@ pub enum RunAction {
         #[arg(long, hide = true)]
         max_iter: Option<u32>,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum SettlementOperationArg {
+    Merge,
+    Cancel,
+    Discard,
+}
+
+impl From<SettlementOperationArg> for taskfleet_core::schema::SettlementOperation {
+    fn from(value: SettlementOperationArg) -> Self {
+        use taskfleet_core::schema::SettlementOperation as Op;
+        match value {
+            SettlementOperationArg::Merge => Op::Merge,
+            SettlementOperationArg::Cancel => Op::Cancel,
+            SettlementOperationArg::Discard => Op::Discard,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -547,6 +582,23 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             };
             show::run(&run_id, spec, warnings)
         }
+        RunAction::SettlementIntent {
+            run_id,
+            node,
+            operation,
+            key,
+            actor,
+            reason,
+        } => writer_fence::settlement_intent(
+            &run_id,
+            &node,
+            operation.into(),
+            &key,
+            &actor,
+            reason.as_deref(),
+            spec,
+            warnings,
+        ),
         RunAction::Session {
             action:
                 SessionAction::Fence {

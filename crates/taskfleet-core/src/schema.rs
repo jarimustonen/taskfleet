@@ -660,6 +660,9 @@ pub struct Manifest {
     /// Absent on historic projections, which always launched Taskfleet workers.
     #[serde(default, skip_serializing_if = "AgentOwner::is_taskfleet")]
     pub agent_owner: AgentOwner,
+    /// Caller settlement admission fence; absent for historic/ordinary runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_settlement_intent: Option<CallerSettlementIntent>,
     /// Human-readable run title.
     pub title: String,
     /// Current aggregate run status.
@@ -894,6 +897,47 @@ pub struct CallerPiLifecycle {
     pub state: CallerPiState,
     /// Explicit attestation, not an inferred exit status.
     pub reason: Option<String>,
+}
+
+/// Sticky caller-owned settlement operation. An intent is not a terminal report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettlementOperation {
+    /// Integrate branch into source.
+    Merge,
+    /// Terminalize without discarding work.
+    Cancel,
+    /// Explicitly discard retained work.
+    Discard,
+}
+
+/// One durable, single-run settlement fence. Never cleared by failed attempts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallerSettlementIntent {
+    /// Exact full run identity.
+    pub run_id: RunId,
+    /// Exact node identity.
+    pub node_id: NodeId,
+    /// Caller-supplied stable retry key.
+    pub key: String,
+    /// Requested action (not permission to perform it).
+    pub operation: SettlementOperation,
+    /// Audited initiator.
+    pub actor: String,
+    /// Required for discard and cancel; optional for merge.
+    pub reason: Option<String>,
+    /// Inode pair of the lifetime writer lock.
+    pub writer_dev: u64,
+    /// Writer inode.
+    pub writer_ino: u64,
+    /// Inode pair of the launch gate.
+    pub gate_dev: u64,
+    /// Gate inode.
+    pub gate_ino: u64,
+    /// Current reservation generation; zero means no reservation yet.
+    pub generation: u64,
+    /// Event sequence, filled by the reducer.
+    pub seq: u64,
 }
 
 /// Durable `nodes/<node-id>.json` projection (design.md §1.3).

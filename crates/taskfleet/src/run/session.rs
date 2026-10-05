@@ -302,6 +302,9 @@ pub fn bind(
     if generation.is_some() && node.caller_pi_lifecycle.is_none() {
         return Err(conflict("generation requires an existing reservation"));
     }
+    if manifest.caller_settlement_intent.is_some() && node.caller_pi_session.is_none() {
+        return Err(conflict("settlement intent forbids new binding"));
+    }
     let (file_dev, file_ino) = verify(path, pi_id, checkout, generation.is_some())?;
     let binding = CallerPiSession {
         file_dev,
@@ -461,6 +464,19 @@ pub fn update(args: UpdateArgs<'_>) -> Result<(), CliError> {
     // Reconciliation after a lost reply: identical current projection means
     // success with no duplicate event. Older generation retries are refused.
     let replay = node.caller_pi_lifecycle.as_ref() == Some(&fact);
+    if manifest.caller_settlement_intent.is_some()
+        && !replay
+        && !(node.caller_pi_lifecycle.as_ref().is_some_and(|old| {
+            old.generation == args.generation && old.pi_session_id == args.pi_id
+        }) && matches!(
+            fact.state,
+            CallerPiState::Exited | CallerPiState::LaunchFailed | CallerPiState::ControlUncertain
+        ))
+    {
+        return Err(conflict(
+            "settlement intent forbids new launch/started transition",
+        ));
+    }
     if !replay {
         append_and_apply_unlocked(
             &witness,
@@ -577,7 +593,10 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
     }
     let paths = super::run_paths_exact(&crate::home::root_dir()?, &id)?;
     let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
-    let (_, node) = launch_identity(&paths, &nid, args.checkout)?;
+    let (manifest, node) = launch_identity(&paths, &nid, args.checkout)?;
+    if manifest.caller_settlement_intent.is_some() {
+        return Err(conflict("settlement intent forbids launch reservation"));
+    }
     let identity = super::writer_fence::check_launch_fds(&paths, args.gate_fd, args.writer_fd)?;
     check_creation_fence(&paths, &identity)?;
     let fact = CallerPiLifecycle {
@@ -618,7 +637,7 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
     )
 }
 
-fn check_creation_fence(
+pub(super) fn check_creation_fence(
     paths: &taskfleet_core::RunPaths,
     identity: &super::writer_fence::Fence,
 ) -> Result<(), CliError> {

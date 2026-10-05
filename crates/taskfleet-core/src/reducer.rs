@@ -55,9 +55,9 @@ use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::report::ReportOrigin;
 use crate::schema::{
-    CallerPiLifecycle, CallerPiSession, CallerPiState, ChildRef, Event, EvidenceStatus,
-    IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId, Status,
-    TmuxIdentity, WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION,
+    CallerPiLifecycle, CallerPiSession, CallerPiState, CallerSettlementIntent, ChildRef, Event,
+    EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId,
+    Status, TmuxIdentity, WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -301,6 +301,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.retry" => reduce_node_retry(paths, ev),
         "caller.pi.session_bound" => reduce_caller_pi_session_bound(paths, ev),
         "caller.pi.lifecycle" => reduce_caller_pi_lifecycle(paths, ev),
+        "caller.settlement_intent" => reduce_caller_settlement_intent(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
         "worker.evidence.archived" => reduce_worker_evidence_archived(paths, ev),
         "worker.evidence.failed" => reduce_worker_evidence_failed(paths, ev),
@@ -513,6 +514,7 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         run_id: paths.run_id.clone(),
         kind,
         lifecycle,
+        caller_settlement_intent: None,
         agent_owner: d
             .get("agent_owner")
             .cloned()
@@ -846,6 +848,54 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         ops.push(ProjectionOp::Manifest(m));
     }
     Ok(ops)
+}
+
+/// Replay may encounter an already projected intent after a crash before the
+/// applied watermark advanced. Only an exact duplicate is a no-op.
+fn reduce_caller_settlement_intent(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let bad = |reason: &str| Error::CorruptEventLog {
+        path: paths.events(),
+        reason: format!("event seq={} caller.settlement_intent: {reason}", ev.seq),
+    };
+    let id = require_envelope_node_id(&paths.events(), ev)?;
+    let mut manifest = read_manifest_opt(paths)?.ok_or_else(|| bad("missing run"))?;
+    let node = read_node_opt(paths, &id)?.ok_or_else(|| bad("missing node"))?;
+    let mut intent: CallerSettlementIntent =
+        serde_json::from_value(ev.data.clone()).map_err(|_| bad("invalid typed intent"))?;
+    if manifest.agent_owner != crate::schema::AgentOwner::Caller
+        || intent.run_id != ev.run_id
+        || intent.node_id != id
+        || node.run_id != ev.run_id
+        || ev.idempotency_key.as_deref() != Some(intent.key.as_str())
+        || intent.key.trim().is_empty()
+        || intent.actor.trim().is_empty()
+        || intent.writer_dev == 0
+        || intent.writer_ino == 0
+        || intent.gate_dev == 0
+        || intent.gate_ino == 0
+        || intent.seq != 0
+        || intent.generation
+            != node
+                .caller_pi_lifecycle
+                .as_ref()
+                .map_or(0, |v| v.generation)
+    {
+        return Err(bad("invalid identity, generation or audit fields"));
+    }
+    intent.seq = ev.seq;
+    if let Some(existing) = &manifest.caller_settlement_intent {
+        return if existing == &intent {
+            Ok(vec![])
+        } else {
+            Err(bad("intent already recorded"))
+        };
+    }
+    if manifest.status.is_terminal() {
+        return Err(bad("terminal run"));
+    }
+    manifest.caller_settlement_intent = Some(intent);
+    manifest.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Manifest(manifest)])
 }
 
 /// Binding is immutable even if the worktree later disappears. The CLI validates

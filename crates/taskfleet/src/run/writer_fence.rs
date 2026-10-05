@@ -1,6 +1,6 @@
 //! Durable lock identity for caller-owned runs. This is NOT launch admission:
 //! the host must hold the gate through Pi Start and pass the shared lease FD.
-//! No settlement endpoint consumes this foundation yet.
+//! Intent recording and lease probing exist; destructive settlement is disabled.
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
@@ -231,4 +231,261 @@ pub(super) fn check_launch_fds(
         return Err(unavailable("fence identity changed during FD check"));
     }
     Ok(fence)
+}
+
+/// Held exclusive writer lease. The FD remains locked for the whole guarded
+/// action; dropping this guard releases it, never unlinks the inode.
+pub(super) struct ExclusiveWriter(File);
+
+impl ExclusiveWriter {
+    /// Recheck the pathname and durable intent immediately before an irreversible
+    /// action. This is not a Git identity/history check; callers must add those.
+    pub(super) fn revalidate(
+        &self,
+        paths: &RunPaths,
+        intent: &taskfleet_core::schema::CallerSettlementIntent,
+    ) -> Result<(), CliError> {
+        use taskfleet_core::{read_manifest_opt, RunLock};
+        let _lock = RunLock::acquire_existing(&paths.lock()).map_err(super::from_core)?;
+        let fence = inspect(paths)?;
+        let meta = self.0.metadata().map_err(unavailable)?;
+        if (meta.dev(), meta.ino()) != (fence.writer.dev, fence.writer.ino)
+            || read_manifest_opt(paths)
+                .map_err(super::from_core)?
+                .and_then(|m| m.caller_settlement_intent)
+                != Some(intent.clone())
+        {
+            return Err(unavailable("writer lease or persisted intent changed"));
+        }
+        Ok(())
+    }
+}
+
+/// Nonblocking bounded acquisition, outside both gate and run locks. Caller
+/// settlement is still disabled: this helper grants NO destructive authority.
+pub(super) fn acquire_exclusive(
+    paths: &RunPaths,
+    intent: &taskfleet_core::schema::CallerSettlementIntent,
+) -> Result<ExclusiveWriter, CliError> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_millis(300);
+    loop {
+        let fence = inspect(paths)?;
+        let dir = directory(&paths.root)?;
+        let file = open_at(&dir, "writer.lock", libc::O_RDWR | libc::O_NONBLOCK, 0)?;
+        match unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } {
+            0 => {
+                let held = ExclusiveWriter(file);
+                held.revalidate(paths, intent)?;
+                if inspect(paths)? != fence {
+                    return Err(unavailable("writer pathname changed"));
+                }
+                return Ok(held);
+            }
+            _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) => {
+                if Instant::now() >= deadline {
+                    return Err(CliError::user("writer_active", format!(
+                        "intent recorded for {}; writer lease busy (phase intent-recorded); retry the same key after writer exits; no Git action taken",
+                        intent.run_id
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            _ => return Err(unavailable(std::io::Error::last_os_error())),
+        }
+    }
+}
+
+/// Internal-only settlement foundation. There is deliberately no CLI command
+/// that performs a destructive caller-owned action in this slice.
+pub(super) fn record_intent(
+    paths: &RunPaths,
+    node_id: &taskfleet_core::NodeId,
+    key: &str,
+    operation: taskfleet_core::schema::SettlementOperation,
+    actor: &str,
+    reason: Option<&str>,
+) -> Result<taskfleet_core::schema::CallerSettlementIntent, CliError> {
+    use taskfleet_core::schema::{AgentOwner, CallerSettlementIntent};
+    use taskfleet_core::{append_and_apply_unlocked, read_manifest_opt, read_node_opt, RunLock};
+    if key.trim().is_empty()
+        || key.len() > 256
+        || actor.trim().is_empty()
+        || actor.len() > 256
+        || reason.is_some_and(|r| r.trim().is_empty() || r.len() > 1024)
+        || (matches!(
+            operation,
+            taskfleet_core::schema::SettlementOperation::Discard
+                | taskfleet_core::schema::SettlementOperation::Cancel
+        ) && reason.is_none())
+    {
+        return Err(CliError::user(
+            "invalid_settlement_intent",
+            "nonblank bounded key/actor and reason for cancel/discard required",
+        ));
+    }
+    // No run lock is held while waiting for gate. Never create a missing gate.
+    let fence = inspect(paths)?;
+    let dir = directory(&paths.root)?;
+    let gate = open_at(&dir, "launch-gate.lock", libc::O_RDWR | libc::O_NONBLOCK, 0)?;
+    if unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(unavailable(std::io::Error::last_os_error()));
+    }
+    if inspect(paths)? != fence {
+        return Err(unavailable("gate identity changed"));
+    }
+    let guard = RunLock::acquire_existing(&paths.lock()).map_err(super::from_core)?;
+    // A reply can be lost after the event sync but before any projection. Fold
+    // that tail first, before checking for an existing sticky intent.
+    taskfleet_core::replay_unapplied_unlocked(&guard.witness(), paths).map_err(super::from_core)?;
+    let fence = inspect(paths)?;
+    let held_gate = gate.metadata().map_err(unavailable)?;
+    if (held_gate.dev(), held_gate.ino()) != (fence.launch_gate.dev, fence.launch_gate.ino) {
+        return Err(unavailable(
+            "held gate inode differs from recorded pathname",
+        ));
+    }
+    super::session::check_creation_fence(paths, &fence)?;
+    let manifest = read_manifest_opt(paths)
+        .map_err(super::from_core)?
+        .ok_or_else(|| unavailable("missing run"))?;
+    let node = read_node_opt(paths, node_id)
+        .map_err(super::from_core)?
+        .ok_or_else(|| unavailable("missing node"))?;
+    if manifest.agent_owner != AgentOwner::Caller
+        || node.run_id != paths.run_id
+        || node.worktree_path.is_none()
+        || node.branch.is_none()
+        || node.worktree_path.as_ref().is_none_or(|checkout| {
+            !Path::new(checkout)
+                .canonicalize()
+                .is_ok_and(|canonical| canonical == Path::new(checkout))
+        })
+    {
+        return Err(unavailable("not a verified caller run/node"));
+    }
+    let mut intent = CallerSettlementIntent {
+        run_id: paths.run_id.clone(),
+        node_id: node_id.clone(),
+        key: key.into(),
+        operation,
+        actor: actor.into(),
+        reason: reason.map(str::to_owned),
+        writer_dev: fence.writer.dev,
+        writer_ino: fence.writer.ino,
+        gate_dev: fence.launch_gate.dev,
+        gate_ino: fence.launch_gate.ino,
+        generation: node
+            .caller_pi_lifecycle
+            .as_ref()
+            .map_or(0, |v| v.generation),
+        seq: 0,
+    };
+    if let Some(old) = manifest.caller_settlement_intent {
+        if old.key == key
+            && old.operation == operation
+            && old.actor == actor
+            && old.reason.as_deref() == reason
+            && old.writer_dev == intent.writer_dev
+            && old.writer_ino == intent.writer_ino
+            && old.gate_dev == intent.gate_dev
+            && old.gate_ino == intent.gate_ino
+            && old.node_id == *node_id
+            && old.generation == intent.generation
+        {
+            return Ok(old);
+        }
+        return Err(CliError::user(
+            "settlement_conflict",
+            "different settlement intent already persisted; inspect the run",
+        ));
+    }
+    if manifest.status.is_terminal() {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "terminal caller run has no settlement intent",
+        ));
+    }
+    if inspect(paths)? != fence {
+        return Err(unavailable("fence identity changed before intent append"));
+    }
+    let seq = append_and_apply_unlocked(
+        &guard.witness(),
+        paths,
+        "caller.settlement_intent",
+        Some(node_id),
+        Some(key),
+        serde_json::to_value(&intent).map_err(unavailable)?,
+    )
+    .map_err(super::from_core)?;
+    intent.seq = seq;
+    if std::env::var_os("TASKFLEET_TEST_CALLER_INTENT_CRASH_AFTER_APPEND").is_some() {
+        std::process::exit(72);
+    }
+    Ok(intent)
+}
+
+fn quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+fn recovery(intent: &taskfleet_core::schema::CallerSettlementIntent) -> String {
+    use taskfleet_core::schema::SettlementOperation as Op;
+    format!(
+        "taskfleet run settlement-intent {} --node {} --operation {} --key {} --actor {}{}",
+        intent.run_id,
+        intent.node_id,
+        match intent.operation {
+            Op::Merge => "merge",
+            Op::Cancel => "cancel",
+            Op::Discard => "discard",
+        },
+        quote(&intent.key),
+        quote(&intent.actor),
+        intent
+            .reason
+            .as_ref()
+            .map_or(String::new(), |r| format!(" --reason {}", quote(r)))
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // One CLI verb: audit inputs plus standard output contract.
+pub(super) fn settlement_intent(
+    run: &str,
+    node: &str,
+    operation: taskfleet_core::schema::SettlementOperation,
+    key: &str,
+    actor: &str,
+    reason: Option<&str>,
+    spec: &crate::output::OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
+    let run_id = super::parse_run_id(run)?;
+    let node_id = super::parse_node_id(node)?;
+    let paths = super::run_paths_exact(&crate::home::root_dir()?, &run_id)?;
+    let intent = record_intent(&paths, &node_id, key, operation, actor, reason)?;
+    let command = recovery(&intent);
+    match acquire_exclusive(&paths, &intent) {
+        Ok(lease) => {
+            lease.revalidate(&paths, &intent)?;
+            crate::output::emit_envelope(
+                &serde_json::json!({
+                    "run_id":run_id,"node_id":node_id,"intent":intent,
+                    "phase":"quiesced","destructive_permission":false,
+                    "recovery_command":command,
+                }),
+                spec,
+                warnings,
+            )
+        }
+        Err(e) if e.code == "writer_active" => Err(e.with_details(serde_json::json!({
+            "run_id":run_id,"node_id":node_id,"intent":intent,
+            "phase":"intent-recorded","retryable":true,
+            "recovery_command":command,
+        }))),
+        Err(e) => Err(e.with_details(serde_json::json!({
+            "run_id":run_id,"node_id":node_id,"intent":intent,
+            "phase":"intent-recorded","recovery_command":command,
+        }))),
+    }
 }

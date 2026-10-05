@@ -473,6 +473,11 @@ fn append_and_apply_reporting(
     f.write_all(&line)
         .map_err(|e| Error::io(events_path.clone(), e))?;
     f.sync_all().map_err(|e| Error::io(events_path, e))?;
+    if ev.kind == "caller.settlement_intent"
+        && std::env::var_os("TASKFLEET_TEST_CALLER_INTENT_CRASH_AFTER_SYNC").is_some()
+    {
+        std::process::exit(73);
+    }
     commit_ops(paths, ops)?;
     // Advance the watermark only after every projection this event touched is
     // durably committed. A crash before this point leaves `applied_seq < seq`,

@@ -1006,3 +1006,211 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         &["worktree", "remove", "--force", checkout],
     );
 }
+
+fn intent_command(home: &TestHome, run: &str, key: &str) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+    c.args([
+        "--output",
+        "json",
+        "run",
+        "settlement-intent",
+        run,
+        "--node",
+        "n-0001",
+        "--operation",
+        "merge",
+        "--key",
+        key,
+        "--actor",
+        "fixture",
+    ])
+    .env("TASKFLEET_HOME", home.path());
+    c
+}
+
+#[test]
+fn intent_is_sticky_after_lost_reply_and_writer_contention() {
+    use std::os::fd::AsRawFd;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "intent", None);
+    assert!(created.status.success(), "{created:?}");
+    let value: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = value["data"]["run_id"].as_str().unwrap();
+    let checkout = value["data"]["worktree_path"].as_str().unwrap();
+    let dir = home.path().join("runs").join(run);
+    let writer = std::fs::File::open(dir.join("writer.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_SH) }, 0);
+    let busy = intent_command(&home, run, "stable-key").output().unwrap();
+    assert!(!busy.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&busy.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "writer_active");
+    assert_eq!(error["error"]["details"]["phase"], "intent-recorded");
+    let seq = error["error"]["details"]["intent"]["seq"].as_u64().unwrap();
+    let denied = intent_command(&home, run, "other-key").output().unwrap();
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("settlement_conflict"));
+    let reserve = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .args([
+            "--output",
+            "json",
+            "run",
+            "session",
+            "reserve",
+            run,
+            "--node",
+            "n-0001",
+            "--generation",
+            "1",
+            "--pi-session-id",
+            "b30d3508-a8d4-4aa7-bafa-7f5dfef72014",
+            "--checkout",
+            checkout,
+            "--gate-fd",
+            "3",
+            "--writer-fd",
+            "4",
+        ])
+        .env("TASKFLEET_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(!reserve.status.success());
+    assert!(String::from_utf8_lossy(&reserve.stderr).contains("pi_session_conflict"));
+    assert!(String::from_utf8_lossy(&reserve.stderr).contains("settlement intent"));
+    drop(writer);
+    let retry = intent_command(&home, run, "stable-key").output().unwrap();
+    assert!(retry.status.success(), "{retry:?}");
+    let result: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(result["data"]["phase"], "quiesced");
+    assert_eq!(result["data"]["intent"]["seq"], seq);
+    assert_eq!(result["data"]["destructive_permission"], false);
+    let shown = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .args(["--output", "json", "run", "show", run])
+        .env("TASKFLEET_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(shown.status.success(), "{shown:?}");
+    let v: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(
+        v["data"]["manifest"]["caller_settlement_intent"]["seq"],
+        seq
+    );
+    assert!(!workspace.path().join("forbidden").exists());
+}
+
+#[test]
+fn intent_crash_then_retry_and_changed_inode_fail_closed() {
+    use std::os::unix::fs::symlink;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "intent-crash", None);
+    assert!(created.status.success(), "{created:?}");
+    let v: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = v["data"]["run_id"].as_str().unwrap();
+    let crashed = intent_command(&home, run, "crash-key")
+        .env("TASKFLEET_TEST_CALLER_INTENT_CRASH_AFTER_SYNC", "1")
+        .output()
+        .unwrap();
+    assert_eq!(crashed.status.code(), Some(73));
+    let retry = intent_command(&home, run, "crash-key").output().unwrap();
+    assert!(retry.status.success(), "{retry:?}");
+    let r: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert!(r["data"]["intent"]["seq"].as_u64().unwrap() > 0);
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(run).join("events.jsonl")).unwrap();
+    assert_eq!(
+        events
+            .lines()
+            .filter(|line| line.contains("\"caller.settlement_intent\""))
+            .count(),
+        1
+    );
+    let dir = home.path().join("runs").join(run);
+    let writer = dir.join("writer.lock");
+    std::fs::rename(&writer, dir.join("old-writer.lock")).unwrap();
+    symlink("old-writer.lock", &writer).unwrap();
+    let replaced = intent_command(&home, run, "crash-key").output().unwrap();
+    assert!(!replaced.status.success());
+    assert!(String::from_utf8_lossy(&replaced.stderr).contains("writer_fence_unavailable"));
+    assert!(!workspace.path().join("forbidden").exists());
+}
+
+#[test]
+fn gate_serializes_settlement_before_any_intent_is_persisted() {
+    use std::os::fd::AsRawFd;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "gate-serialization", None);
+    assert!(created.status.success(), "{created:?}");
+    let v: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = v["data"]["run_id"].as_str().unwrap();
+    let run_dir = home.path().join("runs").join(run);
+    let gate = std::fs::File::open(run_dir.join("launch-gate.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let mut child = intent_command(&home, run, "gate-key").spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    assert!(child.try_wait().unwrap().is_none());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run_dir.join("manifest.json")).unwrap()).unwrap();
+    assert!(manifest.get("caller_settlement_intent").is_none());
+    drop(gate);
+    assert!(child.wait().unwrap().success());
+    assert!(!workspace.path().join("forbidden").exists());
+}
+
+#[test]
+fn inherited_child_shared_fd_blocks_exclusive_until_exit() {
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "lease-child", None);
+    assert!(created.status.success(), "{created:?}");
+    let v: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = v["data"]["run_id"].as_str().unwrap();
+    let writer = home.path().join("runs").join(run).join("writer.lock");
+    let helper = workspace.path().join("lease-probe");
+    assert!(Command::new("cc")
+        .args(["-Wall", "-Wextra", "-o"])
+        .arg(&helper)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/caller_writer_lease.c"
+        ))
+        .status()
+        .unwrap()
+        .success());
+    let held = Command::new(&helper)
+        .args(["hold"])
+        .arg(&writer)
+        .arg("2")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(held.success(), "{held:?}");
+    assert_eq!(
+        Command::new(&helper)
+            .arg("probe")
+            .arg(&writer)
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(1)
+    );
+    let busy = intent_command(&home, run, "inherited").output().unwrap();
+    assert!(!busy.status.success());
+    assert!(String::from_utf8_lossy(&busy.stderr).contains("writer_active"));
+    // The parent holding process has already exited; the exec'd child owns
+    // the last inherited FD. Wait for its fixed bounded duration.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(
+        Command::new(&helper)
+            .arg("probe")
+            .arg(&writer)
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(0)
+    );
+    assert!(intent_command(&home, run, "inherited")
+        .output()
+        .unwrap()
+        .status
+        .success());
+}

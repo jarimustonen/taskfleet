@@ -409,6 +409,7 @@ fn command_writes_state(command: &Command) -> bool {
             crate::run::RunAction::Session {
                 action: crate::run::SessionAction::Reserve { .. },
             }
+            | crate::run::RunAction::SettlementIntent { .. }
             | crate::run::RunAction::Cancel { .. }
             | crate::run::RunAction::Reattach { .. }
             | crate::run::RunAction::UpgradeLock { .. } => true,

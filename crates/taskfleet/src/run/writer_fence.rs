@@ -340,8 +340,23 @@ pub(super) fn record_intent(
     let fence = inspect(paths)?;
     let dir = directory(&paths.root)?;
     let gate = open_at(&dir, "launch-gate.lock", libc::O_RDWR | libc::O_NONBLOCK, 0)?;
-    if unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(unavailable(std::io::Error::last_os_error()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        if unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            break;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(unavailable(err));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(CliError::user(
+                "gate_busy",
+                "caller launch gate busy; retry settlement with the same key; no intent recorded",
+            )
+            .with_details(serde_json::json!({"retryable":true,"run_id":paths.run_id})));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
     }
     if inspect(paths)? != fence {
         return Err(unavailable("gate identity changed"));

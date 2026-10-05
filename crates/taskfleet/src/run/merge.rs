@@ -372,9 +372,19 @@ fn run_caller(
         || (fresh_node.status.is_terminal() && fresh_node.status != taskfleet_core::Status::Failed)
         || (fresh.status.is_terminal() && fresh.status != taskfleet_core::Status::Failed)
     {
-        merge_recovery::recover_run(paths, &git_bin());
-        if merge_recovery::verified_caller_transaction(paths, &node_id, &intent, true).is_none() {
-            return Err(CliError::user("merge_recovery_unverifiable", "caller transaction not recoverable; work preserved")
+        let recovery = merge_recovery::recover_node(paths, &node_id, &git_bin());
+        let retry_fresh = matches!(recovery, merge_recovery::Recovery::Rejected { .. })
+            && RunLock::with_shared_lock(&paths.lock(), || {
+                Ok(read_node_opt(paths, &node_id)?
+                    .is_some_and(|n| n.pending_merge.is_none() && !n.status.is_terminal()))
+            })
+            .map_err(from_core)?;
+        if retry_fresh {
+            execute_caller_merge(paths, &node_id, key, args.report_file.as_deref())?;
+        } else if merge_recovery::verified_caller_transaction(paths, &node_id, &intent, true)
+            .is_none()
+        {
+            return Err(CliError::user("merge_recovery_unverifiable", "caller transaction not recoverable; work preserved. If a rebase was interrupted, inspect the checkout and run `git rebase --abort` or finish the rebase before retrying with the same key")
                 .with_details(json!({"phase":"intent-recorded","intent_seq":intent.seq,"recovery_command":recovery_command})));
         }
         taskfleet_core::read_all_events(&paths.events())
@@ -410,7 +420,7 @@ fn run_caller(
         .as_deref()
         .ok_or_else(|| CliError::user("checkout_mismatch", "caller source repository missing"))?;
     if !cleanup::caller_history_retained(&node, checkout)
-        || !merge_recovery::caller_landed(&txn, repo, &git_bin())
+        || !merge_recovery::caller_landed(paths, &node_id, &txn, repo, &git_bin())
     {
         return Err(CliError::user(
             "merge_recovery_unverifiable",
@@ -434,6 +444,7 @@ fn run_caller(
     let cleanup = if cleanup_receipt
         && !Path::new(checkout).exists()
         && merge_recovery::read_oid(&git_bin(), repo, branch).is_none()
+        && cleanup::caller_registration_absent(repo, checkout, &git_bin())
     {
         "complete"
     } else {
@@ -760,6 +771,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         effective_source.as_deref(),
         merge_start.as_ref().map(|h| h.expected_source_oid.as_str()),
         || Ok(()),
+        |_| Ok(()),
     ) {
         // The merge did not complete (conflict, dirty tree, CAS mismatch, lock
         // timeout). Clear the transaction we opened so a dangling `merge.started`
@@ -1057,6 +1069,20 @@ fn execute_caller_merge(
         Some(source),
         Some(&start.expected_source_oid),
         || authority.verify(&node, repo, source),
+        |integrated_oid| {
+            authority.verify(&node, repo, source)?;
+            append_and_apply_event(
+                paths,
+                "merge.rebased",
+                Some(node_id),
+                None,
+                json!({"op_id":start.op_id,"intent_seq":authority.intent.seq,
+                    "worker_oid":start.worker_oid,"integrated_oid":integrated_oid,
+                    "expected_source_oid":start.expected_source_oid}),
+            )
+            .map_err(from_core)?;
+            Ok(())
+        },
     ) {
         abort_merge_start(paths, node_id, &start.op_id, "merge did not complete");
         return Err(e);
@@ -1587,6 +1613,7 @@ fn run_git_merge(
     source: Option<&str>,
     expected_source_oid: Option<&str>,
     before_mutation: impl Fn() -> Result<(), CliError>,
+    before_ref_move: impl Fn(&str) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
     let git = git_bin();
     let g = Git::with_bin(&git);
@@ -1726,6 +1753,9 @@ fn run_git_merge(
         git_output(&git, worktree_path, &["rebase", "--", source], branch)?;
     }
     check_source()?;
+    let integrated_oid = merge_recovery::read_oid(&git, &target.path, branch)
+        .ok_or_else(|| merge_failed(branch, "could not resolve rebased worker tip"))?;
+    before_ref_move(&integrated_oid)?;
     before_mutation()?;
     // No separate shell driver survives us. A git child may survive a SIGKILL
     // between this point and wait(), as in the old script's final merge call;

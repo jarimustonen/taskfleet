@@ -216,9 +216,129 @@ pub(crate) fn verified_caller_transaction(
     Some(txn)
 }
 
-pub(crate) fn caller_landed(txn: &MergeTxn, source_repo: &str, git: &str) -> bool {
+/// Caller completion is tied to the driver's durable post-rebase tip, not to
+/// patch equivalence of its pre-rebase tip. A source ref alone is not authority.
+fn caller_verdict(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    txn: &MergeTxn,
+    repo: &str,
+    git: &str,
+) -> Verdict {
+    let Ok(events) = taskfleet_core::read_all_events(&paths.events()) else {
+        return Verdict::CannotVerify;
+    };
+    let Some(link) = txn.caller_authority.as_ref() else {
+        return Verdict::CannotVerify;
+    };
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.kind == taskfleet_core::KIND_MERGE_STARTED
+                && e.node_id.as_ref() == Some(node_id)
+                && e.run_id == paths.run_id
+                && serde_json::from_value::<MergeTxn>(e.data.clone())
+                    .ok()
+                    .as_ref()
+                    == Some(txn)
+        })
+        .collect();
+    if starts.len() != 1 {
+        return Verdict::CannotVerify;
+    }
+    let start_seq = starts[0].seq;
+    let proofs: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.kind == "merge.rebased"
+                && e.seq > start_seq
+                && e.run_id == paths.run_id
+                && e.node_id.as_ref() == Some(node_id)
+                && e.data["op_id"] == txn.op_id
+                && e.data["intent_seq"] == link.intent_seq
+                && e.data["worker_oid"] == txn.worker_oid
+                && e.data["expected_source_oid"] == txn.expected_source_oid
+        })
+        .collect();
+    if proofs.is_empty() {
+        // A dead driver may have stopped before publishing the post-rebase tip.
+        // Unchanged source under the EX lease proves it did not move the ref;
+        // never infer completion from an unlinked worker ancestor.
+        return match read_oid(git, repo, &txn.source_branch) {
+            Some(now) if now == txn.expected_source_oid => Verdict::Reject {
+                reason: "source ref unchanged — merge never landed".into(),
+            },
+            _ => Verdict::CannotVerify,
+        };
+    }
+    if proofs.len() != 1 {
+        return Verdict::CannotVerify;
+    }
+    let Some(tip) = proofs[0].data["integrated_oid"].as_str() else {
+        return Verdict::CannotVerify;
+    };
+    if !matches!(tip.len(), 40 | 64) || !tip.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Verdict::CannotVerify;
+    }
+    let Some(now) = read_oid(git, repo, &txn.source_branch) else {
+        return Verdict::CannotVerify;
+    };
+    let Some(expected) = read_oid(git, repo, &txn.expected_source_oid) else {
+        return Verdict::CannotVerify;
+    };
+    let Some(integrated) = read_oid(git, repo, tip) else {
+        return Verdict::CannotVerify;
+    };
+    if expected != txn.expected_source_oid || integrated != tip {
+        return Verdict::CannotVerify;
+    }
+    // A no-op merge is valid only when the worker and source were already the
+    // same commit at start. A pre-ref-move proof on a nonempty rebase is not a landing.
+    if now == expected {
+        return if tip == expected && txn.worker_oid == expected {
+            Verdict::Complete
+        } else {
+            Verdict::Reject {
+                reason: "source ref unchanged — merge never landed".into(),
+            }
+        };
+    }
+    match (
+        ancestor(git, repo, &expected, tip),
+        ancestor(git, repo, tip, &now),
+    ) {
+        (Some(true), Some(true)) if tip != expected => Verdict::Complete,
+        (Some(_), Some(false)) | (Some(false), Some(_)) => Verdict::Reject {
+            reason: "source moved without the recorded rebased tip".into(),
+        },
+        _ => Verdict::CannotVerify,
+    }
+}
+
+fn ancestor(git: &str, repo: &str, older: &str, newer: &str) -> Option<bool> {
+    let status = std::process::Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", "--is-ancestor", older, newer])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+pub(crate) fn caller_landed(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    txn: &MergeTxn,
+    source_repo: &str,
+    git: &str,
+) -> bool {
     matches!(
-        classify(txn, Some(source_repo), None, git),
+        caller_verdict(paths, node_id, txn, source_repo, git),
         Verdict::Complete
     )
 }
@@ -438,7 +558,7 @@ fn recover_caller_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Recover
     if authority.verify(&node, repo, source).is_err() {
         return Recovery::CannotVerify;
     }
-    let verdict = classify(&recorded, Some(repo), None, git);
+    let verdict = caller_verdict(paths, node_id, &recorded, repo, git);
     if matches!(verdict, Verdict::CannotVerify) {
         return Recovery::CannotVerify;
     }

@@ -1154,14 +1154,19 @@ fn gate_serializes_settlement_before_any_intent_is_persisted() {
     let run_dir = home.path().join("runs").join(run);
     let gate = std::fs::File::open(run_dir.join("launch-gate.lock")).unwrap();
     assert_eq!(unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX) }, 0);
-    let mut child = intent_command(&home, run, "gate-key").spawn().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    assert!(child.try_wait().unwrap().is_none());
+    let denied = intent_command(&home, run, "gate-key").output().unwrap();
+    assert!(!denied.status.success());
+    let err: serde_json::Value = serde_json::from_slice(&denied.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "gate_busy");
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(run_dir.join("manifest.json")).unwrap()).unwrap();
     assert!(manifest.get("caller_settlement_intent").is_none());
     drop(gate);
-    assert!(child.wait().unwrap().success());
+    assert!(intent_command(&home, run, "gate-key")
+        .output()
+        .unwrap()
+        .status
+        .success());
     assert!(!workspace.path().join("forbidden").exists());
 }
 
@@ -1582,4 +1587,188 @@ fn failed_caller_salvage_adopts_merge_and_cleans_without_host_tools() {
         .status()
         .unwrap()
         .success());
+}
+
+fn caller_merge_cmd(home: &TestHome, tools: &tempfile::TempDir, run: &str) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+    cmd.args([
+        "--output",
+        "json",
+        "run",
+        "merge",
+        run,
+        "--node-id",
+        "n-0001",
+        "--settlement-key",
+        "landing-proof",
+    ])
+    .env("TASKFLEET_HOME", home.path())
+    .env("GIT_BIN", fixture_git_binary())
+    .env("PATH", tools.path());
+    cmd
+}
+
+fn commit_file(repo: &Path, file: &str, body: &str) {
+    std::fs::write(repo.join(file), body).unwrap();
+    git(repo, &["add", file]);
+    git(
+        repo,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            file,
+        ],
+    );
+}
+
+#[test]
+fn caller_merge_noop_already_integrated_reports_and_cleans() {
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "already-integrated", None);
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let checkout = data["data"]["worktree_path"].as_str().unwrap();
+    let branch = data["data"]["branch"].as_str().unwrap();
+    let merged = caller_merge_cmd(&home, &tools, run).output().unwrap();
+    assert!(merged.status.success(), "{merged:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&merged.stdout).unwrap()["data"]["merged"],
+        true
+    );
+    let repo = workspace.path().join("repo");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while Path::new(checkout).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "caller no-op cleanup did not converge"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    let retry = caller_merge_cmd(&home, &tools, run).output().unwrap();
+    assert!(retry.status.success(), "{retry:?}");
+    let response: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(response["data"]["cleanup"], "complete");
+    assert!(!String::from_utf8_lossy(
+        &Command::new(fixture_git_binary())
+            .arg("-C")
+            .arg(repo)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap()
+            .stdout
+    )
+    .contains(checkout));
+    assert!(!String::from_utf8_lossy(&retry.stderr).contains(branch));
+}
+
+#[test]
+fn caller_merge_rebased_tip_lands_and_cleans() {
+    let (home, workspace, tools) = fixture();
+    let repo = workspace.path().join("repo");
+    commit_file(
+        &repo,
+        "context.txt",
+        "alpha\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nbeta\ngamma\n",
+    );
+    let created = create(&home, &workspace, &tools, "rebased-tip", None);
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let checkout = Path::new(data["data"]["worktree_path"].as_str().unwrap());
+    // Worker and source edit nearby context, so rebase changes the immutable
+    // worker commit and its patch-id rather than only its parent.
+    commit_file(
+        checkout,
+        "context.txt",
+        "alpha\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nbeta worker\ngamma\n",
+    );
+    let original = Command::new(fixture_git_binary())
+        .arg("-C")
+        .arg(checkout)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    // A clean nearby source edit alters context while keeping the patch applicable.
+    commit_file(
+        &repo,
+        "context.txt",
+        "alpha source\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nbeta\ngamma\n",
+    );
+    let merged = caller_merge_cmd(&home, &tools, run).output().unwrap();
+    assert!(merged.status.success(), "{merged:?}");
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(run).join("events.jsonl")).unwrap();
+    assert!(events.contains("merge.rebased"));
+    let retry = caller_merge_cmd(&home, &tools, run).output().unwrap();
+    assert!(retry.status.success(), "{retry:?}");
+    assert_ne!(
+        original,
+        Command::new(fixture_git_binary())
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "main"])
+            .output()
+            .unwrap()
+            .stdout
+    );
+}
+
+#[test]
+fn caller_same_key_retries_rejected_dead_transaction_in_one_call() {
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "stale-txn", None);
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let checkout = Path::new(data["data"]["worktree_path"].as_str().unwrap());
+    let branch = data["data"]["branch"].as_str().unwrap();
+    commit_file(checkout, "change.txt", "work\n");
+    let intent = intent_command(&home, run, "landing-proof")
+        .output()
+        .unwrap();
+    assert!(intent.status.success(), "{intent:?}");
+    let paths = taskfleet_core::RunPaths::new(home.path().join("runs").join(run), run).unwrap();
+    let manifest = taskfleet_core::read_manifest_opt(&paths).unwrap().unwrap();
+    let intent = manifest.caller_settlement_intent.unwrap();
+    let repo = workspace.path().join("repo");
+    let oid = |rev: &str| {
+        String::from_utf8(
+            Command::new(fixture_git_binary())
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", rev])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    };
+    let node_id = taskfleet_core::NodeId::parse_str("n-0001").unwrap();
+    taskfleet_core::append_and_apply_event(
+        &paths,
+        taskfleet_core::KIND_MERGE_STARTED,
+        Some(&node_id),
+        None,
+        serde_json::json!({
+            "op_id":"dead-operation", "source_branch":"main", "worker_branch":branch,
+            "expected_source_oid":oid("main"), "worker_oid":oid(branch),
+            "base_sha":oid("main"), "driver_pid":null, "driver_pid_start_secs":null,
+            "started_at":chrono::Utc::now(),
+            "caller_authority":{"intent_seq":intent.seq,"intent_key":intent.key,
+                "writer_dev":intent.writer_dev,"writer_ino":intent.writer_ino}
+        }),
+    )
+    .unwrap();
+    let mut cmd = caller_merge_cmd(&home, &tools, run);
+    cmd.args(["--actor", "fixture"]);
+    let merged = cmd.output().unwrap();
+    assert!(merged.status.success(), "{merged:?}");
+    let events = std::fs::read_to_string(paths.events()).unwrap();
+    assert!(events.contains("merge.aborted"));
+    assert_eq!(events.matches("\"kind\":\"merge.started\"").count(), 2);
 }

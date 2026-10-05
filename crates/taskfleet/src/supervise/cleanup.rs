@@ -423,12 +423,13 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
         && authorized
         && crate::run::merge_recovery::read_oid(&git, repo, source).is_some()
         && crate::run::merge_recovery::read_oid(&git, repo, branch).is_none()
-        && merge_recovery::caller_landed(&txn, repo, &git)
+        && merge_recovery::caller_landed(paths, &node.node_id, &txn, repo, &git)
+        && caller_registration_absent(repo, checkout, &git)
     {
         return true; // crashed after branch deletion, before supervisor exit
     }
     // No fallback to the worker checkout or mutable branch for landing proof.
-    if !merge_recovery::caller_landed(&txn, repo, &git)
+    if !merge_recovery::caller_landed(paths, &node.node_id, &txn, repo, &git)
         || branch_unmerged_vs_source(repo, source, branch, &git) != UnmergedCheck::NoUnmerged
         || (exists
             && (worktree_cleanliness(Some(checkout), &git) != WorktreeCleanliness::Clean
@@ -466,7 +467,7 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
     }
     if authority.revalidate().is_err()
         || !caller_history_retained(node, checkout)
-        || !merge_recovery::caller_landed(&txn, repo, &git)
+        || !merge_recovery::caller_landed(paths, &node.node_id, &txn, repo, &git)
         || branch_unmerged_vs_source(repo, source, branch, &git) != UnmergedCheck::NoUnmerged
     {
         return preserve("caller branch deletion safety changed");
@@ -478,7 +479,14 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
     {
         return preserve("caller branch deletion refused");
     }
-    true
+    caller_registration_absent(repo, checkout, &git)
+}
+
+/// Absence of a directory is not absence of a Git worktree registration.
+pub(crate) fn caller_registration_absent(repo: &str, checkout: &str, git: &str) -> bool {
+    Git::with_bin(git)
+        .worktree_registrations(repo)
+        .is_some_and(|rows| rows.iter().all(|r| r.path != checkout))
 }
 
 pub(crate) fn caller_history_retained(node: &Node, checkout: &str) -> bool {

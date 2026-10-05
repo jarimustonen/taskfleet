@@ -49,6 +49,7 @@ pub fn run(
     run_id: &str,
     node_arg: Option<&str>,
     note: Option<&str>,
+    settlement_key: Option<&str>,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
@@ -80,6 +81,22 @@ pub fn run(
         // (which would overwrite the legacy kind with `"unknown"`).
         Some(m) => {
             crate::run::reject_legacy_kind(m.kind, paths.run_id.as_str())?;
+            if m.agent_owner == taskfleet_core::AgentOwner::Caller {
+                return cancel_caller(
+                    &paths,
+                    node_id.as_ref(),
+                    note,
+                    settlement_key,
+                    spec,
+                    warnings,
+                );
+            }
+            if settlement_key.is_some() {
+                return Err(CliError::user(
+                    "invalid_settlement_key",
+                    "--settlement-key is only for caller-owned runs",
+                ));
+            }
             crate::run::require_writer_fence(&m)?;
         }
     }
@@ -143,6 +160,148 @@ pub fn run(
     };
 
     emit(run_id, &outcome, spec, warnings)
+}
+
+/// The lease is held until both terminal events are durable. Intent is sticky:
+/// an active Pi only leaves a recoverable intent, never a terminal run.
+fn cancel_caller(
+    paths: &taskfleet_core::RunPaths,
+    node: Option<&NodeId>,
+    note: Option<&str>,
+    key: Option<&str>,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
+    use taskfleet_core::schema::SettlementOperation;
+    use taskfleet_core::{read_all_events, read_node_opt, RunLock, Status};
+    if node.is_some() {
+        return Err(CliError::user(
+            "invalid_node",
+            "caller-owned cancellation must settle the whole single-node run",
+        ));
+    }
+    let key = key.ok_or_else(|| {
+        CliError::user(
+            "invalid_settlement_key",
+            "caller-owned cancellation requires --settlement-key",
+        )
+    })?;
+    let note = note.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+        CliError::user(
+            "invalid_note",
+            "caller-owned cancellation requires a nonblank --note",
+        )
+    })?;
+    let run_id = paths.run_id.as_str();
+    let nid = parse_node_id("n-0001")?;
+    let recovery = || {
+        format!(
+            "taskfleet run cancel {run_id} --settlement-key {} --note {}",
+            shell_quote(key),
+            shell_quote(note)
+        )
+    };
+    let intent = crate::run::writer_fence::record_intent(
+        paths,
+        &nid,
+        key,
+        SettlementOperation::Cancel,
+        "caller-cli",
+        Some(note),
+    )?;
+    let lease = crate::run::writer_fence::acquire_exclusive(paths, &intent).map_err(|e| {
+        e.with_details(json!({
+            "run_id":run_id,"phase":"intent-recorded","intent_seq":intent.seq,
+            "recovery_command":recovery(),
+        }))
+    })?;
+    // Do not use the ordinary CLI's unlocked manifest pre-check as authority.
+    // Validate the creation ledger, checkout, native generation/history and all
+    // log-visible nodes while holding EX; never turn an unrelated report into a cancel.
+    let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
+    taskfleet_core::replay_unapplied_unlocked(&guard.witness(), paths).map_err(from_core)?;
+    lease.revalidate_unlocked(paths, &intent)?;
+    let manifest = taskfleet_core::read_manifest(paths).map_err(from_core)?;
+    let n = read_node_opt(paths, &nid)
+        .map_err(from_core)?
+        .ok_or_else(|| CliError::user("writer_uncertain", "caller node projection missing"))?;
+    let facts = taskfleet_core::read_node_status_facts(paths, None).map_err(from_core)?;
+    if facts.len() != 1 || facts[0].node_id != nid || manifest.node_count != 1 {
+        return Err(CliError::user(
+            "writer_uncertain",
+            "caller cancellation requires exactly one recorded node",
+        ));
+    }
+    if !matches!(
+        manifest.status,
+        Status::Pending | Status::Running | Status::Blocked | Status::Cancelled
+    ) || (n.status.is_terminal() && n.status != Status::Cancelled)
+        || (manifest.status == Status::Cancelled && n.status != Status::Cancelled)
+    {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "caller run already settled by a different outcome",
+        ));
+    }
+    // Reject unrelated failed/done reports even if their projection was torn.
+    let events = read_all_events(&paths.events()).map_err(from_core)?;
+    if events.iter().any(|e| {
+        e.node_id.as_ref() == Some(&nid)
+            && e.kind == "node.report"
+            && e.data.get("cancelled") != Some(&json!(true))
+    }) {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "caller node has an unrelated terminal report",
+        ));
+    }
+    if manifest.status == Status::Cancelled {
+        drop(guard);
+        drop(lease);
+        return emit(
+            run_id,
+            &taskfleet_core::CancelOutcome {
+                run_was_already_cancelled: true,
+                nodes_cancelled: vec![],
+                nodes_already_terminal: vec![nid],
+            },
+            spec,
+            warnings,
+        );
+    }
+    drop(guard);
+    let authority =
+        crate::run::merge::CallerMergeAuthority::acquire_with_lease(paths, intent.clone(), lease);
+    let repo = manifest
+        .source_repo
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "source repo missing"))?;
+    let source = manifest
+        .source_branch
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "source branch missing"))?;
+    authority.verify(&n, repo, source)?;
+    let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
+    taskfleet_core::replay_unapplied_unlocked(&guard.witness(), paths).map_err(from_core)?;
+    authority.revalidate_unlocked()?;
+    // A report may have raced with verification. Re-check under the same lock
+    // before core's convergent cancel transaction appends anything.
+    let facts = taskfleet_core::read_node_status_facts(paths, None).map_err(from_core)?;
+    if facts.len() != 1 || (facts[0].status.is_terminal() && facts[0].status != Status::Cancelled) {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "caller node terminal outcome changed",
+        ));
+    }
+    let outcome = taskfleet_core::cancel_run_unlocked(&guard.witness(), paths, Some(note))
+        .map_err(from_core)?;
+    drop(guard);
+    drop(authority);
+    emit(run_id, &outcome, spec, warnings)
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn run_not_found(run_id: &str) -> CliError {

@@ -163,7 +163,7 @@ fn git_only_create_and_replay_fence_settlement() {
             String::from_utf8_lossy(&output.stderr).contains(if verb == "merge" {
                 "invalid_node_id"
             } else {
-                "writer_fence_unavailable"
+                "invalid_settlement_key"
             }),
             "{verb}: {output:?}"
         );
@@ -662,7 +662,7 @@ fn caller_pi_told_wait_and_generation_contract() {
             String::from_utf8_lossy(&refused.stderr).contains(if verb == "merge" {
                 "invalid_node_id"
             } else {
-                "writer_fence_unavailable"
+                "invalid_settlement_key"
             })
         );
     }
@@ -1312,4 +1312,127 @@ fn public_caller_merge_is_keyed_fenced_and_retriable() {
         let _: serde_json::Value = serde_json::from_str(line).unwrap();
     }
     assert_eq!(events.matches("\"kind\":\"merge.started\"").count(), 1);
+}
+
+#[test]
+fn caller_cancel_waits_for_writer_and_preserves_checkout() {
+    use std::os::fd::AsRawFd;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "cancel-fixture", None);
+    assert!(created.status.success(), "{created:?}");
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let checkout = data["data"]["worktree_path"].as_str().unwrap();
+    let branch = data["data"]["branch"].as_str().unwrap();
+    let run_dir = home.path().join("runs").join(run);
+    let fd = std::fs::File::open(run_dir.join("writer.lock")).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+        0
+    );
+    let invoke = |key: &str| {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args([
+                "--output",
+                "json",
+                "run",
+                "cancel",
+                run,
+                "--settlement-key",
+                key,
+                "--note",
+                "operator requested stop",
+            ])
+            .env("TASKFLEET_HOME", home.path())
+            .env("GIT_BIN", fixture_git_binary())
+            .env("TMUX_BIN", tools.path().join("tmux"))
+            .env("WORKMUX_BIN", tools.path().join("workmux"))
+            .env("PATH", tools.path())
+            .output()
+            .unwrap()
+    };
+    let busy = invoke("stable-key");
+    assert!(!busy.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&busy.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "writer_active");
+    assert_eq!(error["error"]["details"]["phase"], "intent-recorded");
+    let conflict = invoke("different-key");
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("settlement_conflict"));
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run_dir.join("manifest.json")).unwrap()).unwrap();
+    assert!(!matches!(manifest["status"].as_str(), Some("cancelled")));
+    assert!(Path::new(checkout).exists());
+    drop(fd);
+    let ok = invoke("stable-key");
+    assert!(ok.status.success(), "{ok:?}");
+    let replay = invoke("stable-key");
+    assert!(replay.status.success(), "{replay:?}");
+    let events = std::fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+    assert_eq!(
+        events
+            .matches("\"kind\":\"caller.settlement_intent\"")
+            .count(),
+        1
+    );
+    assert_eq!(events.matches("\"kind\":\"run.status\"").count(), 1);
+    assert!(Path::new(checkout).exists());
+    git(
+        &workspace.path().join("repo"),
+        &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+    );
+    assert!(!workspace.path().join("forbidden").exists());
+}
+
+#[test]
+fn caller_cancel_refuses_replaced_lock_and_unrelated_terminal_report() {
+    use std::os::unix::fs::symlink;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "cancel-fence-replace", None);
+    assert!(created.status.success());
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let dir = home.path().join("runs").join(run);
+    let invoke = || {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args([
+                "--output",
+                "json",
+                "run",
+                "cancel",
+                run,
+                "--settlement-key",
+                "key",
+                "--note",
+                "operator request",
+            ])
+            .env("TASKFLEET_HOME", home.path())
+            .env("GIT_BIN", fixture_git_binary())
+            .env("PATH", tools.path())
+            .output()
+            .unwrap()
+    };
+    let lock = dir.join("writer.lock");
+    std::fs::rename(&lock, dir.join("old-writer.lock")).unwrap();
+    symlink("old-writer.lock", &lock).unwrap();
+    let refused = invoke();
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("writer_fence_unavailable"));
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(!events.contains("caller.settlement_intent"));
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::rename(dir.join("old-writer.lock"), &lock).unwrap();
+    let paths = taskfleet_core::RunPaths::new(dir, run).unwrap();
+    let nid = taskfleet_core::NodeId::parse_str("n-0001").unwrap();
+    taskfleet_core::append_and_apply_event(
+        &paths,
+        "node.report",
+        Some(&nid),
+        None,
+        serde_json::json!({"success":true,"cancelled":false,"summary":"done"}),
+    )
+    .unwrap();
+    let refused = invoke();
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("settlement_conflict"));
+    assert!(!std::fs::read_to_string(paths.events())
+        .unwrap()
+        .contains("caller.settlement_intent"));
 }

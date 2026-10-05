@@ -829,6 +829,18 @@ impl<'a> CallerMergeAuthority<'a> {
         })
     }
 
+    pub(in crate::run) fn acquire_with_lease(
+        paths: &'a taskfleet_core::RunPaths,
+        intent: CallerSettlementIntent,
+        lease: writer_fence::ExclusiveWriter,
+    ) -> Self {
+        Self {
+            paths,
+            intent,
+            lease,
+        }
+    }
+
     pub(crate) fn revalidate(&self) -> Result<(), CliError> {
         self.lease.revalidate(self.paths, &self.intent)
     }

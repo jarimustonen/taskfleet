@@ -2471,6 +2471,35 @@ expression: value
                   "multi_value": false,
                   "require_equals": false
                 }
+              },
+              {
+                "name": "settlement_key",
+                "long": "settlement-key",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Stable operation key required for caller-owned cancellation",
+                "value_names": [
+                  "SETTLEMENT_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [

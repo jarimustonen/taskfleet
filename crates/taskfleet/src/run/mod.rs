@@ -270,6 +270,9 @@ pub enum RunAction {
         node: Option<String>,
         #[arg(long)]
         note: Option<String>,
+        /// Stable operation key required for caller-owned cancellation.
+        #[arg(long)]
+        settlement_key: Option<String>,
     },
     /// Merge a worktree run's branch back to its source, then submit the
     /// terminal `node.report` so the supervisor winds the run down and
@@ -683,9 +686,19 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             spec,
             warnings,
         ),
-        RunAction::Cancel { run_id, node, note } => {
-            cancel::run(&run_id, node.as_deref(), note.as_deref(), spec, warnings)
-        }
+        RunAction::Cancel {
+            run_id,
+            node,
+            note,
+            settlement_key,
+        } => cancel::run(
+            &run_id,
+            node.as_deref(),
+            note.as_deref(),
+            settlement_key.as_deref(),
+            spec,
+            warnings,
+        ),
         RunAction::Merge {
             run_id,
             source,

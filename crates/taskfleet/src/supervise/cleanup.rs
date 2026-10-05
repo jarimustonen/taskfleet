@@ -314,8 +314,47 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
         record_branch_preserved(paths, node, node.branch.as_deref(), checkout, reason);
         false
     };
-    // Failure/cancellation has no destructive settlement endpoint. The terminal
-    // report alone (including a forged merge marker) cannot grant one.
+    if manifest.status == Status::Cancelled {
+        use taskfleet_core::schema::SettlementOperation;
+        let Some(intent) = manifest.caller_settlement_intent.clone() else {
+            return preserve("caller cancel intent missing");
+        };
+        if intent.operation != SettlementOperation::Cancel
+            || intent.node_id != node.node_id
+            || node.status != Status::Cancelled
+        {
+            return preserve("caller cancellation does not match recorded intent");
+        }
+        // Even preservation is recorded only after EX proves there is no
+        // cooperating writer. Never touch tmux or remove any Git resources.
+        let Ok(authority) = CallerMergeAuthority::acquire(paths, intent.clone()) else {
+            return preserve("caller cancel writer lease unavailable");
+        };
+        let (Some(repo), Some(source)) = (
+            manifest.source_repo.as_deref(),
+            manifest.source_branch.as_deref(),
+        ) else {
+            return preserve("caller cancel source identity missing");
+        };
+        if authority.verify(node, repo, source).is_err() {
+            return preserve("caller cancel checkout or history unverifiable");
+        }
+        return append_and_apply_event(
+            paths,
+            "cleanup.branch_preserved",
+            Some(&node.node_id),
+            Some(&format!(
+                "cleanup.branch_preserved:{}:{}",
+                paths.run_id, node.node_id
+            )),
+            json!({"node_id":node.node_id.as_str(), "branch":node.branch,
+                "worktree_path":checkout,"reason":"caller cancelled (branch preserved)",
+                "settlement_key":intent.key,"intent_seq":intent.seq}),
+        )
+        .is_ok();
+    }
+    // Failure has no destructive settlement endpoint. A forged merge marker
+    // alone cannot grant one.
     if manifest.status != Status::Done || !node_merged_explicitly(node) {
         return preserve("caller run without verified explicit merge");
     }

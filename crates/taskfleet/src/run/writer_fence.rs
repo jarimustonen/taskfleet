@@ -413,6 +413,18 @@ pub(super) fn record_intent(
             "different settlement intent already persisted; inspect the run",
         ));
     }
+    if operation == taskfleet_core::schema::SettlementOperation::Cancel
+        && manifest.caller_settlement_intent.is_none()
+        && (manifest.node_count != 1
+            || node_id.as_str() != "n-0001"
+            || !matches!(taskfleet_core::read_node_status_facts(paths, None)
+                .map_err(super::from_core)?.as_slice(), [fact] if fact.node_id == *node_id && !fact.status.is_terminal()))
+    {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "caller node already terminal or run is not single-node",
+        ));
+    }
     if manifest.status.is_terminal() {
         return Err(CliError::user(
             "settlement_conflict",

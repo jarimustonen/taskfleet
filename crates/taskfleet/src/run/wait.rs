@@ -613,8 +613,10 @@ fn current_settle(
         // construction — not only in `read_outcome` — so the `--progress` JSONL and
         // the settled-count decision agree with the final outcome. A clean-exited
         // worker whose supervisor also died must read attention (manual finish), not
-        // orphaned (`run reattach`), on every surface.
-        let stall = if attention || caller.as_ref().is_some_and(|c| c.state.needs_attention()) {
+        // orphaned (`run reattach`), on every surface. A caller Pi stop is
+        // different: retain a concurrent supervisor stall alongside the told
+        // stop, so the waiting agent also sees recovery context.
+        let stall = if attention {
             None
         } else {
             stall_kind(

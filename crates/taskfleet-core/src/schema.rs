@@ -371,6 +371,13 @@ pub enum AgentOwner {
     Caller,
 }
 
+impl AgentOwner {
+    /// Keep the historical projection shape byte-compatible for normal runs.
+    pub fn is_taskfleet(&self) -> bool {
+        *self == Self::Taskfleet
+    }
+}
+
 /// Run/node status (design.md §1.2).
 ///
 /// `Done`, `Failed`, and `Cancelled` are **terminal**: once a run or node
@@ -649,7 +656,7 @@ pub struct Manifest {
     /// the explicit `--interactive` flag — never transitioned. See [`Lifecycle`].
     pub lifecycle: Lifecycle,
     /// Absent on historic projections, which always launched Taskfleet workers.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "AgentOwner::is_taskfleet")]
     pub agent_owner: AgentOwner,
     /// Human-readable run title.
     pub title: String,

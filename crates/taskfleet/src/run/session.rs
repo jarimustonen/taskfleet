@@ -54,7 +54,7 @@ fn child(parent: &File, name: &std::ffi::OsStr, directory: bool) -> Result<File,
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-pub(super) fn verify(
+pub(crate) fn verify(
     path: &str,
     id: &str,
     checkout: &str,

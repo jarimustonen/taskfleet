@@ -580,14 +580,39 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
 
 /// Internal caller-only authority. Neither an intent alone nor an EX probe is
 /// transferable permission: the owned lease remains live until the report lands.
-struct CallerMergeAuthority<'a> {
+pub(crate) struct CallerMergeAuthority<'a> {
     paths: &'a taskfleet_core::RunPaths,
     intent: CallerSettlementIntent,
     lease: writer_fence::ExclusiveWriter,
 }
 
-impl CallerMergeAuthority<'_> {
-    fn verify(&self, node: &Node, source_repo: &str, source: &str) -> Result<(), CliError> {
+impl<'a> CallerMergeAuthority<'a> {
+    pub(crate) fn acquire(
+        paths: &'a taskfleet_core::RunPaths,
+        intent: CallerSettlementIntent,
+    ) -> Result<Self, CliError> {
+        let lease = writer_fence::acquire_exclusive(paths, &intent)?;
+        Ok(Self {
+            paths,
+            intent,
+            lease,
+        })
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), CliError> {
+        self.lease.revalidate(self.paths, &self.intent)
+    }
+
+    pub(crate) fn revalidate_unlocked(&self) -> Result<(), CliError> {
+        self.lease.revalidate_unlocked(self.paths, &self.intent)
+    }
+
+    pub(crate) fn verify(
+        &self,
+        node: &Node,
+        source_repo: &str,
+        source: &str,
+    ) -> Result<(), CliError> {
         self.lease.revalidate(self.paths, &self.intent)?;
         let denied = || {
             CliError::user(
@@ -688,11 +713,7 @@ fn execute_caller_merge(
             "merge intent key/identity mismatch",
         ));
     }
-    let authority = CallerMergeAuthority {
-        paths,
-        lease: writer_fence::acquire_exclusive(paths, &intent)?,
-        intent,
-    };
+    let authority = CallerMergeAuthority::acquire(paths, intent)?;
     let (manifest, node) = RunLock::with_shared_lock(&paths.lock(), || {
         Ok((read_manifest_opt(paths)?, read_node_opt(paths, node_id)?))
     })
@@ -1643,14 +1664,102 @@ mod caller_merge_tests {
         assert!(!node.status.is_terminal());
         assert_eq!(
             merge_recovery::recover_node(&f.paths, &f.node, &git_bin()),
-            merge_recovery::Recovery::CannotVerify
+            merge_recovery::Recovery::Completed
         );
         assert!(f.checkout.exists());
-        assert!(!read_all_events(&f.paths.events())
+        assert!(read_all_events(&f.paths.events())
             .unwrap()
             .iter()
             .any(|e| e.kind == "node.report"));
     }
+    #[test]
+    fn supervisor_git_only_cleanup_from_real_producer() {
+        let f = Fixture::new();
+        f.drive("merge-key").unwrap();
+        append_and_apply_event(&f.paths, "run.status", None, None, json!({"status":"done"}))
+            .unwrap();
+        let fd = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(f.paths.root.join("writer.lock"))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            0
+        );
+        assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(f.checkout.exists());
+        drop(fd);
+        assert!(cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(!f.checkout.exists());
+        assert!(merge_recovery::read_oid("git", f.repo.to_str().unwrap(), "wt/worker").is_none());
+        assert!(f.paths.root.join("writer.lock").exists());
+    }
+
+    #[test]
+    fn supervisor_crashed_producer_recovers_then_cleans() {
+        let f = Fixture::new();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::merge::caller_merge_tests::crash_child")
+            .env("TASKFLEET_CALLER_CRASH_FIXTURE", &f.paths.root)
+            .env("TASKFLEET_TEST_CALLER_MERGE_CRASH_AFTER_REF", "1")
+            .status()
+            .unwrap();
+        assert_eq!(child.code(), Some(75));
+        assert_eq!(
+            merge_recovery::recover_node(&f.paths, &f.node, &git_bin()),
+            merge_recovery::Recovery::Completed
+        );
+        append_and_apply_event(&f.paths, "run.status", None, None, json!({"status":"done"}))
+            .unwrap();
+        assert!(cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(!f.checkout.exists());
+    }
+
+    #[test]
+    fn forged_report_without_transaction_cannot_clean_caller() {
+        let f = Fixture::new();
+        // A report marker is not a substitute for a linked merge.started event,
+        // even when Git happens to have integrated the worker ref.
+        git(&f.repo, &["merge", "--ff-only", "wt/worker"]);
+        let mut report = json!({"success":true,"summary":"forged", "via":"explicit-merge"});
+        taskfleet_core::ReportOrigin::RunMerge {
+            op_id: Some("not-a-transaction".into()),
+            worker_oid: Some(git(&f.repo, &["rev-parse", "wt/worker"])),
+        }
+        .stamp(&mut report);
+        append_and_apply_event(&f.paths, "node.report", Some(&f.node), None, report).unwrap();
+        append_and_apply_event(&f.paths, "run.status", None, None, json!({"status":"done"}))
+            .unwrap();
+        assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(f.checkout.exists());
+        assert!(read_all_events(&f.paths.events())
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "cleanup.branch_preserved"));
+    }
+
+    #[test]
+    fn cleanup_refuses_changed_checkout_or_writer_inode() {
+        let f = Fixture::new();
+        f.drive("merge-key").unwrap();
+        append_and_apply_event(&f.paths, "run.status", None, None, json!({"status":"done"}))
+            .unwrap();
+        git(&f.checkout, &["switch", "--detach"]);
+        assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(f.checkout.exists());
+        git(&f.checkout, &["switch", "wt/worker"]);
+        fs::rename(
+            f.paths.root.join("writer.lock"),
+            f.paths.root.join("old.lock"),
+        )
+        .unwrap();
+        fs::write(f.paths.root.join("writer.lock"), "").unwrap();
+        assert!(!cleanup::cleanup_terminal_nodes(&f.paths));
+        assert!(f.checkout.exists());
+    }
+
     #[test]
     fn crash_child() {
         let Ok(root) = std::env::var("TASKFLEET_CALLER_CRASH_FIXTURE") else {

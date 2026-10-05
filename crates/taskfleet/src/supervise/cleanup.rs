@@ -259,7 +259,9 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
     // exit and permanently loses the retry after a terminal report. Do not
     // touch tmux/workmux, or report cleanup complete, for these runs.
     match taskfleet_core::RunLock::with_shared_lock(&paths.lock(), || read_manifest_opt(paths)) {
-        Ok(Some(m)) if m.agent_owner == taskfleet_core::AgentOwner::Caller => return false,
+        Ok(Some(m)) if m.agent_owner == taskfleet_core::AgentOwner::Caller => {
+            return cleanup_caller_nodes(paths, &m);
+        }
         Ok(Some(_)) => {}
         _ => return false,
     }
@@ -292,6 +294,149 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
             || node.retention_unavailable.is_some();
         evidence_complete && display_settled
     })
+}
+
+/// No caller-owned path enters the tmux, workmux or evidence pipeline. Return
+/// pending until the actual checkout and branch have both been removed.
+fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -> bool {
+    use crate::run::{merge::CallerMergeAuthority, merge_recovery};
+    let Ok(nodes) = list_nodes(paths) else {
+        return false;
+    };
+    if nodes.len() != 1 {
+        return false;
+    }
+    let node = &nodes[0];
+    let Some(checkout) = node.worktree_path.as_deref() else {
+        return false;
+    };
+    let preserve = |reason: &str| {
+        record_branch_preserved(paths, node, node.branch.as_deref(), checkout, reason);
+        false
+    };
+    // Failure/cancellation has no destructive settlement endpoint. The terminal
+    // report alone (including a forged merge marker) cannot grant one.
+    if manifest.status != Status::Done || !node_merged_explicitly(node) {
+        return preserve("caller run without verified explicit merge");
+    }
+    let Some(intent) = manifest.caller_settlement_intent.clone() else {
+        return preserve("caller merge intent missing");
+    };
+    let Ok(authority) = CallerMergeAuthority::acquire(paths, intent.clone()) else {
+        return preserve("caller writer lease unavailable or busy");
+    };
+    let Some(txn) =
+        merge_recovery::verified_caller_transaction(paths, &node.node_id, &intent, true)
+    else {
+        return preserve("caller merge transaction or report unverifiable");
+    };
+    let (Some(repo), Some(source), Some(branch)) = (
+        manifest.source_repo.as_deref(),
+        manifest.source_branch.as_deref(),
+        node.branch.as_deref(),
+    ) else {
+        return preserve("caller repository identities missing");
+    };
+    // A missing checkout can mean a crash after worktree removal. The durable
+    // pre-removal receipt permits finishing only the remaining branch deletion.
+    let events = taskfleet_core::read_all_events(&paths.events()).ok();
+    let authorized = events.as_ref().is_some_and(|events| {
+        events.iter().any(|e| {
+            e.kind == "cleanup.caller_verified"
+                && e.run_id == paths.run_id
+                && e.node_id.as_ref() == Some(&node.node_id)
+                && e.data["op_id"] == txn.op_id
+                && e.data["worker_oid"] == txn.worker_oid
+        })
+    });
+    let exists = Path::new(checkout).exists();
+    if !exists && !authorized {
+        return preserve("caller checkout missing before verified cleanup");
+    }
+    if exists && authority.verify(node, repo, source).is_err() {
+        return preserve("caller checkout or Pi history changed");
+    }
+    if !exists && (authority.revalidate().is_err() || !caller_history_retained(node, checkout)) {
+        return preserve("caller lease or Pi history changed after checkout removal");
+    }
+    let git = git_bin();
+    if !exists
+        && authorized
+        && crate::run::merge_recovery::read_oid(&git, repo, source).is_some()
+        && crate::run::merge_recovery::read_oid(&git, repo, branch).is_none()
+        && merge_recovery::caller_landed(&txn, repo, &git)
+    {
+        return true; // crashed after branch deletion, before supervisor exit
+    }
+    // No fallback to the worker checkout or mutable branch for landing proof.
+    if !merge_recovery::caller_landed(&txn, repo, &git)
+        || branch_unmerged_vs_source(repo, source, branch, &git) != UnmergedCheck::NoUnmerged
+        || (exists
+            && (worktree_cleanliness(Some(checkout), &git) != WorktreeCleanliness::Clean
+                || !matches!(
+                    head_teardown_safety(repo, checkout, Some(branch), Some(source), &git),
+                    HeadTeardown::Safe | HeadTeardown::DeferToBranch
+                )))
+    {
+        return preserve("caller Git integration or cleanup safety unverified");
+    }
+    if authority.revalidate().is_err() {
+        return preserve("caller intent or writer inode changed");
+    }
+    if exists && !authorized {
+        if append_and_apply_event(
+            paths,
+            "cleanup.caller_verified",
+            Some(&node.node_id),
+            Some(&format!(
+                "cleanup.caller_verified:{}:{}",
+                paths.run_id, node.node_id
+            )),
+            json!({"op_id":txn.op_id, "worker_oid":txn.worker_oid}),
+        )
+        .is_err()
+        {
+            return preserve("caller cleanup receipt could not be recorded");
+        }
+    }
+    if exists && !remove_worktree(repo, checkout, &git, false) {
+        return preserve("caller worktree not cleanly removable");
+    }
+    if authority.revalidate().is_err()
+        || !caller_history_retained(node, checkout)
+        || !merge_recovery::caller_landed(&txn, repo, &git)
+        || branch_unmerged_vs_source(repo, source, branch, &git) != UnmergedCheck::NoUnmerged
+    {
+        return preserve("caller branch deletion safety changed");
+    }
+    // Non-force deletion is the last defense against losing an unmerged tip.
+    if Git::with_bin(&git)
+        .branch_delete(repo, branch, false)
+        .is_some()
+    {
+        return preserve("caller branch deletion refused");
+    }
+    true
+}
+
+fn caller_history_retained(node: &Node, checkout: &str) -> bool {
+    let Some(pi) = node.caller_pi_lifecycle.as_ref() else {
+        return node.caller_pi_session.is_none();
+    };
+    let Some(binding) = node.caller_pi_session.as_ref() else {
+        return false;
+    };
+    pi.session_path.as_deref() == Some(&binding.session_path)
+        && pi.pi_session_id == binding.pi_session_id
+        && binding.generation == Some(pi.generation)
+        && binding.original_cwd == checkout
+        && crate::run::session::verify(
+            &binding.session_path,
+            &binding.pi_session_id,
+            checkout,
+            true,
+        )
+        .is_ok_and(|(dev, ino)| (dev, ino) == (binding.file_dev, binding.file_ino))
 }
 
 /// Kill the managed `--headless` / `--tmux-session` session Taskfleet

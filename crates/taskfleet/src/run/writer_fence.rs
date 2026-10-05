@@ -245,15 +245,24 @@ impl ExclusiveWriter {
         paths: &RunPaths,
         intent: &taskfleet_core::schema::CallerSettlementIntent,
     ) -> Result<(), CliError> {
-        use taskfleet_core::{read_manifest_opt, RunLock};
+        use taskfleet_core::RunLock;
         let _lock = RunLock::acquire_existing(&paths.lock()).map_err(super::from_core)?;
+        self.revalidate_unlocked(paths, intent)
+    }
+
+    /// Caller holds the run lock; do not recursively acquire it.
+    pub(super) fn revalidate_unlocked(
+        &self,
+        paths: &RunPaths,
+        intent: &taskfleet_core::schema::CallerSettlementIntent,
+    ) -> Result<(), CliError> {
         let fence = inspect(paths)?;
         super::session::check_creation_fence(paths, &fence)?;
         let meta = self.0.metadata().map_err(unavailable)?;
         if (meta.dev(), meta.ino()) != (fence.writer.dev, fence.writer.ino)
             || (intent.writer_dev, intent.writer_ino) != (fence.writer.dev, fence.writer.ino)
             || (intent.gate_dev, intent.gate_ino) != (fence.launch_gate.dev, fence.launch_gate.ino)
-            || read_manifest_opt(paths)
+            || taskfleet_core::read_manifest_opt(paths)
                 .map_err(super::from_core)?
                 .and_then(|m| m.caller_settlement_intent)
                 != Some(intent.clone())

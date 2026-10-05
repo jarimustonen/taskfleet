@@ -69,6 +69,9 @@ struct ShowPayload<'a> {
     /// Current retained worktree/branch inventory for terminal nodes, including Done.
     /// Always present and never inferred from historical cleanup events.
     preserved_work: Vec<crate::run::retained::PreservedWork>,
+    /// Caller-owned Git teardown is independent of terminal merge reporting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup: Option<&'static str>,
     /// Suspected *false-failed* run (issue `raw-git-selfmerge-false-failed`):
     /// present only when the run is `failed` yet git confirms the worker's
     /// content is already in source and no `run merge` recorded it — the raw-git
@@ -342,6 +345,31 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         telemetry,
         landed: signal.landed,
         landed_method: signal.method.wire(),
+        cleanup: (manifest.agent_owner == taskfleet_core::AgentOwner::Caller
+            && manifest.status.is_terminal())
+        .then(|| {
+            let checkout_gone = landing
+                .worktree_path
+                .as_deref()
+                .is_some_and(|p| !std::path::Path::new(p).exists());
+            let branch_gone = landing
+                .source_repo
+                .as_deref()
+                .zip(landing.branch.as_deref())
+                .is_some_and(|(repo, branch)| {
+                    crate::run::merge_recovery::read_oid(
+                        &crate::supervise::cleanup::git_bin(),
+                        repo,
+                        branch,
+                    )
+                    .is_none()
+                });
+            if manifest.status == Status::Done && checkout_gone && branch_gone {
+                "complete"
+            } else {
+                "pending"
+            }
+        }),
         // A top-level run report has one unambiguous meaning only for a
         // single-worker run. Multi-node runs expose each worker through
         // `node show`; never present n-0001 as the whole run's report.

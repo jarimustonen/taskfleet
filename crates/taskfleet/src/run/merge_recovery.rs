@@ -94,6 +94,120 @@ enum Verdict {
     CannotVerify,
 }
 
+/// A caller transaction is authoritative only when both immutable event records
+/// agree with the original sticky intent. Projections and report text alone are
+/// never cleanup authority. Called outside the run lock under the EX writer lease.
+pub(crate) fn verified_caller_transaction(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    intent: &taskfleet_core::schema::CallerSettlementIntent,
+    report_required: bool,
+) -> Option<MergeTxn> {
+    use taskfleet_core::schema::{AgentOwner, SettlementOperation};
+    let (manifest, node, events) = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((
+            read_manifest_opt(paths)?,
+            read_node_opt(paths, node_id)?,
+            taskfleet_core::read_all_events(&paths.events())?,
+        ))
+    })
+    .ok()?;
+    let manifest = manifest?;
+    let node = node?;
+    if manifest.agent_owner != AgentOwner::Caller
+        || manifest.caller_settlement_intent.as_ref() != Some(intent)
+        || intent.operation != SettlementOperation::Merge
+        || intent.run_id != paths.run_id
+        || intent.node_id != *node_id
+        || intent.seq == 0
+        || node.run_id != paths.run_id
+        || node.node_id != *node_id
+    {
+        return None;
+    }
+    let intent_event = events.iter().find(|e| {
+        e.seq == intent.seq
+            && e.kind == "caller.settlement_intent"
+            && e.run_id == paths.run_id
+            && e.node_id.as_ref() == Some(node_id)
+    })?;
+    let mut original: taskfleet_core::schema::CallerSettlementIntent =
+        serde_json::from_value(intent_event.data.clone()).ok()?;
+    original.seq = intent.seq;
+    if original != *intent {
+        return None;
+    }
+    let txns: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.kind == taskfleet_core::KIND_MERGE_STARTED
+                && e.run_id == paths.run_id
+                && e.node_id.as_ref() == Some(node_id)
+        })
+        .filter_map(|e| serde_json::from_value::<MergeTxn>(e.data.clone()).ok())
+        .filter(|t| {
+            t.caller_authority.as_ref().is_some_and(|link| {
+                link.intent_seq == intent.seq
+                    && link.intent_key == intent.key
+                    && (link.writer_dev, link.writer_ino) == (intent.writer_dev, intent.writer_ino)
+            }) && manifest.source_branch.as_deref() == Some(&t.source_branch)
+                && node.branch.as_deref() == Some(&t.worker_branch)
+        })
+        .collect();
+    let txn = if report_required {
+        let report = node.last_report.as_ref()?;
+        if node.pending_merge.is_some()
+            || !node.status.is_terminal()
+            || report.get("via").and_then(Value::as_str) != Some(VIA_EXPLICIT_MERGE)
+            || report.get("success").and_then(Value::as_bool) != Some(true)
+        {
+            return None;
+        }
+        let (op, oid) = match taskfleet_core::ReportOrigin::from_report(report)? {
+            taskfleet_core::ReportOrigin::RunMerge {
+                op_id: Some(op),
+                worker_oid: Some(oid),
+            } => (op, oid),
+            _ => return None,
+        };
+        let reports: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == "node.report"
+                    && e.run_id == paths.run_id
+                    && e.node_id.as_ref() == Some(node_id)
+                    && e.data == *report
+            })
+            .collect();
+        if reports.len() != 1 {
+            return None;
+        }
+        let matching: Vec<_> = txns
+            .into_iter()
+            .filter(|t| t.op_id == op && t.worker_oid == oid)
+            .collect();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.into_iter().next()?
+    } else {
+        let pending = node.pending_merge.as_ref()?;
+        let matching: Vec<_> = txns.into_iter().filter(|t| t == pending.as_ref()).collect();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.into_iter().next()?
+    };
+    Some(txn)
+}
+
+pub(crate) fn caller_landed(txn: &MergeTxn, source_repo: &str, git: &str) -> bool {
+    matches!(
+        classify(txn, Some(source_repo), None, git),
+        Verdict::Complete
+    )
+}
+
 /// Resolve every pending merge transaction on this run's nodes. Called from the
 /// supervisor tick (the canonical recovery actor) and safe to call repeatedly —
 /// each resolution is idempotent and a node with no pending transaction is a
@@ -160,15 +274,16 @@ pub(crate) fn recover_run(paths: &RunPaths, git: &str) {
 /// computes the git verdict outside the lock, then appends the resolving event
 /// under the exclusive lock after re-verifying the transaction is unchanged.
 pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Recovery {
-    // Caller-owned merge is disabled until the settlement driver AND teardown
-    // can both retain and independently reacquire a verified writer lease.
-    // An orphaned transaction must never bypass that gate through the normal
-    // supervisor recovery path, even when Git has already moved.
-    match RunLock::with_shared_lock(&paths.lock(), || {
+    let owner = RunLock::with_shared_lock(&paths.lock(), || {
         Ok(read_manifest_opt(paths)?.map(|m| m.agent_owner))
-    }) {
-        Ok(Some(taskfleet_core::AgentOwner::Taskfleet)) => {}
+    });
+    let caller = match owner {
+        Ok(Some(taskfleet_core::AgentOwner::Caller)) => true,
+        Ok(Some(taskfleet_core::AgentOwner::Taskfleet)) => false,
         _ => return Recovery::CannotVerify,
+    };
+    if caller {
+        return recover_caller_node(paths, node_id, git);
     }
     // 1. Read the transaction + the repo to probe, under the shared lock.
     let probed = RunLock::with_shared_lock(&paths.lock(), || {
@@ -271,6 +386,93 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
         }
     });
     outcome.unwrap_or(Recovery::CannotVerify)
+}
+
+fn recover_caller_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Recovery {
+    let snapshot = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((read_manifest_opt(paths)?, read_node_opt(paths, node_id)?))
+    });
+    let Ok((Some(manifest), Some(node))) = snapshot else {
+        return Recovery::CannotVerify;
+    };
+    let Some(txn) = node.pending_merge.as_ref() else {
+        return Recovery::NothingPending;
+    };
+    let Some(intent) = manifest.caller_settlement_intent else {
+        return Recovery::CannotVerify;
+    };
+    let Ok(authority) = crate::run::merge::CallerMergeAuthority::acquire(paths, intent.clone())
+    else {
+        return Recovery::CannotVerify;
+    };
+    let Some(recorded) = verified_caller_transaction(paths, node_id, &intent, false) else {
+        return Recovery::CannotVerify;
+    };
+    if &recorded != txn.as_ref() || driver_is_alive(txn) {
+        return Recovery::DriverAlive;
+    }
+    let (Some(repo), Some(source)) = (
+        manifest.source_repo.as_deref(),
+        manifest.source_branch.as_deref(),
+    ) else {
+        return Recovery::CannotVerify;
+    };
+    if authority.verify(&node, repo, source).is_err() {
+        return Recovery::CannotVerify;
+    }
+    let verdict = classify(&recorded, Some(repo), None, git);
+    if matches!(verdict, Verdict::CannotVerify) {
+        return Recovery::CannotVerify;
+    }
+    if authority.verify(&node, repo, source).is_err() {
+        return Recovery::CannotVerify;
+    }
+    // The run lock is held only for event replay/append. The writer lease stays
+    // held across Git classification and the report, including every error path.
+    let result = RunLock::with_lock(paths, |lock| {
+        if authority.revalidate_unlocked().is_err() {
+            return Ok(Recovery::CannotVerify);
+        }
+        let fresh = read_node_opt(paths, node_id)?;
+        let current = read_manifest_opt(paths)?;
+        if fresh.as_ref().and_then(|n| n.pending_merge.as_deref()) != Some(&recorded)
+            || current
+                .as_ref()
+                .and_then(|m| m.caller_settlement_intent.as_ref())
+                != Some(&intent)
+            || fresh.as_ref().is_none_or(|n| n.status.is_terminal())
+        {
+            return Ok(Recovery::Superseded);
+        }
+        let run_id = paths.run_id.as_str();
+        match &verdict {
+            Verdict::Complete => {
+                let report = completion_report(&recorded);
+                let key = format!("explicit-merge:{run_id}:{node_id}");
+                match append_and_apply_idempotent(
+                    paths,
+                    lock,
+                    "node.report",
+                    Some(node_id),
+                    &key,
+                    |_seq| Ok(report.clone()),
+                )? {
+                    AppendOutcome::Conflict { .. } => Ok(Recovery::CannotVerify),
+                    _ => Ok(Recovery::Completed),
+                }
+            }
+            Verdict::Reject { reason } => {
+                match abort_txn(paths, lock, node_id, run_id, &recorded.op_id, reason)? {
+                    AppendOutcome::Conflict { .. } => Ok(Recovery::CannotVerify),
+                    _ => Ok(Recovery::Rejected {
+                        reason: reason.clone(),
+                    }),
+                }
+            }
+            Verdict::CannotVerify => Ok(Recovery::CannotVerify),
+        }
+    });
+    result.unwrap_or(Recovery::CannotVerify)
 }
 
 /// Whether the `run merge` process that recorded `txn` is still alive and thus

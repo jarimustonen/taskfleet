@@ -366,13 +366,16 @@ pub(super) fn run(args: &Args<'_>, paths: &RunPaths) -> Result<(), CliError> {
     }
     let (m, n) = state(paths)?;
     terminal(&m, &n, paths)?;
-    identities(&m, &n)?;
+    let (repo, source, checkout, branch) = identities(&m, &n)?;
     if args.dry_run {
         let _lock = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
         let fence = writer_fence::inspect(paths)?;
         super::session::check_creation_fence(paths, &fence)?;
     }
     let git = Git::with_bin(git_bin());
+    if !args.dry_run {
+        source_checked(&git, repo, source, checkout, branch)?;
+    }
     let observation = observe_checked(&m, &n, &git)?;
     if args.dry_run {
         // This preview neither fences admission nor claims the writer is idle.
@@ -1100,6 +1103,38 @@ mod tests {
             "idempotency_conflict" | "checkout_mismatch"
         ));
         assert_eq!(git(&f.repo, &["rev-parse", "refs/heads/wt/worker"]), moved);
+    }
+    #[test]
+    fn registered_elsewhere_branch_is_not_deleted() {
+        let f = Fixture::new(false);
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::caller_discard::tests::crash_child")
+            .env("TASKFLEET_DISCARD_TEST_ROOT", &f.paths.root)
+            .env("TASKFLEET_TEST_CALLER_DISCARD_CRASH_AFTER_WORKTREE", "1")
+            .status()
+            .unwrap();
+        assert_eq!(child.code(), Some(77));
+        let other = f.tmp.path().join("other");
+        git(
+            &f.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                other.to_str().unwrap(),
+                "wt/worker",
+            ],
+        );
+        assert_eq!(
+            run(&f.args("delete"), &f.paths).unwrap_err().code,
+            "checkout_mismatch"
+        );
+        assert_eq!(
+            Git::with_bin("git").branch_exists(f.repo.to_str().unwrap(), "wt/worker"),
+            Some(true)
+        );
+        assert!(other.exists());
     }
     #[test]
     fn branch_move_between_check_and_cas_preserves_new_tip() {

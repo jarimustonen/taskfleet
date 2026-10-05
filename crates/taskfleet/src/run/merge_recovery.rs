@@ -160,6 +160,16 @@ pub(crate) fn recover_run(paths: &RunPaths, git: &str) {
 /// computes the git verdict outside the lock, then appends the resolving event
 /// under the exclusive lock after re-verifying the transaction is unchanged.
 pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Recovery {
+    // Caller-owned merge is disabled until the settlement driver AND teardown
+    // can both retain and independently reacquire a verified writer lease.
+    // An orphaned transaction must never bypass that gate through the normal
+    // supervisor recovery path, even when Git has already moved.
+    match RunLock::with_shared_lock(&paths.lock(), || {
+        Ok(read_manifest_opt(paths)?.map(|m| m.agent_owner))
+    }) {
+        Ok(Some(taskfleet_core::AgentOwner::Taskfleet)) => {}
+        _ => return Recovery::CannotVerify,
+    }
     // 1. Read the transaction + the repo to probe, under the shared lock.
     let probed = RunLock::with_shared_lock(&paths.lock(), || {
         let node = read_node_opt(paths, node_id)?;
@@ -586,6 +596,49 @@ mod tests {
             txn,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn caller_transaction_without_sticky_intent_cannot_be_recovered() {
+        let (repo_dir, base, worker_tip) = repo_with_worker();
+        let repo = repo_dir.path();
+        git(repo, &["merge", "-q", "--ff-only", "wt/worker"]);
+        let home = tempfile::TempDir::new().unwrap();
+        let dir = home.path().join("01jxsnap000000000000000000");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind":"spinoff", "lifecycle":"interactive", "agent_owner":"caller",
+                "title":"t", "source_branch":"main", "source_repo":repo.to_str().unwrap()
+            }),
+        )
+        .unwrap();
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid),
+            None,
+            json!({
+                "kind":"spinoff", "worktree_path":repo.to_str().unwrap(), "branch":"wt/worker"
+            }),
+        )
+        .unwrap();
+        // Simulate a caller-owned pre-fence run with a pending transaction.
+        // Neither moved Git nor a dead driver grants report authority.
+        record_txn(&paths, &base, &worker_tip, &base);
+        assert_eq!(
+            recover_node(&paths, &nid, &git_bin()),
+            Recovery::CannotVerify
+        );
+        let node = read_node_opt(&paths, &nid).unwrap().unwrap();
+        assert!(node.pending_merge.is_some());
+        assert!(!node.status.is_terminal());
     }
 
     /// Crash window 1: git was mutated (worker's work fast-forwarded into `main`)

@@ -254,6 +254,15 @@ fn preserve_reason(outcome: Option<crate::supervise::outcome::TerminalOutcome>) 
 /// cleanup mechanism, not the gate). Every step is best-effort and never
 /// panics, so a partially-torn-down run still makes forward progress.
 pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
+    // Caller-owned teardown is not implemented yet. In particular, returning
+    // true here merely because cleanup_node skipped it lets the supervisor
+    // exit and permanently loses the retry after a terminal report. Do not
+    // touch tmux/workmux, or report cleanup complete, for these runs.
+    match taskfleet_core::RunLock::with_shared_lock(&paths.lock(), || read_manifest_opt(paths)) {
+        Ok(Some(m)) if m.agent_owner == taskfleet_core::AgentOwner::Caller => return false,
+        Ok(Some(_)) => {}
+        _ => return false,
+    }
     let tmux = tmux_bin();
     let git = git_bin();
     let Ok(nodes) = list_nodes(paths) else {
@@ -1661,6 +1670,38 @@ mod tests {
 
     fn tmux_log(dir: &std::path::Path) -> String {
         std::fs::read_to_string(dir.join("tmux.log")).unwrap_or_default()
+    }
+
+    #[test]
+    fn caller_cleanup_is_pending_even_when_no_node_has_evidence() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({"kind":"spinoff", "lifecycle":"interactive", "agent_owner":"caller", "title":"t"}),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid("n-0001")),
+            None,
+            json!({"kind":"spinoff", "worktree_path": tmp.path().to_str().unwrap(), "branch":"wt/test"}),
+        )
+        .unwrap();
+        report(
+            &paths,
+            "n-0001",
+            json!({"success":true, "summary":"merged", "via":"explicit-merge"}),
+        );
+        assert!(
+            !cleanup_terminal_nodes(&paths),
+            "caller teardown must remain pending"
+        );
+        assert!(tmp.path().exists());
     }
 
     #[test]

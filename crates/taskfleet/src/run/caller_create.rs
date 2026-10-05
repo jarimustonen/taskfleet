@@ -305,11 +305,26 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
                 ))
             })
             .map_err(from_core)?;
+            let _fence_read = RunLock::acquire_shared(&staging.lock()).map_err(from_core)?;
+            let fence = super::writer_fence::inspect(&staging)?;
+            let recorded = taskfleet_core::read_all_events(&staging.events()).map_err(from_core)?;
+            if recorded
+                .iter()
+                .find(|e| e.kind == "run.created")
+                .and_then(|e| e.data.get("writer_fence"))
+                != Some(&json!(fence))
+            {
+                return Err(uncertain(
+                    id,
+                    plan,
+                    "staged fence identity differs from run.created",
+                ));
+            }
             if m.as_ref().is_none_or(|m| {
                 m.agent_owner != AgentOwner::Caller
                     || m.title != title
                     || m.source_repo.as_deref() != Some(&repo_string)
-            }) || n.as_ref().is_none_or(|n| {
+            }) || n.as_ref().is_some_and(|n| {
                 n.branch.as_deref() != Some(&plan.branch)
                     || n.worktree_path.as_deref() != Some(&plan.checkout)
             }) {
@@ -319,17 +334,31 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
                     "staged run is incomplete or inconsistent",
                 ));
             }
+            drop(_fence_read);
+            if n.is_none() {
+                taskfleet_core::append_and_apply_event(&staging, "node.created", Some(&parse_node_id("n-0001")?), None,
+                    json!({"kind":"spinoff","branch":plan.branch,"worktree_path":plan.checkout,"source_branch":source,"base_sha":plan.base_sha,"task":task,"attempt":0})).map_err(from_core)?;
+            }
         } else {
             if staged_dir.exists() {
-                return Err(uncertain(id, plan, "staging directory lacks manifest"));
+                return Err(uncertain(
+                    id,
+                    plan,
+                    "staging directory lacks manifest; no recorded run.created identity",
+                ));
             }
             std::fs::create_dir_all(&staged_dir)
                 .map_err(|e| uncertain(id, plan, &format!("create staging: {e}")))?;
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&staged_dir, std::fs::Permissions::from_mode(0o700))
                 .map_err(|e| uncertain(id, plan, &format!("protect staging: {e}")))?;
+            std::fs::File::open(&stage_root)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| uncertain(id, plan, &format!("sync staging parent: {e}")))?;
+            let fence = super::writer_fence::create(&staging)?;
             taskfleet_core::append_and_apply_event(&staging, "run.created", None, None,
-                json!({"kind":"spinoff","lifecycle":"interactive","agent_owner":"caller","title":title,"source_repo":repo_string,"source_branch":source,"task":task})).map_err(from_core)?;
+                json!({"kind":"spinoff","lifecycle":"interactive","agent_owner":"caller","title":title,"source_repo":repo_string,"source_branch":source,"task":task,"writer_fence":fence})).map_err(from_core)?;
+            crash_at("run-created");
             taskfleet_core::append_and_apply_event(&staging, "node.created", Some(&parse_node_id("n-0001")?), None,
                 json!({"kind":"spinoff","branch":plan.branch,"worktree_path":plan.checkout,"source_branch":source,"base_sha":plan.base_sha,"task":task,"attempt":0})).map_err(from_core)?;
         }
@@ -339,6 +368,12 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
             .map_err(|e| uncertain(id, plan, &format!("create runs: {e}")))?;
         std::fs::rename(&staged_dir, &public.root)
             .map_err(|e| uncertain(id, plan, &format!("publish run: {e}")))?;
+        std::fs::File::open(root.join("runs"))
+            .and_then(|f| f.sync_all())
+            .map_err(|e| uncertain(id, plan, &format!("sync published run: {e}")))?;
+        std::fs::File::open(&stage_root)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| uncertain(id, plan, &format!("sync staging parent: {e}")))?;
     }
     crash_at("published");
     let (m, n) = RunLock::with_shared_lock(&public.lock(), || {
@@ -365,6 +400,22 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
             "published run/node does not match the reservation",
         ));
     }
+    let _fence_read = RunLock::acquire_shared(&public.lock()).map_err(from_core)?;
+    let fence = super::writer_fence::inspect(&public)?;
+    let recorded = taskfleet_core::read_all_events(&public.events()).map_err(from_core)?;
+    if recorded
+        .iter()
+        .find(|e| e.kind == "run.created")
+        .and_then(|e| e.data.get("writer_fence"))
+        != Some(&json!(fence))
+    {
+        return Err(uncertain(
+            id,
+            plan,
+            "published fence identity differs from run.created",
+        ));
+    }
+    drop(_fence_read);
     verify(&repo, &source, plan).map_err(|e| uncertain(id, plan, &e.message))?;
     // Keep same-key calls serialized through boot, but never let the detached
     // supervisor inherit this flock across exec after a killed creator.
@@ -398,13 +449,13 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
             supervisor_spawn::SupervisorSpawn::Unconfirmed { reason } => return Err(CliError::system("supervisor_spawn_failed", format!("run {id} is published with a verified checkout but supervisor did not confirm: {reason}; retry the same key or use `taskfleet run reattach {id}`")).with_invalid_value(id)),
         }
     };
-    let payload = json!({"run_id":id,"node_id":"n-0001","dir":public.root,"kind":"spinoff","agent_owner":"caller","lifecycle":"interactive","status":super::status_kebab(m.unwrap().status),"source_repo":repo_string,"source_branch":source,"branch":plan.branch,"worktree_path":plan.checkout,"checkout_verified":true,"supervisor":{"state":"confirmed","pid":pid},"idempotent_replay":replay,"writer_fence":"unavailable"});
+    let payload = json!({"run_id":id,"node_id":"n-0001","dir":public.root,"kind":"spinoff","agent_owner":"caller","lifecycle":"interactive","status":super::status_kebab(m.unwrap().status),"source_repo":repo_string,"source_branch":source,"branch":plan.branch,"worktree_path":plan.checkout,"checkout_verified":true,"supervisor":{"state":"confirmed","pid":pid},"idempotent_replay":replay,"writer_fence":{"state":"foundation-only","writer":fence.writer,"launch_gate":fence.launch_gate}});
     match args.spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, args.spec, args.warnings)?;
         }
         OutputFormat::Text => {
-            println!("caller-owned run {id} node n-0001: {} (supervisor {pid}); writer fence unavailable", plan.checkout);
+            println!("caller-owned run {id} node n-0001: {} (supervisor {pid}); writer fence foundation only (launch and settlement unavailable)", plan.checkout);
             output::emit_text_warnings(args.warnings);
         }
     }

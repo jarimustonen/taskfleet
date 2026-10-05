@@ -115,6 +115,18 @@ fn git_only_create_and_replay_fence_settlement() {
     assert!(Path::new(checkout).is_dir());
     assert_eq!(data["data"]["node_id"], "n-0001");
     assert_eq!(data["data"]["checkout_verified"], true);
+    assert_eq!(data["data"]["writer_fence"]["state"], "foundation-only");
+    for (name, key) in [
+        ("writer.lock", "writer"),
+        ("launch-gate.lock", "launch_gate"),
+    ] {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(home.path().join("runs").join(run).join(name)).unwrap();
+        assert_eq!(m.mode() & 0o7777, 0o600);
+        assert_eq!(m.nlink(), 1);
+        assert_eq!(data["data"]["writer_fence"][key]["dev"], m.dev());
+        assert_eq!(data["data"]["writer_fence"][key]["ino"], m.ino());
+    }
     assert_eq!(data["data"]["supervisor"]["state"], "confirmed");
     let replay = create(&home, &workspace, &tools, "same-key", None);
     assert!(
@@ -126,6 +138,7 @@ fn git_only_create_and_replay_fence_settlement() {
     assert_eq!(again["data"]["run_id"], run);
     assert_eq!(again["data"]["worktree_path"], checkout);
     assert_eq!(again["data"]["idempotent_replay"], true);
+    assert_eq!(again["data"]["writer_fence"], data["data"]["writer_fence"]);
     let mut historical: serde_json::Value = serde_json::from_slice(
         &std::fs::read(home.path().join("runs").join(run).join("manifest.json")).unwrap(),
     )
@@ -157,6 +170,43 @@ fn git_only_create_and_replay_fence_settlement() {
         &["worktree", "remove", "--force", checkout],
     );
 }
+#[test]
+fn retry_refuses_missing_replaced_and_linked_fence_without_repair() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+    let (home, workspace, tools) = fixture();
+    let first = create(&home, &workspace, &tools, "fence-integrity", None);
+    assert!(first.status.success(), "{first:?}");
+    let value: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let run = value["data"]["run_id"].as_str().unwrap();
+    let dir = home.path().join("runs").join(run);
+    let writer = dir.join("writer.lock");
+    let original = std::fs::metadata(&writer).unwrap().ino();
+    std::fs::rename(&writer, dir.join("old-writer.lock")).unwrap();
+    symlink("old-writer.lock", &writer).unwrap();
+    let refused = create(&home, &workspace, &tools, "fence-integrity", None);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("writer_fence_unavailable"));
+    std::fs::remove_file(&writer).unwrap();
+    std::fs::hard_link(dir.join("old-writer.lock"), &writer).unwrap();
+    assert!(!create(&home, &workspace, &tools, "fence-integrity", None)
+        .status
+        .success());
+    std::fs::remove_file(&writer).unwrap();
+    std::fs::rename(dir.join("old-writer.lock"), &writer).unwrap();
+    assert_eq!(std::fs::metadata(&writer).unwrap().ino(), original);
+    assert!(create(&home, &workspace, &tools, "fence-integrity", None)
+        .status
+        .success());
+    std::fs::remove_file(dir.join("writer-fence.json")).unwrap();
+    assert!(!create(&home, &workspace, &tools, "fence-integrity", None)
+        .status
+        .success());
+    assert!(
+        !dir.join("writer-fence.json").exists(),
+        "never enroll old/missing ledger on retry"
+    );
+}
+
 #[test]
 fn concurrent_same_key_only_publishes_one_run() {
     let (home, workspace, tools) = fixture();
@@ -238,11 +288,15 @@ fn live_pid_without_boot_receipt_is_not_reported_confirmed() {
 
 #[test]
 fn killed_creator_reuses_the_exact_reservation_and_preserves_dirty_work() {
-    for boundary in ["reservation", "git", "staged", "published"] {
+    for boundary in ["reservation", "git", "run-created", "staged", "published"] {
         let (home, workspace, tools) = fixture();
         let lost = create(&home, &workspace, &tools, "crash-key", Some(boundary));
         assert_eq!(lost.status.code(), Some(71), "{boundary}: {lost:?}");
-        if boundary == "git" || boundary == "staged" || boundary == "published" {
+        if boundary == "git"
+            || boundary == "run-created"
+            || boundary == "staged"
+            || boundary == "published"
+        {
             let listing = Command::new(fixture_git_binary())
                 .arg("-C")
                 .arg(workspace.path().join("repo"))

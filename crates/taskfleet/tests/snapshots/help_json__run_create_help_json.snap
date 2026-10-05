@@ -18,7 +18,7 @@ expression: value
         "long": "agent-owner",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Provision a Git-only worktree without launching an agent. Not yet safe for Pi: merge/cancel/discard are fenced off until writer coordination exists",
+        "help": "Provision a Git-only worktree without launching an agent. Caller-owned JSON returns persistent lock identities, NOT Pi launch admission: host-held launch gate and inherited writer lease are not integrated yet. Caller-owned merge/cancel/salvage/discard remain unavailable",
         "value_names": [
           "AGENT_OWNER"
         ],

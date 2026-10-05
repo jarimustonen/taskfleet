@@ -30,6 +30,7 @@ pub mod supervisor_spawn;
 pub mod telemetry;
 pub mod wait;
 pub mod worker;
+mod writer_fence;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -105,8 +106,10 @@ pub enum RunAction {
     /// Create a new run. Top-level when `--parent-*` flags are absent,
     /// child-spawn when both are set (mutually required).
     Create {
-        /// Provision a Git-only worktree without launching an agent. Not yet safe for Pi:
-        /// merge/cancel/discard are fenced off until writer coordination exists.
+        /// Provision a Git-only worktree without launching an agent. Caller-owned JSON
+        /// returns persistent lock identities, NOT Pi launch admission: host-held
+        /// launch gate and inherited writer lease are not integrated yet. Caller-owned
+        /// merge/cancel/salvage/discard remain unavailable.
         #[arg(long, value_enum, default_value = "taskfleet")]
         agent_owner: AgentOwnerArg,
         #[arg(long, value_enum)]

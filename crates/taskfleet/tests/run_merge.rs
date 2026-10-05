@@ -12,6 +12,8 @@ use taskfleet_core::{append_and_apply_event, NodeId, RunPaths};
 use tempfile::TempDir;
 
 mod common;
+#[cfg(target_os = "linux")]
+use common::fixture_git_binary;
 use common::TestHome;
 
 fn bin(home: &TempDir) -> Command {
@@ -860,14 +862,10 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
 //
 // Several independent spinoffs that self-merge into the SAME source branch within
 // seconds must serialize on the merge lock, never observe each other's mid-merge
-// (transient-dirty) target state. The bug: Rust merge driver checked the target worktree
-// for cleanliness BEFORE taking the serializing lock, so a concurrent merge that
-// was mid-rebase made the checker fail with a spurious "uncommitted changes in
-// target". The fix moves that check inside the lock; a lock-acquisition timeout is
-// surfaced as a distinct, retryable `merge_in_progress` error. These two tests
-// drive the REAL bundled `scripts/Rust merge driver` (via `GIT_BIN`) against a real
-// git repo + linked worktree; both exercised paths return before `workmux`, so
-// they need neither `workmux` nor a live tmux.
+// (transient-dirty) target state. The target cleanliness check belongs inside
+// the lock; otherwise another in-flight merge can cause a false dirty-target
+// failure. These tests exercise the real Rust Git driver against disposable
+// registered worktrees, without workmux or tmux.
 
 /// Kills and reaps a spawned child on drop — panic-safe cleanup for the
 /// background merge-lock holder, so a failing assertion can't leave a holder
@@ -963,12 +961,7 @@ fn git_only_merge_succeeds_with_stripped_path() {
     let worker_oid = oid(&wt, "HEAD");
     let run_id = create_run(&home, "spinoff", "embedded-linux-merge");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
-    let git_bin = Command::new("which").arg("git").output().unwrap();
-    assert!(git_bin.status.success());
-    let git_bin = String::from_utf8(git_bin.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let git_bin = fixture_git_binary();
     let empty_path = TempDir::new().unwrap();
     let v = run_ok(
         bin(&home)
@@ -1182,9 +1175,8 @@ fn genuine_dirty_target_still_blocks() {
 /// merge holds the lock AND has the target transiently dirty must SERIALIZE —
 /// block on the lock, and only proceed once the peer releases and the target is
 /// clean again — then SUCCEED. Pre-fix, the pre-lock dirty check made it fail
-/// spuriously; post-fix, the check is behind the lock, so the transient dirt is
-/// never observed and the merge lands. A fake `workmux` (exit 0) lets the real
-/// Rust merge driver reach and pass the merge step without a real workmux/tmux.
+/// spuriously; with the check behind the lock, the transient dirt is never
+/// observed and the Git merge lands.
 #[test]
 fn concurrent_self_merge_waits_then_succeeds() {
     let home = TestHome::new();
@@ -1218,9 +1210,8 @@ fn concurrent_self_merge_waits_then_succeeds() {
 }
 
 /// A downstream command exiting 75 must NOT masquerade as the lock-timeout
-/// `merge_in_progress`. Rust merge driver reserves exit 75 for the lock-timeout branch
-/// and normalizes `workmux`'s exit, so a `workmux` that exits 75 (with the lock
-/// free and the target clean) surfaces as a plain `merge_failed`.
+/// `merge_in_progress`. Inject a Git child that exits 75 at the final FF;
+/// only the lock timer may produce `merge_in_progress`.
 #[test]
 fn downstream_exit_75_is_not_merge_in_progress() {
     let home = TestHome::new();
@@ -1241,7 +1232,7 @@ exec git "$@"
     let run_id = create_run(&home, "spinoff", "exit75");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
-    // No lock holder, target clean — the merge reaches workmux, which exits 75.
+    // No lock holder, target clean — the Git shim exits 75 at the final FF.
     let out = bin(&home)
         .env("GIT_BIN", &shim)
         .args([
@@ -1250,10 +1241,7 @@ exec git "$@"
         .output()
         .expect("spawn");
 
-    assert!(
-        !out.status.success(),
-        "a workmux failure must fail the merge"
-    );
+    assert!(!out.status.success(), "a Git failure must fail the merge");
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
     assert_eq!(
         err["error"]["code"], "merge_failed",
@@ -1359,11 +1347,7 @@ fn killed_driver_after_ref_move_is_recovered() {
     let run_id = create_run(&home, "spinoff", "crash-after-git");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
-    let git_path = Command::new("which").arg("git").output().unwrap();
-    let git_path = String::from_utf8(git_path.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let git_path = fixture_git_binary().display().to_string();
     let shim = root.path().join("git-crash-shim");
     // No untrusted argv reaches this fixture; it only intercepts the final FF.
     std::fs::write(

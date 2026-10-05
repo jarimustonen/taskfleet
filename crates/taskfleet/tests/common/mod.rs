@@ -19,6 +19,17 @@ use tempfile::TempDir;
 /// Native-spawn fake executables for integration tests. Unlike the removed
 /// `TASKFLEET_CREATE_SH` seam, these exercise Taskfleet's production materializer:
 /// typed git/workmux/tmux argv, generated launcher, PID handshake, and cleanup.
+/// Resolve Git before a test strips PATH. Avoid depending on `which`, which a
+/// bare CI runner need not provide, and never fall back to the user's repo.
+pub fn fixture_git_binary() -> PathBuf {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join("git"))
+        .find(|path| path.is_file())
+        .expect("Git is required for disposable worktree tests")
+}
+
 pub struct NativeSpawnTools {
     dir: TempDir,
     repo: TempDir,
@@ -100,7 +111,7 @@ case "$1" in
         *) shift ;;
       esac
     done
-    git -C "$NATIVE_TEST_REPO" worktree add -q -b "$branch" "$NATIVE_TEST_WORKTREE" || exit 1
+    "$GIT_BIN" -C "$NATIVE_TEST_REPO" worktree add -q -b "$branch" "$NATIVE_TEST_WORKTREE" || exit 1
     text=$(/bin/cat "$prompt")
     TMUX_PANE=%77 "$agent" -- "$text" </dev/null >"$NATIVE_TEST_AGENT_STDOUT" 2>"$NATIVE_TEST_AGENT_STDERR" &
     pid=$!
@@ -110,7 +121,7 @@ case "$1" in
   path) printf '%s\n' "$NATIVE_TEST_WORKTREE"; exit 0 ;;
   remove)
     if [ -f "$NATIVE_TEST_AGENT_PID" ]; then kill "$(/bin/cat "$NATIVE_TEST_AGENT_PID")" 2>/dev/null || true; fi
-    git -C "$NATIVE_TEST_REPO" worktree remove --force "$NATIVE_TEST_WORKTREE" || exit 1
+    "$GIT_BIN" -C "$NATIVE_TEST_REPO" worktree remove --force "$NATIVE_TEST_WORKTREE" || exit 1
     exit 0 ;;
 esac
 exit 1
@@ -163,7 +174,7 @@ exit 1
             // `--headless` / `--tmux-session` placement through the public CLI.
             // Stripping TMUX here makes an omitted flag fail deterministically.
             .env_remove("TMUX")
-            .env_remove("GIT_BIN")
+            .env("GIT_BIN", fixture_git_binary())
             .env("NATIVE_TEST_REPO", self.repo.path())
             .env("TMUX_BIN", self.dir.path().join("tmux"))
             .env("WORKMUX_BIN", self.dir.path().join("workmux"))

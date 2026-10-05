@@ -759,8 +759,14 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         cmd.output().unwrap()
     };
     assert!(!invoke("1", false).status.success());
-    assert!(unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0);
-    assert!(unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0);
+    assert_eq!(
+        unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert_eq!(
+        unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+        0
+    );
     let first = invoke("1", true);
     assert!(first.status.success(), "{first:?}");
     assert_eq!(

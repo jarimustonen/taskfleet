@@ -54,7 +54,7 @@ fn child(parent: &File, name: &std::ffi::OsStr, directory: bool) -> Result<File,
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn verify(path: &str, id: &str, checkout: &str) -> Result<(u64, u64), CliError> {
+fn verify(path: &str, id: &str, checkout: &str, pi_style: bool) -> Result<(u64, u64), CliError> {
     let home = std::env::var_os("HOME").ok_or_else(|| invalid("HOME is unavailable"))?;
     let root = Path::new(&home).join(".pi/agent/sessions");
     let requested = Path::new(path);
@@ -141,6 +141,21 @@ fn verify(path: &str, id: &str, checkout: &str) -> Result<(u64, u64), CliError> 
             "native session header does not match Pi ID and recorded checkout",
         ));
     }
+    if pi_style {
+        let timestamp = header
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid("native session timestamp missing"))?;
+        let expected = format!("{}_{}.jsonl", timestamp.replace([':', '.'], "-"), id);
+        if requested
+            .file_name()
+            .is_none_or(|name| name != expected.as_str())
+        {
+            return Err(invalid(
+                "native session filename does not match header timestamp and UUID",
+            ));
+        }
+    }
     // Re-traverse from / to detect a parent renamed/replaced while the
     // header was read. The held descriptors remain the authority for the
     // content; the pathname must still resolve to that same inode.
@@ -213,6 +228,7 @@ pub fn bind(
     pi_id: &str,
     path: &str,
     checkout: &str,
+    generation: Option<u64>,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
@@ -252,10 +268,16 @@ pub fn bind(
                     | taskfleet_core::schema::CallerPiState::Started
             )
         })
-        || node
-            .caller_pi_lifecycle
-            .as_ref()
-            .is_some_and(|v| v.pi_session_id != pi_id || v.session_path != path)
+        || node.caller_pi_lifecycle.as_ref().is_some_and(|v| {
+            v.pi_session_id != pi_id
+                || v.session_path.as_deref().is_some_and(|p| p != path)
+                || (generation != Some(v.generation)
+                    && !(generation.is_none()
+                        && node
+                            .caller_pi_session
+                            .as_ref()
+                            .is_some_and(|b| b.generation.is_none())))
+        })
         || node.run_id != run_id
         || node.worktree_path.as_deref() != Some(checkout)
         || !Path::new(checkout).is_absolute()
@@ -277,13 +299,17 @@ pub fn bind(
             "recorded checkout is no longer an exact canonical directory",
         ));
     }
-    let (file_dev, file_ino) = verify(path, pi_id, checkout)?;
+    if generation.is_some() && node.caller_pi_lifecycle.is_none() {
+        return Err(conflict("generation requires an existing reservation"));
+    }
+    let (file_dev, file_ino) = verify(path, pi_id, checkout, generation.is_some())?;
     let binding = CallerPiSession {
         file_dev,
         file_ino,
         pi_session_id: pi_id.into(),
         session_path: path.into(),
         original_cwd: checkout.into(),
+        generation,
     };
     if let Some(existing) = &node.caller_pi_session {
         if existing != &binding {
@@ -356,7 +382,7 @@ pub struct UpdateArgs<'a> {
     pub node_id: &'a str,
     pub generation: u64,
     pub pi_id: &'a str,
-    pub path: &'a str,
+    pub path: Option<&'a str>,
     pub checkout: &'a str,
     pub state: PiStateArg,
     pub reason: Option<&'a str>,
@@ -412,8 +438,9 @@ pub fn update(args: UpdateArgs<'_>) -> Result<(), CliError> {
         || binding.is_some_and(|b| {
             b.original_cwd != args.checkout
                 || b.pi_session_id != args.pi_id
-                || b.session_path != args.path
+                || Some(b.session_path.as_str()) != args.path
         })
+        || (binding.is_none() && args.path.is_some())
         || (binding.is_none()
             && !node
                 .caller_pi_lifecycle
@@ -427,7 +454,7 @@ pub fn update(args: UpdateArgs<'_>) -> Result<(), CliError> {
     let fact = CallerPiLifecycle {
         generation: args.generation,
         pi_session_id: args.pi_id.into(),
-        session_path: args.path.into(),
+        session_path: args.path.map(str::to_string),
         state,
         reason: args.reason.map(str::to_string),
     };
@@ -481,7 +508,6 @@ pub struct ReserveArgs<'a> {
     pub node_id: &'a str,
     pub generation: u64,
     pub pi_id: &'a str,
-    pub path: &'a str,
     pub checkout: &'a str,
     pub gate_fd: i32,
     pub writer_fd: i32,
@@ -549,24 +575,6 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
             "canonical lowercase UUID and positive generation required",
         ));
     }
-    let path = Path::new(args.path);
-    let home = std::env::var_os("HOME").ok_or_else(|| invalid("HOME unavailable"))?;
-    let root = Path::new(&home).join(".pi/agent/sessions");
-    let relative = path
-        .strip_prefix(&root)
-        .map_err(|_| invalid("path outside Pi session store"))?;
-    if !path.is_absolute()
-        || path.extension().is_none_or(|e| e != "jsonl")
-        || relative.components().count() == 0
-        || relative.components().count() > 3
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
-    {
-        return Err(invalid(
-            "planned path must be absent absolute .jsonl beneath Pi sessions",
-        ));
-    }
     let paths = super::run_paths_exact(&crate::home::root_dir()?, &id)?;
     let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
     let (_, node) = launch_identity(&paths, &nid, args.checkout)?;
@@ -575,16 +583,11 @@ pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
     let fact = CallerPiLifecycle {
         generation: args.generation,
         pi_session_id: args.pi_id.into(),
-        session_path: args.path.into(),
+        session_path: None,
         state: CallerPiState::Reserved,
         reason: None,
     };
     let replay = node.caller_pi_lifecycle.as_ref() == Some(&fact);
-    if !replay && path.exists() {
-        return Err(invalid(
-            "planned native path already exists; reconcile ownership instead of reserving",
-        ));
-    }
     if node.caller_pi_session.is_some() || (!replay && node.caller_pi_lifecycle.is_some()) {
         return Err(conflict(
             "reservation already exists; reconcile current generation; no second launch",

@@ -235,7 +235,8 @@ struct CallerAgentView {
     state: &'static str,
     generation: u64,
     pi_session_id: String,
-    session_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_path: Option<String>,
     reason: Option<String>,
     settled_generation: Option<u64>,
     settled_state: Option<&'static str>,

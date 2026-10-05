@@ -403,7 +403,7 @@ pub enum SessionAction {
         #[arg(long)]
         checkout: String,
     },
-    /// Persist an exact pre-Start attempt; requires inherited gate EX and writer SH FDs.
+    /// Reserve a Pi UUID before Start (no path exists yet); requires inherited gate EX and writer SH FDs.
     /// The reply alone is NOT launch permission: the host holds both through Pi Start.
     Reserve {
         run_id: String,
@@ -413,8 +413,6 @@ pub enum SessionAction {
         generation: u64,
         #[arg(long)]
         pi_session_id: String,
-        #[arg(long)]
-        session_path: String,
         #[arg(long)]
         checkout: String,
         #[arg(long)]
@@ -433,7 +431,7 @@ pub enum SessionAction {
         #[arg(long)]
         pi_session_id: String,
         #[arg(long)]
-        session_path: String,
+        session_path: Option<String>,
         #[arg(long)]
         checkout: String,
         #[arg(long, value_enum)]
@@ -444,7 +442,7 @@ pub enum SessionAction {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Bind one verified native Pi session to a caller-owned run/node. Immutable;
+    /// Bind the discovered native file after Pi Start to the reserved UUID/generation. Immutable;
     /// an identical retry succeeds after revalidating the source. No Pi is launched.
     Bind {
         /// Exact full 26-character run ID (prefixes are not accepted).
@@ -453,6 +451,9 @@ pub enum SessionAction {
         node: String,
         #[arg(long)]
         pi_session_id: String,
+        /// Required when binding a reserved launch; omit for legacy direct binding.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        generation: Option<u64>,
         #[arg(long)]
         session_path: String,
         #[arg(long)]
@@ -561,7 +562,6 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
                     node,
                     generation,
                     pi_session_id,
-                    session_path,
                     checkout,
                     gate_fd,
                     writer_fd,
@@ -571,7 +571,6 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             node_id: &node,
             generation,
             pi_id: &pi_session_id,
-            path: &session_path,
             checkout: &checkout,
             gate_fd,
             writer_fd,
@@ -596,7 +595,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             node_id: &node,
             generation,
             pi_id: &pi_session_id,
-            path: &session_path,
+            path: session_path.as_deref(),
             checkout: &checkout,
             state,
             reason: reason.as_deref(),
@@ -610,6 +609,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
                     run_id,
                     node,
                     pi_session_id,
+                    generation,
                     session_path,
                     checkout,
                     dry_run,
@@ -621,6 +621,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             &pi_session_id,
             &session_path,
             &checkout,
+            generation,
             spec,
             warnings,
         ),

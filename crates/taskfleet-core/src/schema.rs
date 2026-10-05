@@ -850,6 +850,9 @@ pub struct CallerPiSession {
     pub file_dev: u64,
     /// Native file inode at registration; append growth is permitted.
     pub file_ino: u64,
+    /// Reserved launch generation, absent for legacy direct bindings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
 }
 
 /// A caller attests a Pi lifecycle transition. This is not a worker exit or
@@ -884,8 +887,9 @@ pub struct CallerPiLifecycle {
     pub generation: u64,
     /// Verified bound native Pi UUID.
     pub pi_session_id: String,
-    /// Planned native history path until binding; verified only after bind.
-    pub session_path: String,
+    /// Native history path, unknown until Pi creates and the caller binds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_path: Option<String>,
     /// Last attested state, not a writer fence.
     pub state: CallerPiState,
     /// Explicit attestation, not an inferred exit status.

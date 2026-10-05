@@ -689,8 +689,13 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         std::fs::Permissions::from_mode(0o700),
     )
     .unwrap();
-    let path = store.join("native.jsonl");
     let id = "b30d3508-a8d4-4aa7-bafa-7f5dfef72014";
+    let timestamp = "2026-09-04T10:20:30.123Z";
+    let path = store.join(format!(
+        "{}_{}.jsonl",
+        timestamp.replace([':', '.'], "-"),
+        id
+    ));
     let dir = home.path().join("runs").join(run);
     let info = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
         .args([
@@ -732,8 +737,6 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
             generation,
             "--pi-session-id",
             id,
-            "--session-path",
-            path.to_str().unwrap(),
             "--checkout",
             checkout,
             "--gate-fd",
@@ -821,16 +824,34 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
             .unwrap()
     };
     let shown = command(&["show", run]);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&shown.stdout).unwrap()["data"]["caller_agent"]
-            ["state"],
-        "reserved"
-    );
+    let before_bind: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(before_bind["data"]["caller_agent"]["state"], "reserved");
+    assert!(before_bind["data"]["caller_agent"]
+        .get("session_path")
+        .is_none());
+    assert!(!path.exists());
+    assert!(!command(&[
+        "session",
+        "update",
+        run,
+        "--node",
+        "n-0001",
+        "--generation",
+        "1",
+        "--pi-session-id",
+        id,
+        "--checkout",
+        checkout,
+        "--state",
+        "started"
+    ])
+    .status
+    .success());
     let pending = command(&["wait", run, "--timeout", "0", "--fail-on-error"]);
     assert_eq!(pending.status.code(), Some(2));
     std::fs::write(
         &path,
-        format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"cwd\":\"{checkout}\"}}\n"),
+        format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"timestamp\":\"{timestamp}\",\"cwd\":\"{checkout}\"}}\n"),
     )
     .unwrap();
     assert!(!command(&[
@@ -841,6 +862,44 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         "n-0001",
         "--pi-session-id",
         "b30d3508-a8d4-4aa7-bafa-7f5dfef72015",
+        "--generation",
+        "1",
+        "--session-path",
+        path.to_str().unwrap(),
+        "--checkout",
+        checkout
+    ])
+    .status
+    .success());
+    let wrong = store.join("wrong.jsonl");
+    std::fs::copy(&path, &wrong).unwrap();
+    assert!(!command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        id,
+        "--generation",
+        "1",
+        "--session-path",
+        wrong.to_str().unwrap(),
+        "--checkout",
+        checkout
+    ])
+    .status
+    .success());
+    assert!(!command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        id,
+        "--generation",
+        "2",
         "--session-path",
         path.to_str().unwrap(),
         "--checkout",
@@ -856,6 +915,8 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
         "n-0001",
         "--pi-session-id",
         id,
+        "--generation",
+        "1",
         "--session-path",
         path.to_str().unwrap(),
         "--checkout",
@@ -863,6 +924,34 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
     ])
     .status
     .success());
+    let rebound = command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        id,
+        "--generation",
+        "1",
+        "--session-path",
+        path.to_str().unwrap(),
+        "--checkout",
+        checkout,
+    ]);
+    assert!(rebound.status.success(), "{rebound:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&rebound.stdout).unwrap()["data"]
+            ["idempotent_replay"],
+        true
+    );
+    let bound = command(&["show", run]);
+    let bound: serde_json::Value = serde_json::from_slice(&bound.stdout).unwrap();
+    assert_eq!(bound["data"]["caller_agent"]["state"], "reserved");
+    assert_eq!(
+        bound["data"]["caller_agent"]["session_path"],
+        path.to_str().unwrap()
+    );
     let still_pending = command(&["wait", run, "--timeout", "0", "--fail-on-error"]);
     assert_eq!(still_pending.status.code(), Some(2));
     assert_eq!(
@@ -890,6 +979,25 @@ fn reservation_precedes_native_file_and_requires_held_matching_fds() {
     .status
     .success());
     assert!(!invoke("1", true, false).status.success());
+    std::fs::rename(&path, store.join("original.jsonl")).unwrap();
+    std::fs::write(&path, format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"timestamp\":\"{timestamp}\",\"cwd\":\"{checkout}\"}}\n")).unwrap();
+    assert!(!command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        id,
+        "--generation",
+        "1",
+        "--session-path",
+        path.to_str().unwrap(),
+        "--checkout",
+        checkout
+    ])
+    .status
+    .success());
     assert!(!workspace.path().join("forbidden").exists());
     drop(gate);
     drop(writer);

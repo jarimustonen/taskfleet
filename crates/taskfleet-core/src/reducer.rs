@@ -877,7 +877,11 @@ fn reduce_caller_pi_session_bound(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
     }
     if let Some(reserved) = &node.caller_pi_lifecycle {
         if reserved.pi_session_id != binding.pi_session_id
-            || reserved.session_path != binding.session_path
+            || Some(reserved.generation) != binding.generation
+            || reserved
+                .session_path
+                .as_deref()
+                .is_some_and(|p| p != binding.session_path)
             || !matches!(
                 reserved.state,
                 CallerPiState::Reserved | CallerPiState::Started
@@ -885,6 +889,12 @@ fn reduce_caller_pi_session_bound(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         {
             return Err(bad("binding does not match the current launch reservation"));
         }
+    }
+    if binding.generation.is_some() && node.caller_pi_lifecycle.is_none() {
+        return Err(bad("binding generation has no reservation"));
+    }
+    if let Some(current) = &mut node.caller_pi_lifecycle {
+        current.session_path = Some(binding.session_path.clone());
     }
     node.caller_pi_session = Some(binding);
     node.updated_at = ev.ts;
@@ -910,8 +920,11 @@ fn reduce_caller_pi_lifecycle(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
     let binding = node.caller_pi_session.as_ref();
     if fact.generation == 0
         || binding.is_some_and(|b| {
-            fact.pi_session_id != b.pi_session_id || fact.session_path != b.session_path
+            fact.pi_session_id != b.pi_session_id
+                || fact.session_path.as_deref() != Some(&b.session_path)
         })
+        || (fact.state == CallerPiState::Reserved && fact.session_path.is_some())
+        || (fact.state == CallerPiState::Started && fact.session_path.is_none())
         || (binding.is_none()
             && fact.state != CallerPiState::Reserved
             && !node
@@ -952,7 +965,10 @@ fn reduce_caller_pi_lifecycle(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
             if old.generation == fact.generation
                 && old.state == CallerPiState::Reserved
                 && old.pi_session_id == fact.pi_session_id
-                && old.session_path == fact.session_path
+                && (old.session_path == fact.session_path
+                    || (old.session_path.is_none()
+                        && fact.state == CallerPiState::Started
+                        && binding.is_some()))
                 && (matches!(
                     fact.state,
                     CallerPiState::LaunchFailed | CallerPiState::ControlUncertain

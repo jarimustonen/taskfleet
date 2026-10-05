@@ -392,8 +392,6 @@ pub enum RunAction {
 
 #[derive(Subcommand, Debug)]
 pub enum SessionAction {
-    /// Bind one verified native Pi session to a caller-owned run/node. Immutable;
-    /// an identical retry succeeds after revalidating the source. No Pi is launched.
     /// Attest one generation-bound Pi lifecycle transition. Never authorizes settlement.
     Update {
         /// Exact full run ID.
@@ -416,6 +414,8 @@ pub enum SessionAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Bind one verified native Pi session to a caller-owned run/node. Immutable;
+    /// an identical retry succeeds after revalidating the source. No Pi is launched.
     Bind {
         /// Exact full 26-character run ID (prefixes are not accepted).
         run_id: String,

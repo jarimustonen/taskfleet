@@ -51,8 +51,11 @@ use taskfleet_core::{
     MergeTxn, Node, NodeId, RunLock,
 };
 
-use crate::run::merge_recovery;
+use crate::run::{merge_recovery, writer_fence};
 use crate::supervise::cleanup::git_bin;
+use taskfleet_core::schema::{
+    AgentOwner, CallerMergeLink, CallerSettlementIntent, SettlementOperation,
+};
 
 use crate::error::{CliError, ExitKind};
 use crate::git::repo::Git;
@@ -476,6 +479,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         &node,
         effective_source.as_deref(),
         &git,
+        None,
     )?;
 
     // Run the merge. A non-zero exit (conflict, dirty tree, lock timeout)
@@ -488,6 +492,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         branch,
         effective_source.as_deref(),
         merge_start.as_ref().map(|h| h.expected_source_oid.as_str()),
+        || Ok(()),
     ) {
         // The merge did not complete (conflict, dirty tree, CAS mismatch, lock
         // timeout). Clear the transaction we opened so a dangling `merge.started`
@@ -571,6 +576,206 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         warnings,
         report_advisory_warnings: advisory_warnings,
     })
+}
+
+/// Internal caller-only authority. Neither an intent alone nor an EX probe is
+/// transferable permission: the owned lease remains live until the report lands.
+struct CallerMergeAuthority<'a> {
+    paths: &'a taskfleet_core::RunPaths,
+    intent: CallerSettlementIntent,
+    lease: writer_fence::ExclusiveWriter,
+}
+
+impl CallerMergeAuthority<'_> {
+    fn verify(&self, node: &Node, source_repo: &str, source: &str) -> Result<(), CliError> {
+        self.lease.revalidate(self.paths, &self.intent)?;
+        let denied = || {
+            CliError::user(
+                "checkout_mismatch",
+                "caller merge checkout/source/branch identity changed; work preserved",
+            )
+        };
+        let checkout = node.worktree_path.as_deref().ok_or_else(denied)?;
+        let branch = node.branch.as_deref().ok_or_else(denied)?;
+        let git = Git::with_bin(git_bin());
+        let rows = git.worktree_registrations(checkout).ok_or_else(denied)?;
+        if node.run_id != self.paths.run_id
+            || self.intent.node_id != node.node_id
+            || Path::new(checkout).canonicalize().ok().as_deref() != Some(Path::new(checkout))
+            || git.head_branch(checkout).as_deref() != Some(branch)
+            || !rows
+                .iter()
+                .any(|r| r.path == checkout && r.branch.as_deref() == Some(branch))
+            || !rows.iter().any(|r| {
+                r.branch.as_deref() == Some(source)
+                    && Path::new(&r.path).canonicalize().ok().as_deref()
+                        == Some(Path::new(source_repo))
+            })
+        {
+            return Err(denied());
+        }
+        // A reserved but unbound generation is never safe to settle. A run on
+        // which Pi was never reserved needs no native history.
+        let lifecycle = node.caller_pi_lifecycle.as_ref();
+        if self.intent.generation != lifecycle.map_or(0, |p| p.generation) {
+            return Err(CliError::user(
+                "writer_uncertain",
+                "Pi generation changed after intent",
+            ));
+        }
+        if lifecycle.is_none() && node.caller_pi_session.is_some() {
+            return Err(CliError::user(
+                "writer_uncertain",
+                "Pi binding without reservation",
+            ));
+        }
+        if let Some(pi) = lifecycle {
+            let binding = node.caller_pi_session.as_ref().ok_or_else(|| {
+                CliError::user(
+                    "history_unavailable",
+                    "reserved Pi generation has no bound native history",
+                )
+            })?;
+            if binding.generation != Some(pi.generation)
+                || binding.pi_session_id != pi.pi_session_id
+                || binding.original_cwd != checkout
+                || pi.session_path.as_deref() != Some(&binding.session_path)
+            {
+                return Err(CliError::user(
+                    "history_unavailable",
+                    "Pi binding differs from current generation",
+                ));
+            }
+            let (dev, ino) = super::session::verify(
+                &binding.session_path,
+                &binding.pi_session_id,
+                checkout,
+                true,
+            )?;
+            if (dev, ino) != (binding.file_dev, binding.file_ino) {
+                return Err(CliError::user(
+                    "history_unavailable",
+                    "native Pi history inode changed",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Private production merge producer; deliberately not routed from the CLI.
+/// The caller must already have durably recorded this exact merge intent.
+#[allow(dead_code)] // Next slice wires the public settlement endpoint after supervisor fencing.
+fn execute_caller_merge(
+    paths: &taskfleet_core::RunPaths,
+    node_id: &NodeId,
+    key: &str,
+    report_file: Option<&Path>,
+) -> Result<u64, CliError> {
+    let intent = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok(read_manifest_opt(paths)?.and_then(|m| m.caller_settlement_intent))
+    })
+    .map_err(from_core)?
+    .ok_or_else(|| CliError::user("settlement_conflict", "missing caller merge intent"))?;
+    if intent.key != key
+        || intent.node_id != *node_id
+        || intent.run_id != paths.run_id
+        || intent.operation != SettlementOperation::Merge
+        || intent.seq == 0
+    {
+        return Err(CliError::user(
+            "settlement_conflict",
+            "merge intent key/identity mismatch",
+        ));
+    }
+    let authority = CallerMergeAuthority {
+        paths,
+        lease: writer_fence::acquire_exclusive(paths, &intent)?,
+        intent,
+    };
+    let (manifest, node) = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((read_manifest_opt(paths)?, read_node_opt(paths, node_id)?))
+    })
+    .map_err(from_core)?;
+    let manifest = manifest.ok_or_else(|| CliError::user("run_not_found", "caller run missing"))?;
+    let node = node.ok_or_else(|| CliError::user("node_not_found", "caller node missing"))?;
+    if manifest.agent_owner != AgentOwner::Caller
+        || manifest.status.is_terminal()
+        || node.status.is_terminal()
+        || node.pending_merge.is_some()
+    {
+        return Err(CliError::user(
+            "merge_recovery_unverifiable",
+            "caller run terminal or pending transaction; preserve for fenced recovery",
+        ));
+    }
+    let repo = manifest
+        .source_repo
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "missing source repo"))?;
+    let source = manifest
+        .source_branch
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "missing source branch"))?;
+    let branch = node
+        .branch
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "missing worker branch"))?;
+    let checkout = node
+        .worktree_path
+        .as_deref()
+        .ok_or_else(|| CliError::user("checkout_mismatch", "missing checkout"))?;
+    authority.verify(&node, repo, source)?;
+    let (mut report, _) = build_report(report_file, branch, Some(source))?;
+    let git = git_bin();
+    let start = record_merge_start(
+        paths,
+        node_id,
+        checkout,
+        branch,
+        &node,
+        Some(source),
+        &git,
+        Some(&authority),
+    )?
+    .ok_or_else(|| {
+        CliError::system(
+            "merge_txn_record_failed",
+            "caller merge requires transaction",
+        )
+    })?;
+    // Crash injection is process-local and only reachable in the internal test;
+    // the transaction and sticky intent remain for later fenced recovery.
+    #[cfg(test)]
+    if std::env::var_os("TASKFLEET_TEST_CALLER_MERGE_CRASH_AFTER_START").is_some() {
+        std::process::exit(74);
+    }
+    if let Err(e) = run_git_merge(
+        Path::new(checkout),
+        branch,
+        Some(source),
+        Some(&start.expected_source_oid),
+        || authority.verify(&node, repo, source),
+    ) {
+        abort_merge_start(paths, node_id, &start.op_id, "merge did not complete");
+        return Err(e);
+    }
+    #[cfg(test)]
+    if std::env::var_os("TASKFLEET_TEST_CALLER_MERGE_CRASH_AFTER_REF").is_some() {
+        std::process::exit(75);
+    }
+    taskfleet_core::ReportOrigin::RunMerge {
+        op_id: Some(start.op_id),
+        worker_oid: Some(start.worker_oid),
+    }
+    .stamp(&mut report);
+    authority.verify(&node, repo, source)?;
+    let key = format!("explicit-merge:{}:{node_id}", paths.run_id);
+    let result = append_and_apply_event(paths, "node.report", Some(node_id), Some(&key), report)
+        .map_err(from_core)?;
+    // Do not call ensure_report_consumer here: supervisor teardown is not yet
+    // lease-aware. The retained intent blocks launch and cleanup stays pending.
+    Ok(result.seq)
 }
 
 /// Perform the read-only part of merge target eligibility for `--dry-run`.
@@ -828,6 +1033,7 @@ struct MergeStartHandle {
 /// record the transaction, proceeding would reintroduce the exact false-failure this
 /// change eliminates (a crash after the git merge with no recorded transaction to
 /// recover from). Fail closed so the agent backs off and retries.
+#[allow(clippy::too_many_arguments)] // Both producers pass explicit Git and immutable node/source identities.
 fn record_merge_start(
     paths: &taskfleet_core::RunPaths,
     node_id: &NodeId,
@@ -836,6 +1042,7 @@ fn record_merge_start(
     node: &Node,
     source_branch: Option<&str>,
     git: &str,
+    caller: Option<&CallerMergeAuthority<'_>>,
 ) -> Result<Option<MergeStartHandle>, CliError> {
     let source_branch = source_branch.ok_or_else(|| {
         merge_failed(
@@ -858,6 +1065,12 @@ fn record_merge_start(
         driver_pid: Some(pid as i32),
         driver_pid_start_secs: crate::supervise::watchdog::pid_start_time(pid),
         started_at: Utc::now(),
+        caller_authority: caller.map(|c| CallerMergeLink {
+            intent_seq: c.intent.seq,
+            intent_key: c.intent.key.clone(),
+            writer_dev: c.intent.writer_dev,
+            writer_ino: c.intent.writer_ino,
+        }),
     };
     let data = serde_json::to_value(&txn)
         .map_err(|e| CliError::system("merge_txn_serialize_failed", e.to_string()))?;
@@ -1072,6 +1285,7 @@ fn run_git_merge(
     branch: &str,
     source: Option<&str>,
     expected_source_oid: Option<&str>,
+    before_mutation: impl Fn() -> Result<(), CliError>,
 ) -> Result<(), CliError> {
     let git = git_bin();
     let g = Git::with_bin(&git);
@@ -1207,9 +1421,11 @@ fn run_git_merge(
     let source_oid = merge_recovery::read_oid(&git, &target.path, source)
         .ok_or_else(|| merge_failed(branch, "could not resolve source branch"))?;
     if worker_oid != source_oid {
+        before_mutation()?;
         git_output(&git, worktree_path, &["rebase", "--", source], branch)?;
     }
     check_source()?;
+    before_mutation()?;
     // No separate shell driver survives us. A git child may survive a SIGKILL
     // between this point and wait(), as in the old script's final merge call;
     // the recorded OIDs allow recovery to decide whether the ref moved.
@@ -1251,4 +1467,219 @@ fn emit(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod caller_merge_tests {
+    use super::*;
+    use std::fs;
+    use std::os::fd::AsRawFd;
+    use taskfleet_core::RunPaths;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().into()
+    }
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        paths: RunPaths,
+        node: NodeId,
+        repo: PathBuf,
+        checkout: PathBuf,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            git(&repo, &["init", "-b", "main"]);
+            git(&repo, &["config", "user.email", "test@example.invalid"]);
+            git(&repo, &["config", "user.name", "Test"]);
+            fs::write(repo.join("base"), "base").unwrap();
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "-m", "base"]);
+            let checkout = tmp.path().join("worker");
+            git(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    "wt/worker",
+                    checkout.to_str().unwrap(),
+                ],
+            );
+            fs::write(checkout.join("change"), "change").unwrap();
+            git(&checkout, &["add", "."]);
+            git(&checkout, &["commit", "-m", "worker"]);
+            let home = tmp.path().join("state");
+            let runs = home.join("runs");
+            let dir = runs.join("01jxsnap000000000000000000");
+            for p in [&home, &runs, &dir] {
+                fs::create_dir(p).unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(p, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
+            let fence = writer_fence::create(&paths).unwrap();
+            append_and_apply_event(
+                &paths,
+                "run.created",
+                None,
+                None,
+                json!({
+                    "kind":"spinoff", "lifecycle":"interactive", "agent_owner":"caller",
+                    "title":"test", "source_repo":repo, "source_branch":"main", "writer_fence":fence
+                }),
+            )
+            .unwrap();
+            let node = NodeId::parse_str("n-0001").unwrap();
+            append_and_apply_event(
+                &paths,
+                "node.created",
+                Some(&node),
+                None,
+                json!({
+                    "kind":"spinoff", "branch":"wt/worker", "worktree_path":checkout
+                }),
+            )
+            .unwrap();
+            writer_fence::record_intent(
+                &paths,
+                &node,
+                "merge-key",
+                SettlementOperation::Merge,
+                "test",
+                None,
+            )
+            .unwrap();
+            Self {
+                _tmp: tmp,
+                paths,
+                node,
+                repo,
+                checkout,
+            }
+        }
+        fn drive(&self, key: &str) -> Result<u64, CliError> {
+            execute_caller_merge(&self.paths, &self.node, key, None)
+        }
+    }
+    #[test]
+    fn actual_caller_driver_records_linked_transaction_and_reports_only_under_lease() {
+        let f = Fixture::new();
+        assert_eq!(f.drive("wrong").unwrap_err().code, "settlement_conflict");
+        let old = git(&f.repo, &["rev-parse", "main"]);
+        let worker = git(&f.repo, &["rev-parse", "wt/worker"]);
+        let fd = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(f.paths.root.join("writer.lock"))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            0
+        );
+        assert_eq!(f.drive("merge-key").unwrap_err().code, "writer_active");
+        assert_eq!(git(&f.repo, &["rev-parse", "main"]), old);
+        drop(fd);
+        let report_seq = f.drive("merge-key").unwrap();
+        assert_ne!(old, git(&f.repo, &["rev-parse", "main"]));
+        assert_eq!(git(&f.repo, &["rev-parse", "main"]), worker);
+        let events = read_all_events(&f.paths.events()).unwrap();
+        let intent = read_manifest_opt(&f.paths)
+            .unwrap()
+            .unwrap()
+            .caller_settlement_intent
+            .unwrap();
+        let started = events.iter().find(|e| e.kind == "merge.started").unwrap();
+        let txn: MergeTxn = serde_json::from_value(started.data.clone()).unwrap();
+        let link = txn.caller_authority.unwrap();
+        assert_eq!(
+            (link.intent_seq, link.intent_key.as_str(), link.writer_ino),
+            (intent.seq, intent.key.as_str(), intent.writer_ino)
+        );
+        assert_eq!((txn.expected_source_oid, txn.worker_oid), (old, worker));
+        assert_eq!(
+            events.iter().find(|e| e.seq == report_seq).unwrap().kind,
+            "node.report"
+        );
+        assert!(f.checkout.exists()); // no caller teardown until supervisor is fenced
+    }
+    #[test]
+    fn caller_driver_crash_after_ref_preserves_intent_and_transaction() {
+        let f = Fixture::new();
+        let old = git(&f.repo, &["rev-parse", "main"]);
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::merge::caller_merge_tests::crash_child")
+            .env("TASKFLEET_CALLER_CRASH_FIXTURE", &f.paths.root)
+            .env("TASKFLEET_TEST_CALLER_MERGE_CRASH_AFTER_REF", "1")
+            .status()
+            .unwrap();
+        assert_eq!(child.code(), Some(75));
+        assert_ne!(git(&f.repo, &["rev-parse", "main"]), old);
+        let node = read_node_opt(&f.paths, &f.node).unwrap().unwrap();
+        let txn = node.pending_merge.unwrap();
+        let intent = read_manifest_opt(&f.paths)
+            .unwrap()
+            .unwrap()
+            .caller_settlement_intent
+            .unwrap();
+        assert_eq!(
+            txn.caller_authority.as_ref().unwrap().intent_seq,
+            intent.seq
+        );
+        assert!(!node.status.is_terminal());
+        assert_eq!(
+            merge_recovery::recover_node(&f.paths, &f.node, &git_bin()),
+            merge_recovery::Recovery::CannotVerify
+        );
+        assert!(f.checkout.exists());
+        assert!(!read_all_events(&f.paths.events())
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "node.report"));
+    }
+    #[test]
+    fn crash_child() {
+        let Ok(root) = std::env::var("TASKFLEET_CALLER_CRASH_FIXTURE") else {
+            return;
+        };
+        let paths = RunPaths::new(&root, "01jxsnap000000000000000000").unwrap();
+        let node = NodeId::parse_str("n-0001").unwrap();
+        execute_caller_merge(&paths, &node, "merge-key", None).unwrap();
+        panic!("crash injection did not fire");
+    }
+    #[test]
+    fn caller_driver_refuses_replaced_writer_and_changed_checkout() {
+        let f = Fixture::new();
+        git(&f.checkout, &["switch", "--detach"]);
+        assert_eq!(f.drive("merge-key").unwrap_err().code, "checkout_mismatch");
+        git(&f.checkout, &["switch", "wt/worker"]);
+        fs::rename(
+            f.paths.root.join("writer.lock"),
+            f.paths.root.join("old.lock"),
+        )
+        .unwrap();
+        fs::write(f.paths.root.join("writer.lock"), "").unwrap();
+        assert_eq!(
+            f.drive("merge-key").unwrap_err().code,
+            "writer_fence_unavailable"
+        );
+        assert!(!read_all_events(&f.paths.events())
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "merge.started"));
+    }
 }

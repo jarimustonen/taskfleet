@@ -1725,10 +1725,55 @@ fn reduce_merge_started(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
                 ev.seq
             ),
         })?;
+    let manifest = read_manifest_opt(paths)?.ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: "merge.started without a run".into(),
+    })?;
+    let bad_link = || Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} merge.started caller authority does not match intent",
+            ev.seq
+        ),
+    };
+    match manifest.agent_owner {
+        crate::schema::AgentOwner::Caller => {
+            let intent = manifest
+                .caller_settlement_intent
+                .as_ref()
+                .ok_or_else(bad_link)?;
+            let link = txn.caller_authority.as_ref().ok_or_else(bad_link)?;
+            if intent.operation != crate::schema::SettlementOperation::Merge
+                || intent.run_id != ev.run_id
+                || intent.node_id != node_id
+                || link.intent_seq != intent.seq
+                || link.intent_key != intent.key
+                || (link.writer_dev, link.writer_ino) != (intent.writer_dev, intent.writer_ino)
+                || txn.source_branch != manifest.source_branch.as_deref().unwrap_or("")
+            {
+                return Err(bad_link());
+            }
+        }
+        crate::schema::AgentOwner::Taskfleet if txn.caller_authority.is_some() => {
+            return Err(bad_link())
+        }
+        crate::schema::AgentOwner::Taskfleet => {}
+    }
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(vec![]),
     };
+    if manifest.agent_owner == crate::schema::AgentOwner::Caller
+        && (n.branch.as_deref() != Some(&txn.worker_branch)
+            || n.caller_pi_lifecycle.as_ref().map_or(0, |p| p.generation)
+                != manifest
+                    .caller_settlement_intent
+                    .as_ref()
+                    .unwrap()
+                    .generation)
+    {
+        return Err(bad_link());
+    }
     // A terminal node has no in-flight merge to track — `run merge` is refused on
     // a terminal run at the CLI, so this is a dead/duplicate event. Ignore it
     // (never resurrect the projection).

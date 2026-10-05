@@ -54,7 +54,12 @@ fn child(parent: &File, name: &std::ffi::OsStr, directory: bool) -> Result<File,
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn verify(path: &str, id: &str, checkout: &str, pi_style: bool) -> Result<(u64, u64), CliError> {
+pub(super) fn verify(
+    path: &str,
+    id: &str,
+    checkout: &str,
+    pi_style: bool,
+) -> Result<(u64, u64), CliError> {
     let home = std::env::var_os("HOME").ok_or_else(|| invalid("HOME is unavailable"))?;
     let root = Path::new(&home).join(".pi/agent/sessions");
     let requested = Path::new(path);

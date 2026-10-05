@@ -1182,8 +1182,26 @@ pub struct MergeTxn {
     /// `None` when the platform could not read it.
     #[serde(default)]
     pub driver_pid_start_secs: Option<u64>,
+    /// Caller-only provenance tying the transaction to the sticky intent and
+    /// the exact writer inode held by the merge driver. Absent on normal merges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_authority: Option<CallerMergeLink>,
     /// When the transaction was recorded.
     pub started_at: DateTime<Utc>,
+}
+
+/// Immutable provenance for a caller-owned merge. Checked against the intent
+/// projection when the transaction is folded, not inferred from Git ancestry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallerMergeLink {
+    /// Durable sequence of `caller.settlement_intent`.
+    pub intent_seq: u64,
+    /// Stable operation key recorded by that intent.
+    pub intent_key: String,
+    /// Recorded writer device.
+    pub writer_dev: u64,
+    /// Recorded writer inode.
+    pub writer_ino: u64,
 }
 
 /// The observed exit status of a node's worker process, recorded by the

@@ -104,8 +104,8 @@ double-forks and `setsid`s away from the test process, so neither `waitpid`
 nor a group kill reaches it. The `TestHome` fixture in `tests/common/mod.rs`
 reaps by the pid files under its own home on drop; a production-path test
 that uses a bare `TempDir` instead leaks a supervisor. `NativeSpawnTools`
-stubs only `git`, `tmux`, and `workmux`, runs each test from a disposable
-repository, and strips `TMUX` so a test that forgets to declare `--headless`
+uses real Git in a disposable repository with a fake `tmux` and `workmux`
+launcher, and strips `TMUX` so a test that forgets to declare `--headless`
 or `--tmux-session` fails deterministically instead of landing in the
 developer's real session. Everything else (materializer, generated launchers,
 PID handshake, publication, supervisor) is production code. After a test run,
@@ -114,7 +114,7 @@ missing-fixture bug; scope any `pgrep` to that path, since the same pattern
 matches supervisors from every repository on the machine.
 
 `tests/e2e_spinoff.rs` drives complete headless spinoffs (create, live stub
-worker, `run merge` through a stub `merge.sh`, roll-up, teardown, and
+worker, `run merge` in real disposable Git worktrees, roll-up, teardown, and
 `run merge` recovery of a failed run) and asserts the lifecycle events they
 must emit, so a change to the lifecycle shows up there first. For a check
 against a real pi, `scripts/native-spawn-smoke.sh` runs a bounded prompt from

@@ -1,10 +1,6 @@
-//! Integration tests for `taskfleet run merge` (issue
-//! `bundle-worktree-merge`). The merge backend is stubbed via `TASKFLEET_MERGE_SH`
-//! so the tests exercise taskfleet's integration — node resolution,
-//! source resolution, terminal-report submission, failure handling — without
-//! a real git worktree, workmux, or tmux.
+//! Git-backed integration tests for `taskfleet run merge`. All repositories and
+//! worktrees are disposable; no workmux or personal tmux is involved.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -78,28 +74,6 @@ fn forge_worker_node(home: &TempDir, run_id: &str, kind: &str, worktree: &Path, 
     ]));
 }
 
-/// Write an executable fake merge backend that records its argv (one line) to
-/// `<dir>/merge.log` and exits `code`.
-fn fake_merge_sh(dir: &Path, code: i32, stderr: &str) -> std::path::PathBuf {
-    let p = dir.join("fake-merge.sh");
-    let log = dir.join("merge.log");
-    let body = format!(
-        "#!/bin/bash\nprintf '%s ' \"$@\" >> '{}'\nprintf '\\n' >> '{}'\n{}\nexit {code}\n",
-        log.display(),
-        log.display(),
-        if stderr.is_empty() {
-            String::new()
-        } else {
-            format!("echo '{stderr}' >&2")
-        },
-    );
-    std::fs::write(&p, body).unwrap();
-    let mut perms = std::fs::metadata(&p).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&p, perms).unwrap();
-    p
-}
-
 fn read_events(events: &Path) -> Vec<Value> {
     std::fs::read_to_string(events)
         .unwrap_or_default()
@@ -120,25 +94,19 @@ fn node_reports(events: &Path) -> Vec<Value> {
 #[test]
 fn successful_merge_submits_explicit_merge_report() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "merge-ok");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
-        "--output", "json", "run", "merge", &run_id, "--source", "main",
-    ]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "merge", &run_id]));
     assert_eq!(v["data"]["merged"], true);
-    assert_eq!(v["data"]["branch"], "wt/test-x");
+    assert_eq!(v["data"]["branch"], "wt/foo");
     assert_eq!(v["data"]["source"], "main");
 
     // The backend was invoked with the resolved target and branch.
-    let argv = std::fs::read_to_string(scratch.path().join("merge.log")).unwrap();
-    assert!(
-        argv.contains("--target main") && argv.contains("wt/test-x"),
-        "merge backend argv was {argv:?}"
-    );
+    assert_eq!(oid(&repo, "main"), oid(&worktree, "HEAD"));
 
     // Exactly one terminal report, stamped with the explicit-merge marker.
     let events = run_dir(&home, &run_id).join("events.jsonl");
@@ -156,9 +124,11 @@ fn successful_merge_submits_explicit_merge_report() {
 fn report_file_payload_is_submitted_with_marker() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "research", "merge-rich");
-    forge_worker_node(&home, &run_id, "research", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "research", &worktree, "wt/foo");
 
     let report = scratch.path().join("report.json");
     std::fs::write(
@@ -173,13 +143,14 @@ fn report_file_payload_is_submitted_with_marker() {
     )
     .unwrap();
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    run_ok(bin(&home).args([
         "--output",
         "json",
         "run",
         "merge",
         &run_id,
+        "--source",
+        "main",
         "--report-file",
         report.to_str().unwrap(),
     ]));
@@ -204,9 +175,11 @@ fn report_file_payload_is_submitted_with_marker() {
 fn typoed_advisory_field_merges_with_warning() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "merge-lenient");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
     let report = scratch.path().join("report.json");
     std::fs::write(
@@ -223,13 +196,14 @@ fn typoed_advisory_field_merges_with_warning() {
     )
     .unwrap();
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).args([
         "--output",
         "json",
         "run",
         "merge",
         &run_id,
+        "--source",
+        "main",
         "--report-file",
         report.to_str().unwrap(),
     ]));
@@ -269,7 +243,7 @@ fn typoed_advisory_field_merges_with_warning() {
         serde_json::json!(["rebase"])
     );
     // The merge backend DID run — leniency lets the merge proceed.
-    assert!(scratch.path().join("merge.log").exists());
+    assert_eq!(oid(&repo, "main"), oid(&worktree, "HEAD"));
 }
 
 /// A `--report-file` that contradicts the merge (`success: false` or
@@ -281,19 +255,19 @@ fn typoed_advisory_field_merges_with_warning() {
 fn non_success_report_file_is_rejected() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
 
     for body in [
         r#"{"success": false, "summary": "blocked"}"#,
         r#"{"success": true, "cancelled": true, "summary": "cancelled"}"#,
     ] {
         let run_id = create_run(&home, "spinoff", "reject-nonsuccess");
-        forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/foo");
+        forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
         let report = scratch.path().join("bad-report.json");
         std::fs::write(&report, body).unwrap();
-        let merge_sh = fake_merge_sh(scratch.path(), 0, "");
         let out = bin(&home)
-            .env("TASKFLEET_MERGE_SH", &merge_sh)
             .args([
                 "--output",
                 "json",
@@ -313,10 +287,7 @@ fn non_success_report_file_is_rejected() {
         let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
         assert_eq!(err["error"]["code"], "invalid_merge_report", "body: {body}");
         // The merge backend must NOT have run (rejection is pre-merge).
-        assert!(
-            !scratch.path().join("merge.log").exists(),
-            "merge backend must not run when the report is rejected: {body}"
-        );
+        assert_ne!(oid(&repo, "main"), oid(&worktree, "HEAD"));
         // No terminal report was appended.
         let events = run_dir(&home, &run_id).join("events.jsonl");
         assert_eq!(node_reports(&events).len(), 0, "no report appended: {body}");
@@ -329,17 +300,17 @@ fn non_success_report_file_is_rejected() {
 fn bad_report_file_rejected_before_merge() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "merge-badreport");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
     // Missing the required `success` field.
     let report = scratch.path().join("bad.json");
     std::fs::write(&report, r#"{"summary": "no success field"}"#).unwrap();
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output",
             "json",
@@ -360,10 +331,7 @@ fn bad_report_file_rejected_before_merge() {
         err["error"]["expected"],
         serde_json::json!({"field": "success", "type": "boolean"})
     );
-    assert!(
-        !scratch.path().join("merge.log").exists(),
-        "merge must not run when the report file is invalid"
-    );
+    assert_ne!(oid(&repo, "main"), oid(&worktree, "HEAD"));
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(node_reports(&events).len(), 0);
 }
@@ -374,15 +342,17 @@ fn bad_report_file_rejected_before_merge() {
 #[test]
 fn failed_merge_surfaces_error_and_writes_no_report() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "merge-fail");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
+    std::fs::write(worktree.join("UNCOMMITTED"), "dirty").unwrap();
 
-    let merge_sh = fake_merge_sh(scratch.path(), 1, "Error: rebase conflict");
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
-        .args(["--output", "json", "run", "merge", &run_id])
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
         .output()
         .expect("spawn");
     assert!(!out.status.success(), "merge failure must exit non-zero");
@@ -403,29 +373,16 @@ fn failed_merge_surfaces_error_and_writes_no_report() {
 #[test]
 fn dry_run_resolves_without_side_effects() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
     let run_id = create_run(&home, "spinoff", "merge-dry");
     forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
-    let merge_sh = fake_merge_sh(scratch.path(), 1, "should never run");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
-        "--output",
-        "json",
-        "run",
-        "merge",
-        &run_id,
-        "--dry-run",
-    ]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "merge", &run_id, "--dry-run"]));
     assert_eq!(v["data"]["dry_run"], true);
     assert_eq!(v["data"]["branch"], "wt/foo");
 
     // The backend was never invoked and no report was written.
-    assert!(
-        !scratch.path().join("merge.log").exists(),
-        "dry-run must not invoke the merge backend"
-    );
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(node_reports(&events).len(), 0);
 }
@@ -449,44 +406,30 @@ fn set_run_status(home: &TempDir, run_id: &str, scratch: &Path, status: &str) {
     ]));
 }
 
-/// Assert `run merge` fails with `run_already_terminal` and never spawned the
-/// merge backend a second time. `expected_backend_lines` is how many argv lines
-/// the shared `merge.log` should hold (the count from any earlier merges).
-fn assert_refused_terminal(
-    out: std::process::Output,
-    scratch: &Path,
-    expected_backend_lines: usize,
-) {
+/// Assert the terminal status is classified before attempting a Git merge.
+fn assert_refused_terminal(out: std::process::Output) {
     assert!(!out.status.success(), "the merge must be refused");
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
-    assert_eq!(
-        err["error"]["code"], "run_already_terminal",
-        "a terminal run must surface run_already_terminal, not merge_spawn_failed: {err}"
-    );
-    let log = scratch.join("merge.log");
-    let lines = std::fs::read_to_string(&log).map_or(0, |s| s.lines().count());
-    assert_eq!(
-        lines, expected_backend_lines,
-        "the refused merge must NOT invoke the merge backend"
-    );
+    assert_eq!(err["error"]["code"], "run_already_terminal", "{err}");
 }
 
 /// Re-merging an already-finished run fails with the clear `run_already_terminal`
 /// error, NOT the misleading `merge_spawn_failed` (issue
 /// `merge-terminal-misleading`). Repro: a spinoff self-merges; the supervisor
 /// then rolls the manifest to `done` AND tears the worktree down (invariant #5);
-/// a second `run merge` on the same id must refuse up front — no merge.sh spawn.
+/// a second `run merge` on the same id must refuse up front — no Rust merge driver spawn.
 #[test]
 fn second_merge_on_terminal_run_is_run_already_terminal() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "double-merge");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
     // First merge: succeeds and appends the explicit-merge report.
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
     assert_eq!(v["data"]["merged"], true);
@@ -494,11 +437,13 @@ fn second_merge_on_terminal_run_is_run_already_terminal() {
     // Reproduce the real post-teardown state the supervisor leaves: the run
     // rolled up terminal and its worktree was removed.
     set_run_status(&home, &run_id, scratch.path(), "done");
-    std::fs::remove_dir_all(worktree.path()).unwrap();
+    git(
+        &repo,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
 
     // Second merge: refused up front with the clear terminal error, no spawn.
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -510,8 +455,8 @@ fn second_merge_on_terminal_run_is_run_already_terminal() {
         msg.contains("no worktree left to merge"),
         "the message must explain there is nothing to merge: {msg}"
     );
-    // merge.log holds exactly the ONE line from the first merge.
-    assert_refused_terminal(out, scratch.path(), 1);
+    // No second report or ref mutation occurred.
+    assert_refused_terminal(out);
 }
 
 /// A `cancelled` run is refused regardless of its worktree: cancellation is a
@@ -522,14 +467,14 @@ fn second_merge_on_terminal_run_is_run_already_terminal() {
 fn merge_on_cancelled_run_is_refused() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "cancelled-merge");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
     set_run_status(&home, &run_id, scratch.path(), "cancelled");
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -543,7 +488,7 @@ fn merge_on_cancelled_run_is_refused() {
             .contains("cancelled"),
         "the message must name the cancellation: {err}"
     );
-    assert_refused_terminal(out, scratch.path(), 0);
+    assert_refused_terminal(out);
 }
 
 /// A terminal run torn down WITHOUT ever being explicitly merged — a genuine
@@ -554,21 +499,24 @@ fn merge_on_cancelled_run_is_refused() {
 fn terminal_failed_torn_down_is_run_already_terminal() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "failed-torn-down");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
     set_run_status(&home, &run_id, scratch.path(), "failed");
-    std::fs::remove_dir_all(worktree.path()).unwrap();
+    git(
+        &repo,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
         .output()
         .expect("spawn");
-    assert_refused_terminal(out, scratch.path(), 0);
+    assert_refused_terminal(out);
 }
 
 /// A NON-terminal run whose worktree has vanished surfaces the distinct
@@ -577,16 +525,18 @@ fn terminal_failed_torn_down_is_run_already_terminal() {
 #[test]
 fn nonterminal_missing_worktree_is_worktree_missing() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "live-no-worktree");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
     // No terminal status — the run is still live; just remove its worktree.
-    std::fs::remove_dir_all(worktree.path()).unwrap();
+    git(
+        &repo,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -595,27 +545,29 @@ fn nonterminal_missing_worktree_is_worktree_missing() {
     assert!(!out.status.success());
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
     assert_eq!(err["error"]["code"], "worktree_missing", "{err}");
-    assert!(
-        !scratch.path().join("merge.log").exists(),
-        "the merge backend must not run when the worktree is missing"
+    assert_eq!(
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        0
     );
 }
 
 /// A `NotFound` from the merge-backend spawn is only re-attributed to a missing
 /// worktree when the worktree is ACTUALLY gone. With a present worktree but a
-/// bad `TASKFLEET_MERGE_SH` override (nonexistent backend), the error must remain the
+/// bad `GIT_BIN` override (nonexistent backend), the error must remain the
 /// generic `merge_spawn_failed` — not a spurious `worktree_missing` (round-2
 /// review: the `NotFound` remap must not misattribute a missing backend).
 #[test]
-fn missing_backend_with_live_worktree_is_merge_spawn_failed() {
+fn missing_git_with_live_worktree_fails_without_report() {
     let home = TestHome::new();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "bad-backend");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
     // Worktree present, but the backend path does not exist.
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", "/no/such/merge-backend.sh")
+        .env("GIT_BIN", "/no/such/git")
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -624,8 +576,12 @@ fn missing_backend_with_live_worktree_is_merge_spawn_failed() {
     assert!(!out.status.success());
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
     assert_eq!(
-        err["error"]["code"], "merge_spawn_failed",
-        "a missing backend (worktree present) must not be misread as worktree_missing: {err}"
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        0
+    );
+    assert_eq!(
+        err["error"]["code"], "merge_failed",
+        "a missing git (worktree present) must not be misread as worktree_missing: {err}"
     );
 }
 
@@ -641,9 +597,11 @@ fn missing_backend_with_live_worktree_is_merge_spawn_failed() {
 fn terminal_but_unmerged_run_still_merges() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, worktree) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&worktree);
     let run_id = create_run(&home, "spinoff", "swallowed-then-merge");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    forge_worker_node(&home, &run_id, "spinoff", &worktree, "wt/foo");
 
     // Watchdog false positive: the node is terminalized as agent-died, and the
     // run is rolled up to `failed` — but the worktree still exists.
@@ -657,8 +615,7 @@ fn terminal_but_unmerged_run_still_merges() {
 
     // The still-alive agent's `run merge` must PROCEED (worktree exists → the
     // guard falls through, so the reducer can adopt the merge).
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
     assert_eq!(
@@ -776,6 +733,7 @@ fn merge_adopts_swallowed_report_and_defers_teardown() {
     let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
     let run_id = create_run(&home, "spinoff", "swallowed-merge");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
@@ -789,8 +747,7 @@ fn merge_adopts_swallowed_report_and_defers_teardown() {
         r#"{"success": false, "failed": true, "reason": "agent-died"}"#,
     );
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
@@ -829,16 +786,15 @@ fn merge_adopts_swallowed_report_and_defers_teardown() {
 #[test]
 fn merge_defers_to_supervisor_when_report_adopted() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
     let run_id = create_run(&home, "spinoff", "adopted-merge");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
     // No pre-terminalization: the node is live, so the explicit-merge report is
     // adopted and a supervisor owns teardown.
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
@@ -861,7 +817,7 @@ fn merge_defers_to_supervisor_when_report_adopted() {
 /// adopt or tear down anything — the worktree + branch survive and `run merge`
 /// surfaces `merge_failed`. Guards the ordering: the terminal report is appended
 /// (and thus the reducer's adoption + the supervisor's teardown are reachable)
-/// ONLY AFTER `run_merge_sh` confirms the merge landed, so a failed merge can
+/// ONLY AFTER `run_git_merge` confirms the merge landed, so a failed merge can
 /// never mark a branch merged or warrant its deletion.
 #[test]
 fn failed_merge_on_preterminal_node_reclaims_nothing() {
@@ -869,6 +825,7 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
     let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
     let run_id = create_run(&home, "spinoff", "swallowed-merge-fail");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
@@ -881,9 +838,8 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
         r#"{"success": false, "failed": true, "reason": "agent-died"}"#,
     );
 
-    let merge_sh = fake_merge_sh(scratch.path(), 1, "Error: rebase conflict");
+    std::fs::write(wt.join("UNCOMMITTED"), "dirty").unwrap();
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -904,29 +860,14 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
 //
 // Several independent spinoffs that self-merge into the SAME source branch within
 // seconds must serialize on the merge lock, never observe each other's mid-merge
-// (transient-dirty) target state. The bug: merge.sh checked the target worktree
+// (transient-dirty) target state. The bug: Rust merge driver checked the target worktree
 // for cleanliness BEFORE taking the serializing lock, so a concurrent merge that
 // was mid-rebase made the checker fail with a spurious "uncommitted changes in
 // target". The fix moves that check inside the lock; a lock-acquisition timeout is
 // surfaced as a distinct, retryable `merge_in_progress` error. These two tests
-// drive the REAL bundled `scripts/merge.sh` (via `TASKFLEET_MERGE_SH`) against a real
+// drive the REAL bundled `scripts/Rust merge driver` (via `GIT_BIN`) against a real
 // git repo + linked worktree; both exercised paths return before `workmux`, so
 // they need neither `workmux` nor a live tmux.
-
-/// Materialize the real bundled merge backend (not the stub) into `dir` with the
-/// exec bit set, so these tests exercise the actual locking + cleanliness logic.
-/// The checked-in `scripts/merge.sh` is not tracked executable, so it must be
-/// copied + chmod'd (mirroring how `run merge` materializes the embedded copy).
-fn real_merge_sh(dir: &Path) -> std::path::PathBuf {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/merge.sh");
-    let body = std::fs::read(&src).expect("read scripts/merge.sh");
-    let dst = dir.join("merge.sh");
-    std::fs::write(&dst, body).unwrap();
-    let mut perms = std::fs::metadata(&dst).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&dst, perms).unwrap();
-    dst
-}
 
 /// Kills and reaps a spawned child on drop — panic-safe cleanup for the
 /// background merge-lock holder, so a failing assertion can't leave a holder
@@ -941,7 +882,7 @@ impl Drop for ChildGuard {
 }
 
 /// Spawn a background holder of the repo's merge lock — the portable mkdir lock
-/// merge.sh derives (`<git-common-dir>/worktree-merge.lock`, a directory). It
+/// Rust merge driver derives (`<git-common-dir>/worktree-merge.lock`, a directory). It
 /// `mkdir`s the lock (aborting via `set -e` if that fails, so it never falsely
 /// signals `ready` without holding the lock), touches `ready` once it holds the
 /// lock, then holds it via `exec sleep` so the guard's SIGKILL hits the sleep
@@ -963,7 +904,7 @@ fn hold_merge_lock(repo: &Path, ready: &Path) -> ChildGuard {
 
 /// Spawn a holder that mimics a concurrent merge's full life: acquire the lock,
 /// transiently dirty the target (`dirty`), signal `ready`, hold briefly, then
-/// clean the target and release (`rm -rf` the lock dir, as merge.sh's trap does).
+/// clean the target and release (`rm -rf` the lock dir, as Rust merge driver's trap does).
 /// A merge that blocks on the lock during the dirty window must NOT observe the
 /// dirt — it acquires only after the clean.
 fn hold_lock_dirty_then_clean(repo: &Path, dirty: &Path, ready: &Path) -> ChildGuard {
@@ -980,50 +921,6 @@ fn hold_lock_dirty_then_clean(repo: &Path, dirty: &Path, ready: &Path) -> ChildG
         .spawn()
         .expect("spawn merge-lock holder");
     ChildGuard(child)
-}
-
-/// Create a dir holding a fake `workmux` that exits `code`, to prepend to PATH so
-/// the real merge.sh can reach (and get past) the merge step without a real
-/// workmux/tmux. Returns the dir to prepend.
-fn fake_workmux_dir(dir: &Path, code: i32) -> std::path::PathBuf {
-    let bindir = dir.join("fakebin");
-    std::fs::create_dir_all(&bindir).unwrap();
-    let p = bindir.join("workmux");
-    std::fs::write(&p, format!("#!/bin/bash\nexit {code}\n")).unwrap();
-    let mut perms = std::fs::metadata(&p).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&p, perms).unwrap();
-    bindir
-}
-
-/// A fixture-only `workmux merge` that performs the source fast-forward the real
-/// command owns. It keeps these tests isolated from an installed workmux/tmux.
-#[cfg(target_os = "linux")]
-fn fake_workmux_fast_forward_dir(dir: &Path) -> std::path::PathBuf {
-    let bindir = dir.join("fakebin");
-    std::fs::create_dir_all(&bindir).unwrap();
-    let p = bindir.join("workmux");
-    std::fs::write(
-        &p,
-        r#"#!/bin/bash
-set -euo pipefail
-target=""
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "--into" ]]; then target="$2"; shift 2; else shift; fi
-done
-[[ -n "$target" ]]
-branch=$(git symbolic-ref --short HEAD)
-target_path=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
-actual_target=$(git -C "$target_path" symbolic-ref --short HEAD)
-[[ "$actual_target" == "$target" ]]
-git -C "$target_path" merge --ff-only "$branch"
-"#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&p).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&p, perms).unwrap();
-    bindir
 }
 
 #[cfg(target_os = "linux")]
@@ -1044,29 +941,6 @@ fn oid(repo: &Path, rev: &str) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-#[cfg(target_os = "linux")]
-fn assert_no_embedded_merge_tempfiles(tmp: &Path) {
-    let leftovers: Vec<_> = std::fs::read_dir(tmp)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .filter(|name| name.to_string_lossy().starts_with("taskfleet-merge-"))
-        .collect();
-    assert!(
-        leftovers.is_empty(),
-        "embedded merge-script temp paths must be cleaned up: {leftovers:?}"
-    );
-}
-
-/// `PATH` with `prepend` in front of the inherited one.
-fn path_with(prepend: &Path) -> String {
-    format!(
-        "{}:{}",
-        prepend.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
-}
-
 /// Poll for a path to appear, up to `secs`. Panics if it never does.
 fn wait_for(path: &Path, secs: u64) {
     for _ in 0..(secs * 50) {
@@ -1078,28 +952,29 @@ fn wait_for(path: &Path, secs: u64) {
     panic!("timed out waiting for {}", path.display());
 }
 
-/// Linux regression for the default embedded backend. The old implementation
-/// retained `NamedTempFile`'s writable descriptor through `execve`, which fails
-/// with `ETXTBSY` on Linux before any script logic runs. No backend override is
-/// present here: the embedded bytes are materialized, executed, and cleaned up.
+/// The production merge requires Git but neither workmux nor ambient tools.
 #[cfg(target_os = "linux")]
 #[test]
-fn default_embedded_backend_executes_and_cleans_up() {
+fn git_only_merge_succeeds_with_stripped_path() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
-    let script_tmp = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
     commit_worker_change(&wt);
     let worker_oid = oid(&wt, "HEAD");
     let run_id = create_run(&home, "spinoff", "embedded-linux-merge");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
-    let fakebin = fake_workmux_fast_forward_dir(gitroot.path());
-
+    let git_bin = Command::new("which").arg("git").output().unwrap();
+    assert!(git_bin.status.success());
+    let git_bin = String::from_utf8(git_bin.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let empty_path = TempDir::new().unwrap();
     let v = run_ok(
         bin(&home)
-            .env_remove("TASKFLEET_MERGE_SH")
-            .env("TMPDIR", script_tmp.path())
-            .env("PATH", path_with(&fakebin))
+            .env("PATH", empty_path.path())
+            .env("GIT_BIN", git_bin)
+            .env("WORKMUX_BIN", "/no/such/workmux")
             .args([
                 "--output", "json", "run", "merge", &run_id, "--source", "main",
             ]),
@@ -1112,17 +987,14 @@ fn default_embedded_backend_executes_and_cleans_up() {
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["data"]["via"], "explicit-merge");
     assert_eq!(reports[0]["data"]["success"], true);
-    assert_no_embedded_merge_tempfiles(script_tmp.path());
 }
 
-/// `run salvage` delegates to the same merge execution path. Exercise that real
-/// path too, without the external backend override that masked Linux `ETXTBSY`.
+/// `run salvage` delegates to the same Git-backed merge execution path.
 #[cfg(target_os = "linux")]
 #[test]
 fn salvage_uses_default_embedded_backend() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
-    let script_tmp = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
     commit_worker_change(&wt);
     let worker_oid = oid(&wt, "HEAD");
@@ -1139,16 +1011,9 @@ fn salvage_uses_default_embedded_backend() {
     )
     .unwrap();
 
-    let fakebin = fake_workmux_fast_forward_dir(gitroot.path());
-    let v = run_ok(
-        bin(&home)
-            .env_remove("TASKFLEET_MERGE_SH")
-            .env("TMPDIR", script_tmp.path())
-            .env("PATH", path_with(&fakebin))
-            .args([
-                "--output", "json", "run", "salvage", &run_id, "--source", "main",
-            ]),
-    );
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "salvage", &run_id, "--source", "main",
+    ]));
 
     assert_eq!(v["data"]["worker_state"], "exited");
     assert_eq!(v["data"]["merge"]["merged"], true);
@@ -1160,29 +1025,24 @@ fn salvage_uses_default_embedded_backend() {
     let reports = node_reports(&run_dir(&home, &run_id).join("events.jsonl"));
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["data"]["via"], "explicit-merge");
-    assert_no_embedded_merge_tempfiles(script_tmp.path());
 }
 
-/// Embedded-script failures retain the established error/report/ref contract and
+/// Git-driver failures retain the established error/report/ref contract and
 /// still remove the private script path after the child exits.
 #[cfg(target_os = "linux")]
 #[test]
 fn default_embedded_backend_failure_preserves_state_and_cleans_up() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
-    let script_tmp = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
     commit_worker_change(&wt);
+    std::fs::write(wt.join("UNCOMMITTED"), "dirty").unwrap();
     let source_before = oid(&repo, "main");
     let worker_before = oid(&wt, "HEAD");
     let run_id = create_run(&home, "spinoff", "embedded-linux-failure");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
-    let fakebin = fake_workmux_dir(gitroot.path(), 42);
 
     let out = bin(&home)
-        .env_remove("TASKFLEET_MERGE_SH")
-        .env("TMPDIR", script_tmp.path())
-        .env("PATH", path_with(&fakebin))
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -1195,7 +1055,7 @@ fn default_embedded_backend_failure_preserves_state_and_cleans_up() {
     assert!(err["error"]["message"]
         .as_str()
         .unwrap_or_default()
-        .contains("workmux merge failed (exit 42)"));
+        .contains("Uncommitted changes in worktree"));
     assert_eq!(
         oid(&repo, "main"),
         source_before,
@@ -1208,11 +1068,10 @@ fn default_embedded_backend_failure_preserves_state_and_cleans_up() {
         0,
         "a failed backend must not submit a success report"
     );
-    assert_no_embedded_merge_tempfiles(script_tmp.path());
 }
 
 /// THE regression for the race: another merge holds the lock AND the target
-/// worktree is (transiently) dirty. Pre-fix, merge.sh checked the target BEFORE
+/// worktree is (transiently) dirty. Pre-fix, Rust merge driver checked the target BEFORE
 /// the lock and failed immediately with the spurious "uncommitted changes in
 /// target" (`merge_failed`). Post-fix, the checker lives inside the lock, so this
 /// merge serializes: it blocks on the held lock and, when the hold outlasts the
@@ -1223,6 +1082,7 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
     let run_id = create_run(&home, "spinoff", "race-merge");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
@@ -1239,7 +1099,6 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
     // Our merge waits on the lock, then times out (1s) — a serialization
     // conflict, surfaced as the distinct retryable code, NOT a dirty-tree error.
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
         .env("MERGE_LOCK_TIMEOUT", "1")
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
@@ -1278,7 +1137,7 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
 
 /// The genuine dirty-target safety check is preserved: with NO concurrent merge
 /// (the lock is free) but the target worktree carrying real uncommitted user
-/// work, merge.sh acquires the lock, finds the target dirty, and blocks with its
+/// work, Rust merge driver acquires the lock, finds the target dirty, and blocks with its
 /// existing dirty-target message (`merge_failed`). Guards against the fix
 /// weakening the real safety check while removing the racy pre-lock one.
 #[test]
@@ -1286,6 +1145,7 @@ fn genuine_dirty_target_still_blocks() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
     let run_id = create_run(&home, "spinoff", "dirty-target");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
@@ -1294,7 +1154,6 @@ fn genuine_dirty_target_still_blocks() {
     std::fs::write(repo.join("USER-WORK.txt"), "human's uncommitted edit").unwrap();
 
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -1325,16 +1184,15 @@ fn genuine_dirty_target_still_blocks() {
 /// clean again — then SUCCEED. Pre-fix, the pre-lock dirty check made it fail
 /// spuriously; post-fix, the check is behind the lock, so the transient dirt is
 /// never observed and the merge lands. A fake `workmux` (exit 0) lets the real
-/// merge.sh reach and pass the merge step without a real workmux/tmux.
+/// Rust merge driver reach and pass the merge step without a real workmux/tmux.
 #[test]
 fn concurrent_self_merge_waits_then_succeeds() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
     let run_id = create_run(&home, "spinoff", "race-success");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
-
-    let fakebin = fake_workmux_dir(gitroot.path(), 0);
 
     // A peer holds the lock, dirties the target for ~2s, then cleans + releases.
     let dirty = repo.join("PEER-INFLIGHT.txt");
@@ -1344,15 +1202,9 @@ fn concurrent_self_merge_waits_then_succeeds() {
 
     // Launch our merge WHILE the peer holds the lock + target is dirty. It must
     // block on the lock (never seeing the dirt), then land once the peer frees.
-    let v = run_ok(
-        bin(&home)
-            .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
-            .env("PATH", path_with(&fakebin))
-            .env("MERGE_LOCK_TIMEOUT", "30")
-            .args([
-                "--output", "json", "run", "merge", &run_id, "--source", "main",
-            ]),
-    );
+    let v = run_ok(bin(&home).env("MERGE_LOCK_TIMEOUT", "30").args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]));
 
     assert_eq!(
         v["data"]["merged"], true,
@@ -1366,7 +1218,7 @@ fn concurrent_self_merge_waits_then_succeeds() {
 }
 
 /// A downstream command exiting 75 must NOT masquerade as the lock-timeout
-/// `merge_in_progress`. merge.sh reserves exit 75 for the lock-timeout branch
+/// `merge_in_progress`. Rust merge driver reserves exit 75 for the lock-timeout branch
 /// and normalizes `workmux`'s exit, so a `workmux` that exits 75 (with the lock
 /// free and the target clean) surfaces as a plain `merge_failed`.
 #[test]
@@ -1374,14 +1226,24 @@ fn downstream_exit_75_is_not_merge_in_progress() {
     let home = TestHome::new();
     let gitroot = TempDir::new().unwrap();
     let (_repo, wt) = init_repo_with_worktree(gitroot.path());
+    commit_worker_change(&wt);
+    let shim = gitroot.path().join("git-shim");
+    std::fs::write(
+        &shim,
+        r#"#!/bin/sh
+case " $* " in *" merge --ff-only "*) exit 75;; esac
+exec git "$@"
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
     let run_id = create_run(&home, "spinoff", "exit75");
     forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
     // No lock holder, target clean — the merge reaches workmux, which exits 75.
-    let fakebin = fake_workmux_dir(gitroot.path(), 75);
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
-        .env("PATH", path_with(&fakebin))
+        .env("GIT_BIN", &shim)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -1402,5 +1264,148 @@ fn downstream_exit_75_is_not_merge_in_progress() {
         node_reports(&events).len(),
         0,
         "a failed merge writes no report"
+    );
+}
+
+/// A real rebase conflict leaves both refs and the worker checkout available
+/// for a human to resolve; it never emits a successful terminal report.
+#[test]
+fn rust_driver_conflict_preserves_unmerged_work() {
+    let home = TestHome::new();
+    let root = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(root.path());
+    std::fs::write(repo.join("README"), "source\n").unwrap();
+    git(&repo, &["commit", "-qam", "source edit"]);
+    let before = oid(&repo, "main");
+    std::fs::write(wt.join("README"), "worker\n").unwrap();
+    git(&wt, &["commit", "-qam", "worker edit"]);
+    let run_id = create_run(&home, "spinoff", "conflict");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+    let out = bin(&home)
+        .env("WORKMUX_BIN", "/no/such/workmux")
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "merge_failed");
+    assert_eq!(oid(&repo, "main"), before);
+    assert!(wt.exists());
+    assert_eq!(
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        0
+    );
+}
+
+/// The recorded source OID is checked after the merge lock: a writer moving
+/// main while this invocation waits cannot be overwritten by the later FF.
+#[test]
+fn source_movement_while_waiting_on_lock_refuses_merge() {
+    let home = TestHome::new();
+    let root = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(root.path());
+    commit_worker_change(&wt);
+    let run_id = create_run(&home, "spinoff", "cas-source-move");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+    let lock = repo.join(".git/worktree-merge.lock");
+    std::fs::create_dir(&lock).unwrap();
+    let mut child = bin(&home);
+    child.args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]);
+    let mut child = child.spawn().unwrap();
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    for _ in 0..250 {
+        if read_events(&events)
+            .iter()
+            .any(|event| event["kind"] == "merge.started")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(read_events(&events)
+        .iter()
+        .any(|event| event["kind"] == "merge.started"));
+    std::fs::write(repo.join("SOURCE"), "other writer").unwrap();
+    git(&repo, &["add", "SOURCE"]);
+    git(&repo, &["commit", "-qm", "other writer"]);
+    let moved = oid(&repo, "main");
+    std::fs::remove_dir(&lock).unwrap();
+    let status = child.wait().unwrap();
+    assert!(!status.success());
+    assert_eq!(oid(&repo, "main"), moved);
+    assert!(wt.exists());
+    assert_eq!(node_reports(&events).len(), 0);
+    assert!(read_events(&events)
+        .iter()
+        .any(|event| event["kind"] == "merge.aborted"));
+}
+
+/// A driver killed immediately after Git moves the source leaves a pending
+/// transaction; the retry verifies its recorded worker OID and completes the
+/// missing report rather than running a second merge.
+#[cfg(target_os = "linux")]
+#[test]
+fn killed_driver_after_ref_move_is_recovered() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let home = TestHome::new();
+    let root = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(root.path());
+    commit_worker_change(&wt);
+    let worker_oid = oid(&wt, "HEAD");
+    let run_id = create_run(&home, "spinoff", "crash-after-git");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    let git_path = Command::new("which").arg("git").output().unwrap();
+    let git_path = String::from_utf8(git_path.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let shim = root.path().join("git-crash-shim");
+    // No untrusted argv reaches this fixture; it only intercepts the final FF.
+    std::fs::write(
+        &shim,
+        format!(
+            r#"#!/bin/sh
+case " $* " in
+  *" merge --ff-only "*)
+    "{git_path}" "$@" || exit $?
+    kill -9 "$PPID"
+    exit 0 ;;
+esac
+exec "{git_path}" "$@"
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = bin(&home)
+        .env("GIT_BIN", &shim)
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the fixture must kill the driver");
+    assert_eq!(oid(&repo, "main"), worker_oid);
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert!(read_events(&events)
+        .iter()
+        .any(|e| e["kind"] == "merge.started"));
+    assert_eq!(node_reports(&events).len(), 0);
+    let recovered = run_ok(bin(&home).args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]));
+    assert_eq!(recovered["data"]["merged"], true);
+    assert_eq!(oid(&repo, "main"), worker_oid);
+    let reports = node_reports(&events);
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["data"]["origin"]["kind"], "run-merge");
+    assert!(
+        wt.exists(),
+        "only the supervisor may tear down the checkout"
     );
 }

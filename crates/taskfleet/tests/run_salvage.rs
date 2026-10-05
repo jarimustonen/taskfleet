@@ -5,10 +5,9 @@
 //! exited cleanly but skipped `run merge`) or a `failed`/stuck single-worker
 //! run, salvage verifies the prior worker's state, fences a live one, and drives
 //! `run merge` from the preserved worktree. These tests seed run state directly
-//! via the core append path (no live supervisor, deterministic) and stub the
-//! merge backend via `TASKFLEET_MERGE_SH`, exactly like `run_merge.rs`.
+//! via the core append path (no live supervisor, deterministic) and merge
+//! disposable Git worktrees through the same Rust driver as `run merge`.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -74,16 +73,6 @@ fn record_clean_exit(paths: &RunPaths) {
         json!({ "exit_code": 0 }),
     )
     .unwrap();
-}
-
-/// Write an executable fake merge backend that exits `code`.
-fn fake_merge_sh(dir: &Path, code: i32) -> std::path::PathBuf {
-    let p = dir.join("fake-merge.sh");
-    std::fs::write(&p, format!("#!/bin/bash\nexit {code}\n")).unwrap();
-    let mut perms = std::fs::metadata(&p).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&p, perms).unwrap();
-    p
 }
 
 fn read_events(paths: &RunPaths) -> Vec<Value> {
@@ -157,17 +146,17 @@ fn salvage_err(cmd: &mut Command) -> Value {
 #[test]
 fn attention_required_run_is_finished() {
     let home = TempDir::new().unwrap();
-    let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
-    let (_repo, worktree) = repo_with_worker(gitroot.path());
+    let (repo, worktree) = repo_with_worker(gitroot.path());
+    std::fs::write(worktree.join("WORK"), "worker\n").unwrap();
+    git(&worktree, &["add", "WORK"]);
+    git(&worktree, &["commit", "-qm", "worker"]);
     let run_id = fresh_run_id();
     let paths = seed_run(home.path(), &run_id);
     add_worker_node(&paths, Some(&worktree), Some("wt/dry"), json!({}));
     record_clean_exit(&paths);
 
-    let merge_sh = fake_merge_sh(scratch.path(), 0);
     let out = bin(&home)
-        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "salvage", &run_id, "--source", "main",
         ])
@@ -183,6 +172,10 @@ fn attention_required_run_is_finished() {
     assert_eq!(v["data"]["fenced"], false);
     assert_eq!(v["data"]["merge"]["merged"], true);
     assert_eq!(v["data"]["merge"]["branch"], "wt/dry");
+    assert_eq!(
+        git(&repo, &["rev-parse", "main"]),
+        git(&worktree, &["rev-parse", "HEAD"])
+    );
 
     // Exactly one terminal report, stamped explicit-merge.
     let reports: Vec<Value> = read_events(&paths)

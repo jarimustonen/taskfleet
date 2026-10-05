@@ -7,7 +7,6 @@
 //! latency and PTY pressure. No `#[file_serial]` gate is needed (no supervisor
 //! is spawned); the `TestHome` fixture still reaps any stray process on drop.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -160,16 +159,6 @@ fn forge_worker_node(home: &TempDir, run_id: &str, worktree: &Path, branch: &str
     ]));
 }
 
-/// Write an executable no-op merge backend that exits 0. Mirrors `run_merge.rs`.
-fn fake_merge_sh(dir: &Path) -> std::path::PathBuf {
-    let p = dir.join("fake-merge.sh");
-    std::fs::write(&p, "#!/bin/bash\nexit 0\n").unwrap();
-    let mut perms = std::fs::metadata(&p).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&p, perms).unwrap();
-    p
-}
-
 /// Drive a fresh run through a STUBBED `run merge` so it settles `done` with a
 /// GENUINE `RunMerge`-origin terminal report (issue `retire-via-string`) — the
 /// real merge authority, not a forged `via: "explicit-merge"` string pushed
@@ -180,8 +169,41 @@ fn fake_merge_sh(dir: &Path) -> std::path::PathBuf {
 /// merge marker (`report-marker`).
 fn settle_merged_run(home: &TempDir, title: &str, summary: &str) -> String {
     let run_id = create(home, "spinoff", title);
-    let worktree = TempDir::new().unwrap();
-    forge_worker_node(home, &run_id, worktree.path(), "wt/test-merge");
+    let gitroot = TempDir::new().unwrap();
+    let repo = gitroot.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |cwd: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Fixture"]);
+    git(&repo, &["config", "user.email", "fixture@example.invalid"]);
+    git(&repo, &["commit", "--allow-empty", "-qm", "base"]);
+    let worktree = gitroot.path().join("worker");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt/test-merge",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(worktree.join("WORK"), "worker commit").unwrap();
+    git(&worktree, &["add", "WORK"]);
+    git(&worktree, &["commit", "-qm", "worker"]);
+    forge_worker_node(home, &run_id, &worktree, "wt/test-merge");
     let scratch = TempDir::new().unwrap();
     let report = scratch.path().join("report.json");
     std::fs::write(
@@ -189,8 +211,7 @@ fn settle_merged_run(home: &TempDir, title: &str, summary: &str) -> String {
         serde_json::to_vec(&json!({ "success": true, "summary": summary })).unwrap(),
     )
     .unwrap();
-    let merge_sh = fake_merge_sh(scratch.path());
-    run_ok(bin(home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
+    run_ok(bin(home).args([
         "--output",
         "json",
         "run",

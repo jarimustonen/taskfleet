@@ -61,23 +61,6 @@ impl NativeSpawnTools {
             path
         };
         write(
-            "git",
-            r#"#!/bin/sh
-if [ "$1" = "-C" ]; then shift 2; fi
-case "$1" in
-  check-ref-format) exit 0 ;;
-  show-ref) exit 1 ;;
-  rev-parse) echo 0123456789012345678901234567890123456789; exit 0 ;;
-  reflog) exit 1 ;;
-  worktree)
-    if [ "$2" = remove ]; then for last do :; done; /bin/rm -rf "$last"; fi
-    exit 0 ;;
-  branch) exit 0 ;;
-esac
-exit 1
-"#,
-        );
-        write(
             "tmux",
             r#"#!/bin/sh
 # This is a complete private fake server: its socket and inventory live only
@@ -117,7 +100,7 @@ case "$1" in
         *) shift ;;
       esac
     done
-    /bin/mkdir -p "$NATIVE_TEST_WORKTREE"
+    git -C "$NATIVE_TEST_REPO" worktree add -q -b "$branch" "$NATIVE_TEST_WORKTREE" || exit 1
     text=$(/bin/cat "$prompt")
     TMUX_PANE=%77 "$agent" -- "$text" </dev/null >"$NATIVE_TEST_AGENT_STDOUT" 2>"$NATIVE_TEST_AGENT_STDERR" &
     pid=$!
@@ -127,7 +110,7 @@ case "$1" in
   path) printf '%s\n' "$NATIVE_TEST_WORKTREE"; exit 0 ;;
   remove)
     if [ -f "$NATIVE_TEST_AGENT_PID" ]; then kill "$(/bin/cat "$NATIVE_TEST_AGENT_PID")" 2>/dev/null || true; fi
-    /bin/rm -rf "$NATIVE_TEST_WORKTREE"
+    git -C "$NATIVE_TEST_REPO" worktree remove --force "$NATIVE_TEST_WORKTREE" || exit 1
     exit 0 ;;
 esac
 exit 1
@@ -180,7 +163,8 @@ exit 1
             // `--headless` / `--tmux-session` placement through the public CLI.
             // Stripping TMUX here makes an omitted flag fail deterministically.
             .env_remove("TMUX")
-            .env("GIT_BIN", self.dir.path().join("git"))
+            .env_remove("GIT_BIN")
+            .env("NATIVE_TEST_REPO", self.repo.path())
             .env("TMUX_BIN", self.dir.path().join("tmux"))
             .env("WORKMUX_BIN", self.dir.path().join("workmux"))
             .env("NATIVE_TEST_WORKTREE", worktree)

@@ -73,8 +73,6 @@ default="e2e"
         ),
     )
     .unwrap();
-    let merge = scratch.path().join("merge.sh");
-    executable(&merge, "#!/bin/sh\nexit 0\n");
     let worktree = tools.worktree("worktree");
 
     let mut create = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
@@ -99,13 +97,46 @@ default="e2e"
     let run_dir = home.path().join("runs").join(run_id);
     let events = run_dir.join("events.jsonl");
     wait_event(&events, "supervisor.started");
+    std::fs::write(worktree.join("WORK"), "committed work").unwrap();
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "add",
+            "-A",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "worker work",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
 
     let merged = run_ok(
         Command::new(env!("CARGO_BIN_EXE_taskfleet"))
             .env("TASKFLEET_HOME", home.path())
             .env("HOME", home.path())
-            .env("TASKFLEET_MERGE_SH", &merge)
-            .args(["--output", "json", "run", "merge", run_id]),
+            .args([
+                "--output", "json", "run", "merge", run_id, "--source", "main",
+            ]),
     );
     assert_eq!(merged["data"]["merged"], true);
     wait_event(&events, "supervisor.exited");
@@ -159,8 +190,6 @@ default="e2e"
         ),
     )
     .unwrap();
-    let merge = scratch.path().join("merge.sh");
-    executable(&merge, "#!/bin/sh\nexit 0\n");
     let worktree = tools.worktree("recovery-worktree");
 
     let mut create = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
@@ -185,6 +214,38 @@ default="e2e"
     let run_dir = home.path().join("runs").join(run_id);
     let events = run_dir.join("events.jsonl");
     wait_event(&events, "supervisor.started");
+    std::fs::write(worktree.join("WORK"), "committed work").unwrap();
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "add",
+            "-A",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = Command::new("git")
+        .current_dir(&worktree)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "worker work",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
 
     let failed_report = scratch.path().join("failed.json");
     std::fs::write(
@@ -214,12 +275,13 @@ default="e2e"
     let mut merge_command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     merge_command
         .env("TASKFLEET_HOME", home.path())
-        .env("HOME", home.path())
-        .env("TASKFLEET_MERGE_SH", &merge);
+        .env("HOME", home.path());
     // The reattached supervisor inherits this command's dependency seams; keep
     // them private and explicit just like the original create invocation.
     tools.configure(&mut merge_command, &worktree, "headless");
-    let merged = run_ok(merge_command.args(["--output", "json", "run", "merge", run_id]));
+    let merged = run_ok(merge_command.args([
+        "--output", "json", "run", "merge", run_id, "--source", "main",
+    ]));
     assert_eq!(merged["data"]["merged"], true);
     wait_for_manifest_status(&run_dir, "done");
     let shown = run_ok(

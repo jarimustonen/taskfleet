@@ -71,7 +71,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use taskfleet_core::{
-    read_manifest_opt, read_node_opt, AwaitingInput, NodeId, RunLock, RunPaths, Status, WorkerExit,
+    read_manifest_opt, read_node_opt,
+    schema::{AgentOwner, CallerPiLifecycle, CallerPiState},
+    AwaitingInput, NodeId, RunLock, RunPaths, Status, WorkerExit,
 };
 
 use crate::error::CliError;
@@ -224,6 +226,57 @@ struct RunOutcome {
     /// `git log <source>..<branch>`. Absent on any other outcome.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    caller_agent: Option<CallerAgentView>,
+}
+
+#[derive(Serialize)]
+struct CallerAgentView {
+    state: &'static str,
+    generation: u64,
+    pi_session_id: String,
+    session_path: String,
+    reason: Option<String>,
+    settled_generation: Option<u64>,
+    settled_state: Option<&'static str>,
+    current_generation: u64,
+    control: &'static str,
+}
+
+fn caller_view(
+    current: &CallerPiLifecycle,
+    latched: Option<&CallerPiLifecycle>,
+) -> CallerAgentView {
+    let settled = latched.filter(|v| v.state.needs_attention());
+    let state = match current.state {
+        CallerPiState::Started => "started",
+        CallerPiState::Exited => "stopped-unmerged",
+        CallerPiState::LaunchFailed => "launch-failed",
+        CallerPiState::ControlUncertain => "control-unknown",
+    };
+    CallerAgentView {
+        state,
+        generation: current.generation,
+        pi_session_id: current.pi_session_id.clone(),
+        session_path: current.session_path.clone(),
+        reason: settled
+            .and_then(|v| v.reason.clone())
+            .or_else(|| current.reason.clone()),
+        settled_generation: settled.map(|v| v.generation),
+        settled_state: settled.map(|v| match v.state {
+            CallerPiState::Exited => "stopped-unmerged",
+            CallerPiState::LaunchFailed => "launch-failed",
+            CallerPiState::ControlUncertain => "control-unknown",
+            CallerPiState::Started => unreachable!(),
+        }),
+        current_generation: current.generation,
+        // A told exit describes that child; it is not a writer fence.
+        control: if current.state == CallerPiState::Exited {
+            "stopped"
+        } else {
+            "unknown"
+        },
+    }
 }
 
 #[derive(Serialize)]
@@ -349,7 +402,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// pins a fixed cadence. Every sleep is clamped to the remaining timeout
 /// budget so the loop wakes right at the deadline rather than overshooting it
 /// (keeps the reported `waited_ms` ≈ the requested timeout).
-type ProgressKey = (Status, Option<StallKind>, bool, Option<u64>);
+type ProgressKey = (
+    Status,
+    Option<StallKind>,
+    bool,
+    Option<u64>,
+    Option<(u64, bool)>,
+);
 
 fn wait_loop(
     runs: &[(String, RunPaths)],
@@ -387,6 +446,7 @@ fn wait_loop(
                 stall: settle.stall,
                 attention: settle.attention,
                 awaiting_input: settle.awaiting_input.clone(),
+                caller: settle.caller.clone(),
             };
             // A run is settled when it reaches a terminal status, OR when it is
             // stalled (a supervisor that died — before creating any node, or
@@ -400,6 +460,10 @@ fn wait_loop(
                 || settle.stall.is_some()
                 || settle.attention
                 || settle.awaiting_input.is_some()
+                || settle
+                    .caller
+                    .as_ref()
+                    .is_some_and(|c| c.state.needs_attention())
             {
                 settled += 1;
             }
@@ -408,6 +472,10 @@ fn wait_loop(
                 settle.stall,
                 settle.attention,
                 settle.awaiting_input.as_ref().map(|v| v.event_seq),
+                settle
+                    .caller
+                    .as_ref()
+                    .map(|c| (c.generation, c.state.needs_attention())),
             );
             if progress && prev[i] != Some(key) {
                 emit_progress(
@@ -416,6 +484,10 @@ fn wait_loop(
                     settle.stall.is_some(),
                     settle.attention,
                     settle.awaiting_input.is_some(),
+                    settle
+                        .caller
+                        .as_ref()
+                        .map(|c| (c.generation, c.state.needs_attention())),
                 );
             }
             prev[i] = Some(key);
@@ -483,6 +555,7 @@ struct Settle {
     attention: bool,
     /// Exact explicit decision generation whose durable grace has elapsed.
     awaiting_input: Option<AwaitingInput>,
+    caller: Option<CallerPiLifecycle>,
 }
 
 /// The two non-terminal settle verdicts a poll can latch for a run — the stall
@@ -495,6 +568,7 @@ struct LatchedSettle {
     stall: Option<StallKind>,
     attention: bool,
     awaiting_input: Option<AwaitingInput>,
+    caller: Option<CallerPiLifecycle>,
 }
 
 /// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
@@ -527,6 +601,11 @@ fn current_settle(
         let awaiting_input = open
             .filter(|open| crate::run::awaiting_input::is_escalated(open.opened_at, now))
             .cloned();
+        let caller = if m.agent_owner == AgentOwner::Caller {
+            node.as_ref().and_then(|n| n.caller_pi_lifecycle.clone())
+        } else {
+            None
+        };
         let attention = node.as_ref().is_some_and(|n| {
             crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
         });
@@ -535,7 +614,7 @@ fn current_settle(
         // the settled-count decision agree with the final outcome. A clean-exited
         // worker whose supervisor also died must read attention (manual finish), not
         // orphaned (`run reattach`), on every surface.
-        let stall = if attention {
+        let stall = if attention || caller.as_ref().is_some_and(|c| c.state.needs_attention()) {
             None
         } else {
             stall_kind(
@@ -554,6 +633,7 @@ fn current_settle(
             stall,
             attention,
             awaiting_input,
+            caller,
         }))
     })
     .map_err(from_core)
@@ -604,6 +684,14 @@ fn read_outcome(
             // so the told clean-exit fact is consistent with the status above.
             worker_exit: node.as_ref().and_then(|n| n.worker_exit),
             agent_pid: node.as_ref().and_then(|n| n.agent_pid),
+            caller: if manifest
+                .as_ref()
+                .is_some_and(|m| m.agent_owner == AgentOwner::Caller)
+            {
+                node.as_ref().and_then(|n| n.caller_pi_lifecycle.clone())
+            } else {
+                None
+            },
             awaiting_input: node
                 .as_ref()
                 .and_then(|n| n.awaiting_input.as_deref().cloned()),
@@ -676,6 +764,21 @@ fn read_outcome(
         latched.stall
     };
     let stalled = stall.is_some();
+    let settled_caller = !status.is_terminal()
+        && latched
+            .caller
+            .as_ref()
+            .is_some_and(|c| c.state.needs_attention());
+    let caller_agent = git_inputs.caller.as_ref().map(|c| {
+        caller_view(
+            c,
+            if status.is_terminal() {
+                None
+            } else {
+                latched.caller.as_ref()
+            },
+        )
+    });
     let settled_awaiting_input = !status.is_terminal() && latched.awaiting_input.is_some();
     // Preserve the exact generation that woke the wait. On timeout or when an
     // unrelated `--any` sibling settled, still expose the current open request
@@ -702,6 +805,8 @@ fn read_outcome(
             "done run still owns worktree or branch; inspect preserved_work in run show/wait"
                 .to_string(),
         )
+    } else if settled_caller {
+        latched.caller.as_ref().and_then(|c| c.reason.clone())
     } else if attention_required {
         Some(crate::run::attention::ATTENTION_REASON.to_string())
     } else if let Some(kind) = stall {
@@ -773,6 +878,7 @@ fn read_outcome(
         summary,
         error,
         recoverable_work,
+        caller_agent,
     })
 }
 
@@ -807,6 +913,7 @@ struct GitInputs {
     /// context.
     agent_pid: Option<i32>,
     awaiting_input: Option<taskfleet_core::AwaitingInput>,
+    caller: Option<CallerPiLifecycle>,
     report: Option<Value>,
 }
 
@@ -822,6 +929,7 @@ fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
             || o.stalled
             || o.attention_required
             || o.settled_awaiting_input
+            || o.caller_agent.as_ref().is_some_and(|v| v.settled_generation.is_some() && !matches!(o.status, "done" | "failed" | "cancelled"))
             // A confirmed merge may still be in the supervisor's teardown window.
             // A report-only success has no merge authority and must be reviewed.
             || (o.report_only && !o.preserved_work.is_empty())
@@ -840,14 +948,20 @@ fn emit_progress(
     stalled: bool,
     attention_required: bool,
     awaiting_input: bool,
+    caller: Option<(u64, bool)>,
 ) {
-    if let Ok(line) = serde_json::to_string(&serde_json::json!({
+    let mut event = serde_json::json!({
         "run_id": run_id,
         "status": status_kebab(status),
         "stalled": stalled,
         "attention_required": attention_required,
         "awaiting_input": awaiting_input,
-    })) {
+    });
+    if let Some((generation, needs_attention)) = caller {
+        event["caller_agent"] =
+            serde_json::json!({"generation": generation, "needs_attention": needs_attention});
+    }
+    if let Ok(line) = serde_json::to_string(&event) {
         eprintln!("{line}");
     }
 }
@@ -902,6 +1016,12 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     r.report_only,
                     r.preserved_work.len()
                 );
+                if let Some(c) = &r.caller_agent {
+                    print!(
+                        "  caller_agent={} generation={} settled_generation={:?}",
+                        c.state, c.current_generation, c.settled_generation
+                    );
+                }
                 if r.stalled {
                     // A remediation hint only; the specific per-kind reason is
                     // carried in the `error=` field below, printed unconditionally
@@ -1072,6 +1192,7 @@ mod tests {
             summary: None,
             error: None,
             recoverable_work: None,
+            caller_agent: None,
         };
         let mk_stalled = || RunOutcome {
             stalled: true,

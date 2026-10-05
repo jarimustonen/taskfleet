@@ -314,3 +314,147 @@ pub fn bind(
     }
     Ok(())
 }
+
+/// Same-UID attestations are not host ownership proof. The caller must verify
+/// its Pi child, native history and inherited writer lease before asserting an
+/// exit. In particular control-uncertain is never permission to restart Pi.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[clap(rename_all = "kebab-case")]
+pub enum PiStateArg {
+    Started,
+    LaunchFailed,
+    Exited,
+    ControlUncertain,
+}
+
+impl From<PiStateArg> for taskfleet_core::schema::CallerPiState {
+    fn from(value: PiStateArg) -> Self {
+        use taskfleet_core::schema::CallerPiState as S;
+        match value {
+            PiStateArg::Started => S::Started,
+            PiStateArg::LaunchFailed => S::LaunchFailed,
+            PiStateArg::Exited => S::Exited,
+            PiStateArg::ControlUncertain => S::ControlUncertain,
+        }
+    }
+}
+
+pub struct UpdateArgs<'a> {
+    pub run_id: &'a str,
+    pub node_id: &'a str,
+    pub generation: u64,
+    pub pi_id: &'a str,
+    pub path: &'a str,
+    pub checkout: &'a str,
+    pub state: PiStateArg,
+    pub reason: Option<&'a str>,
+    pub dry_run: bool,
+    pub spec: &'a OutputSpec,
+    pub warnings: &'a [String],
+}
+
+pub fn update(args: UpdateArgs<'_>) -> Result<(), CliError> {
+    use taskfleet_core::schema::{CallerPiLifecycle, CallerPiState};
+    if args.dry_run {
+        return Err(CliError::user(
+            "dry_run_unsupported",
+            "a lifecycle attestation cannot reserve a Pi generation",
+        ));
+    }
+    let run_id = parse_run_id(args.run_id)?;
+    let node_id = parse_node_id(args.node_id)?;
+    let state: CallerPiState = args.state.into();
+    if args.generation == 0
+        || args
+            .reason
+            .is_some_and(|r| r.trim().is_empty() || r.len() > 1024)
+        || (state == CallerPiState::Started) != args.reason.is_none()
+    {
+        return Err(invalid("started forbids --reason; other states require a nonblank reason (at most 1024 bytes); generation must be positive"));
+    }
+    let uuid = uuid::Uuid::parse_str(args.pi_id)
+        .map_err(|_| invalid("Pi session ID must be a canonical lowercase UUID"))?;
+    if uuid.to_string() != args.pi_id {
+        return Err(invalid("Pi session ID must be a canonical lowercase UUID"));
+    }
+    let root = crate::home::root_dir()?;
+    let paths = super::run_paths_exact(&root, &run_id)?;
+    if !paths.root.exists() {
+        return Err(CliError::user("run_not_found", format!("no run {run_id}")));
+    }
+    let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
+    let witness = guard.witness();
+    let manifest = read_manifest_opt(&paths)
+        .map_err(from_core)?
+        .ok_or_else(|| CliError::user("run_not_found", format!("no run {run_id}")))?;
+    let node = read_node_opt(&paths, &node_id)
+        .map_err(from_core)?
+        .ok_or_else(|| {
+            CliError::user("node_not_found", format!("no node {node_id} in {run_id}"))
+        })?;
+    let binding = node.caller_pi_session.as_ref().ok_or_else(|| {
+        conflict("bind the verified native Pi session before registering a generation")
+    })?;
+    if manifest.agent_owner != AgentOwner::Caller
+        || manifest.status.is_terminal()
+        || node.run_id != run_id
+        || node.worktree_path.as_deref() != Some(args.checkout)
+        || binding.original_cwd != args.checkout
+        || binding.pi_session_id != args.pi_id
+        || binding.session_path != args.path
+    {
+        return Err(conflict(
+            "live caller-owned run/node/checkout/bound Pi identity mismatch",
+        ));
+    }
+    let fact = CallerPiLifecycle {
+        generation: args.generation,
+        pi_session_id: args.pi_id.into(),
+        session_path: args.path.into(),
+        state,
+        reason: args.reason.map(str::to_string),
+    };
+    // Reconciliation after a lost reply: identical current projection means
+    // success with no duplicate event. Older generation retries are refused.
+    let replay = node.caller_pi_lifecycle.as_ref() == Some(&fact);
+    if !replay {
+        append_and_apply_unlocked(
+            &witness,
+            &paths,
+            "caller.pi.lifecycle",
+            Some(&node_id),
+            None,
+            serde_json::to_value(&fact)
+                .map_err(|e| CliError::system("internal_serialize", e.to_string()))?,
+        )
+        .map_err(|e| conflict(format!("caller Pi generation transition refused: {e}")))?;
+    }
+    drop(guard);
+    #[derive(Serialize)]
+    struct Response<'a> {
+        run_id: &'a str,
+        node_id: &'a str,
+        caller_agent: &'a CallerPiLifecycle,
+        idempotent_replay: bool,
+    }
+    match args.spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => output::emit_envelope(
+            &Response {
+                run_id: run_id.as_str(),
+                node_id: node_id.as_str(),
+                caller_agent: &fact,
+                idempotent_replay: replay,
+            },
+            args.spec,
+            args.warnings,
+        )?,
+        OutputFormat::Text => {
+            println!(
+                "caller Pi generation {} {:?} on {run_id}/{node_id} (idempotent replay: {replay})",
+                fact.generation, fact.state
+            );
+            output::emit_text_warnings(args.warnings);
+        }
+    }
+    Ok(())
+}

@@ -60,6 +60,8 @@ pub struct NodeView<'a> {
     /// only the latest report. Both fields intentionally carry identical data.
     pub report: &'a Option<Value>,
     pub caller_pi_session: &'a Option<CallerPiSession>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_pi_lifecycle: &'a Option<taskfleet_core::schema::CallerPiLifecycle>,
 }
 
 impl<'a> From<&'a Node> for NodeView<'a> {
@@ -85,6 +87,7 @@ impl<'a> From<&'a Node> for NodeView<'a> {
             last_report: &n.last_report,
             report: &n.last_report,
             caller_pi_session: &n.caller_pi_session,
+            caller_pi_lifecycle: &n.caller_pi_lifecycle,
         }
     }
 }
@@ -141,6 +144,7 @@ mod tests {
             tmux_identity: None,
             evidence: None,
             caller_pi_session: None,
+            caller_pi_lifecycle: None,
             retained_display: None,
             retention_unavailable: None,
             agent_pid: Some(4242),

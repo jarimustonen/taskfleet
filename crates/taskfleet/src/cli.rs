@@ -402,7 +402,9 @@ fn command_writes_state(command: &Command) -> bool {
             | crate::run::RunAction::Salvage { dry_run, .. }
             | crate::run::RunAction::Discard { dry_run, .. }
             | crate::run::RunAction::Session {
-                action: crate::run::SessionAction::Bind { dry_run, .. },
+                action:
+                    crate::run::SessionAction::Bind { dry_run, .. }
+                    | crate::run::SessionAction::Update { dry_run, .. },
             } => !dry_run,
             crate::run::RunAction::Cancel { .. }
             | crate::run::RunAction::Reattach { .. }

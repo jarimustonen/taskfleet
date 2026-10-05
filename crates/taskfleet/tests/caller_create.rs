@@ -407,3 +407,210 @@ fn native_pi_binding_is_immutable_and_readable_after_checkout_removal() {
     assert!(v["data"]["evidence"].is_null());
     bad(call(run, "n-0001", &path, checkout), "pi_session_conflict"); // no new binds after teardown
 }
+
+#[test]
+fn caller_pi_told_wait_and_generation_contract() {
+    use std::os::unix::fs::PermissionsExt;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "wait", None);
+    assert!(created.status.success(), "{created:?}");
+    let v: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = v["data"]["run_id"].as_str().unwrap();
+    let checkout = v["data"]["worktree_path"].as_str().unwrap();
+    let native_home = workspace.path().join("native-home");
+    let store = native_home.join(".pi/agent/sessions/project");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::set_permissions(
+        native_home.join(".pi/agent/sessions"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let id = "b30d3508-a8d4-4aa7-bafa-7f5dfef72014";
+    let path = store.join("session.jsonl");
+    std::fs::write(
+        &path,
+        format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"cwd\":\"{checkout}\"}}\n"),
+    )
+    .unwrap();
+    let command = |args: &[&str]| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args(["--output", "json", "run"])
+            .args(args)
+            .env("HOME", &native_home)
+            .env("TASKFLEET_HOME", home.path())
+            .env("GIT_BIN", fixture_git_binary())
+            .output()
+            .unwrap()
+    };
+    let path_str = path.to_str().unwrap();
+    let binding = command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        id,
+        "--session-path",
+        path_str,
+        "--checkout",
+        checkout,
+    ]);
+    assert!(binding.status.success(), "{binding:?}");
+    let wait = |runs: &[&str]| -> (i32, serde_json::Value) {
+        let output = command(runs);
+        let code = output.status.code().unwrap();
+        let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
+        (code, value)
+    };
+    let (code, pending) = wait(&["wait", run, "--timeout", "0", "--fail-on-error"]);
+    assert_eq!(code, 2);
+    assert_eq!(pending["data"]["outcome"], "timed-out");
+    assert!(pending["data"]["runs"][0].get("caller_agent").is_none());
+    let transition = |generation: &str, state: &str, reason: Option<&str>| -> Output {
+        let mut args = vec![
+            "session",
+            "update",
+            run,
+            "--node",
+            "n-0001",
+            "--generation",
+            generation,
+            "--pi-session-id",
+            id,
+            "--session-path",
+            path_str,
+            "--checkout",
+            checkout,
+            "--state",
+            state,
+        ];
+        if let Some(reason) = reason {
+            args.extend(["--reason", reason]);
+        }
+        command(&args)
+    };
+    let start = transition("1", "started", None);
+    assert!(start.status.success(), "{start:?}");
+    let (code, active) = wait(&["wait", run, "--timeout", "0"]);
+    assert_eq!(code, 2);
+    assert_eq!(
+        active["data"]["runs"][0]["caller_agent"]["state"],
+        "started"
+    );
+    assert_eq!(
+        active["data"]["runs"][0]["caller_agent"]["control"],
+        "unknown"
+    );
+    assert!(!transition("2", "started", None).status.success());
+    let stop = transition("1", "exited", Some("reaped child"));
+    assert!(stop.status.success(), "{stop:?}");
+    let retry = transition("1", "exited", Some("reaped child"));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&retry.stdout).unwrap()["data"]
+            ["idempotent_replay"],
+        true
+    );
+    assert!(!transition("1", "exited", Some("other reason"))
+        .status
+        .success());
+    let (code, stopped) = wait(&["wait", run, "--timeout", "0", "--fail-on-error"]);
+    assert_eq!(code, 3);
+    assert_eq!(stopped["data"]["runs"][0]["status"], "pending");
+    assert_eq!(
+        stopped["data"]["runs"][0]["caller_agent"]["state"],
+        "stopped-unmerged"
+    );
+    assert_eq!(
+        stopped["data"]["runs"][0]["caller_agent"]["settled_generation"],
+        1
+    );
+    let sibling = create(&home, &workspace, &tools, "wait-sibling", None);
+    assert!(sibling.status.success(), "{sibling:?}");
+    let sibling_value: serde_json::Value = serde_json::from_slice(&sibling.stdout).unwrap();
+    let sibling_run = sibling_value["data"]["run_id"].as_str().unwrap();
+    let sibling_checkout = sibling_value["data"]["worktree_path"].as_str().unwrap();
+    let (code, mixed) = wait(&[
+        "wait",
+        sibling_run,
+        run,
+        "--any",
+        "--timeout",
+        "0",
+        "--fail-on-error",
+        "--progress",
+    ]);
+    assert_eq!(code, 3);
+    assert_eq!(mixed["data"]["runs"][0]["run_id"], sibling_run);
+    assert!(mixed["data"]["runs"][0].get("caller_agent").is_none());
+    assert_eq!(
+        mixed["data"]["runs"][1]["caller_agent"]["settled_generation"],
+        1
+    );
+    let (code, all) = wait(&[
+        "wait",
+        sibling_run,
+        run,
+        "--timeout",
+        "0",
+        "--fail-on-error",
+    ]);
+    assert_eq!(code, 2);
+    assert_eq!(all["data"]["outcome"], "timed-out");
+    assert!(transition("2", "started", None).status.success());
+    assert!(!transition("1", "exited", Some("reaped child"))
+        .status
+        .success());
+    let (code, restarted) = wait(&["wait", run, "--timeout", "0", "--fail-on-error"]);
+    assert_eq!(code, 2);
+    assert_eq!(
+        restarted["data"]["runs"][0]["caller_agent"]["current_generation"],
+        2
+    );
+    assert!(transition(
+        "2",
+        "control-uncertain",
+        Some("daemon restarted without child proof")
+    )
+    .status
+    .success());
+    let (code, uncertain) = wait(&["wait", run, "--timeout", "0", "--fail-on-error"]);
+    assert_eq!(code, 3);
+    assert_eq!(
+        uncertain["data"]["runs"][0]["caller_agent"]["state"],
+        "control-unknown"
+    );
+    assert!(!transition("3", "started", None).status.success());
+    let show = command(&["show", run]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&show.stdout).unwrap()["data"]["caller_agent"]
+            ["generation"],
+        2
+    );
+    let (code, multiple) = wait(&[
+        "wait",
+        run,
+        run,
+        "--any",
+        "--timeout",
+        "0",
+        "--fail-on-error",
+    ]);
+    assert_eq!(code, 3);
+    assert_eq!(multiple["data"]["runs"].as_array().unwrap().len(), 2);
+    for verb in ["cancel", "merge"] {
+        let refused = command(&[verb, run]);
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("writer_fence_unavailable"));
+    }
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(run).join("events.jsonl")).unwrap();
+    assert_eq!(events.matches("caller.pi.lifecycle").count(), 4);
+    git(
+        &workspace.path().join("repo"),
+        &["worktree", "remove", "--force", sibling_checkout],
+    );
+    git(
+        &workspace.path().join("repo"),
+        &["worktree", "remove", "--force", checkout],
+    );
+}

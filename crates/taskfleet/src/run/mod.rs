@@ -394,6 +394,28 @@ pub enum RunAction {
 pub enum SessionAction {
     /// Bind one verified native Pi session to a caller-owned run/node. Immutable;
     /// an identical retry succeeds after revalidating the source. No Pi is launched.
+    /// Attest one generation-bound Pi lifecycle transition. Never authorizes settlement.
+    Update {
+        /// Exact full run ID.
+        run_id: String,
+        #[arg(long)]
+        node: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        generation: u64,
+        #[arg(long)]
+        pi_session_id: String,
+        #[arg(long)]
+        session_path: String,
+        #[arg(long)]
+        checkout: String,
+        #[arg(long, value_enum)]
+        state: session::PiStateArg,
+        /// Required for failed/exited/uncertain, forbidden for started.
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Bind {
         /// Exact full 26-character run ID (prefixes are not accepted).
         run_id: String,
@@ -494,6 +516,32 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             };
             show::run(&run_id, spec, warnings)
         }
+        RunAction::Session {
+            action:
+                SessionAction::Update {
+                    run_id,
+                    node,
+                    generation,
+                    pi_session_id,
+                    session_path,
+                    checkout,
+                    state,
+                    reason,
+                    dry_run,
+                },
+        } => session::update(session::UpdateArgs {
+            run_id: &run_id,
+            node_id: &node,
+            generation,
+            pi_id: &pi_session_id,
+            path: &session_path,
+            checkout: &checkout,
+            state,
+            reason: reason.as_deref(),
+            dry_run,
+            spec,
+            warnings,
+        }),
         RunAction::Session {
             action:
                 SessionAction::Bind {

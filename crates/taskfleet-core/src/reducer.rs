@@ -55,9 +55,9 @@ use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::report::ReportOrigin;
 use crate::schema::{
-    CallerPiSession, ChildRef, Event, EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest,
-    MergeTxn, Node, NodeId, RunId, Status, TmuxIdentity, WorkerEvidence, WorkerExit,
-    STATE_SCHEMA_VERSION,
+    CallerPiLifecycle, CallerPiSession, CallerPiState, ChildRef, Event, EvidenceStatus,
+    IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId, Status,
+    TmuxIdentity, WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -232,6 +232,9 @@ fn optional_ts(
 /// validation gate and the post-append apply — there is no validate/apply
 /// mirror to drift out of lockstep, and the projection state is read once
 /// rather than twice.
+// Both variants are short-lived values in the locked reducer plan; boxing
+// each node would add allocation to every event for a small size difference.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ProjectionOp {
     /// Write the run manifest.
     Manifest(Manifest),
@@ -297,6 +300,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
         "caller.pi.session_bound" => reduce_caller_pi_session_bound(paths, ev),
+        "caller.pi.lifecycle" => reduce_caller_pi_lifecycle(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
         "worker.evidence.archived" => reduce_worker_evidence_archived(paths, ev),
         "worker.evidence.failed" => reduce_worker_evidence_failed(paths, ev),
@@ -804,6 +808,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         tmux_identity: tmux_identity_from_data(d).map(Box::new),
         evidence: worker_evidence_from_spawn_data(&events_path, ev, d)?,
         caller_pi_session: None,
+        caller_pi_lifecycle: None,
         retained_display: None,
         retention_unavailable: None,
         agent_pid: optional_i32(d, "agent_pid", &events_path, ev)?,
@@ -871,6 +876,64 @@ fn reduce_caller_pi_session_bound(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         None => {}
     }
     node.caller_pi_session = Some(binding);
+    node.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(node)])
+}
+
+/// Fold only exact, generation-ordered caller attestations. Replaying an already
+/// projected event must be a no-op; a conflicting event poisons neither log nor
+/// projection because append validates with this same reducer first.
+fn reduce_caller_pi_lifecycle(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let bad = |reason: &str| Error::CorruptEventLog {
+        path: paths.events(),
+        reason: format!("event seq={} caller.pi.lifecycle: {reason}", ev.seq),
+    };
+    let id = require_envelope_node_id(&paths.events(), ev)?;
+    let manifest = read_manifest_opt(paths)?.ok_or_else(|| bad("missing run"))?;
+    if manifest.agent_owner != crate::schema::AgentOwner::Caller {
+        return Err(bad("not a caller-owned run"));
+    }
+    let mut node = read_node_opt(paths, &id)?.ok_or_else(|| bad("missing node"))?;
+    let fact: CallerPiLifecycle =
+        serde_json::from_value(ev.data.clone()).map_err(|_| bad("invalid lifecycle fact"))?;
+    let binding = node
+        .caller_pi_session
+        .as_ref()
+        .ok_or_else(|| bad("unbound Pi session"))?;
+    if fact.generation == 0
+        || fact.pi_session_id != binding.pi_session_id
+        || fact.session_path != binding.session_path
+        || fact
+            .reason
+            .as_ref()
+            .is_some_and(|r| r.trim().is_empty() || r.len() > 1024)
+        || (fact.state == CallerPiState::Started) != fact.reason.is_none()
+    {
+        return Err(bad("invalid generation, session identity or reason"));
+    }
+    if node.caller_pi_lifecycle.as_ref() == Some(&fact) {
+        return Ok(vec![]);
+    }
+    if manifest.status.is_terminal() {
+        return Err(bad("terminal run cannot accept a new Pi transition"));
+    }
+    match &node.caller_pi_lifecycle {
+        None if fact.generation == 1 && fact.state == CallerPiState::Started => {}
+        Some(old) if *old == fact => return Ok(vec![]),
+        Some(old)
+            if old.generation == fact.generation
+                && old.state == CallerPiState::Started
+                && fact.state != CallerPiState::Started => {}
+        Some(old)
+            if old.generation.checked_add(1) == Some(fact.generation)
+                && matches!(
+                    old.state,
+                    CallerPiState::Exited | CallerPiState::LaunchFailed
+                )
+                && fact.state == CallerPiState::Started => {}
+        _ => return Err(bad("stale or conflicting generation/transition")),
+    }
+    node.caller_pi_lifecycle = Some(fact);
     node.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(node)])
 }

@@ -852,6 +852,44 @@ pub struct CallerPiSession {
     pub file_ino: u64,
 }
 
+/// A caller attests a Pi lifecycle transition. This is not a worker exit or
+/// proof of quiescence: only an external writer-fence protocol can authorize
+/// settlement. The event log retains every distinct transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CallerPiState {
+    /// Launch registered before attempting to start Pi; not liveness proof.
+    Started,
+    /// Pi launch failed before a writer existed.
+    LaunchFailed,
+    /// Caller reaped or otherwise proved the exact Pi stopped.
+    Exited,
+    /// Caller cannot prove whether it still controls the writer.
+    ControlUncertain,
+}
+
+impl CallerPiState {
+    /// A told nonterminal condition requiring intervention.
+    pub fn needs_attention(&self) -> bool {
+        !matches!(self, Self::Started)
+    }
+}
+
+/// Current generation projection of append-only caller Pi lifecycle history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallerPiLifecycle {
+    /// Monotonically increasing launch-attempt number.
+    pub generation: u64,
+    /// Verified bound native Pi UUID.
+    pub pi_session_id: String,
+    /// Verified bound native Pi history path.
+    pub session_path: String,
+    /// Last attested state, not a writer fence.
+    pub state: CallerPiState,
+    /// Explicit attestation, not an inferred exit status.
+    pub reason: Option<String>,
+}
+
 /// Durable `nodes/<node-id>.json` projection (design.md §1.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -909,6 +947,9 @@ pub struct Node {
     /// Separate from Taskfleet-launched worker evidence; survives checkout removal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pi_session: Option<CallerPiSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Current caller Pi lifecycle projection; absent for ordinary workers.
+    pub caller_pi_lifecycle: Option<CallerPiLifecycle>,
     /// Inert completed-window identity, when this run opted into retention.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_display: Option<Box<RetainedDisplay>>,

@@ -57,6 +57,8 @@ struct ShowPayload<'a> {
     /// Immutable caller-owned Pi identity (not worker evidence or writer authority).
     #[serde(skip_serializing_if = "Option::is_none")]
     caller_pi_session: Option<taskfleet_core::schema::CallerPiSession>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    caller_agent: Option<taskfleet_core::schema::CallerPiLifecycle>,
     /// The `recoverable_work` block from the default node's terminal report,
     /// present only when a dead agent left unmerged commits ahead of source
     /// (issue `agent-death-strands-recoverable-work`). Surfaced so a caller can
@@ -92,6 +94,7 @@ struct LandingFields {
     report: Option<Value>,
     evidence: Option<taskfleet_core::WorkerEvidence>,
     caller_pi_session: Option<taskfleet_core::schema::CallerPiSession>,
+    caller_agent: Option<taskfleet_core::schema::CallerPiLifecycle>,
 }
 
 #[derive(Serialize)]
@@ -226,6 +229,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             base_sha: node.as_ref().and_then(|n| n.base_sha.clone()),
             report: node.as_ref().and_then(|n| n.last_report.clone()),
             caller_pi_session: node.as_ref().and_then(|n| n.caller_pi_session.clone()),
+            caller_agent: node.as_ref().and_then(|n| n.caller_pi_lifecycle.clone()),
             evidence: node.and_then(|n| n.evidence),
         };
         Ok(Some((
@@ -349,6 +353,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             .flatten(),
         caller_pi_session: (manifest.node_count == 1)
             .then(|| landing.caller_pi_session.clone())
+            .flatten(),
+        caller_agent: (manifest.node_count == 1)
+            .then(|| landing.caller_agent.clone())
             .flatten(),
         recoverable_work,
         preserved_work,

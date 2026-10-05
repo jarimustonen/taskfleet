@@ -489,10 +489,10 @@ pub struct ReserveArgs<'a> {
     pub warnings: &'a [String],
 }
 
-fn launch_identity<'a>(
+fn launch_identity(
     paths: &taskfleet_core::RunPaths,
     node_id: &taskfleet_core::NodeId,
-    checkout: &'a str,
+    checkout: &str,
 ) -> Result<(taskfleet_core::Manifest, taskfleet_core::Node), CliError> {
     let manifest = read_manifest_opt(paths)
         .map_err(from_core)?

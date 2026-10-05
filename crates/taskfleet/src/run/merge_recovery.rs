@@ -629,15 +629,27 @@ mod tests {
             }),
         )
         .unwrap();
-        // Simulate a caller-owned pre-fence run with a pending transaction.
-        // Neither moved Git nor a dead driver grants report authority.
-        record_txn(&paths, &base, &worker_tip, &base);
+        // The reducer now refuses an unlinked caller transaction at append
+        // time, even when Git already moved. Recovery still refuses this run.
+        let bad = json!({
+            "op_id":"01jxop00000000000000000000", "source_branch":"main",
+            "worker_branch":"wt/worker", "expected_source_oid":base,
+            "worker_oid":worker_tip, "started_at":"2026-08-15T00:00:00Z"
+        });
+        assert!(append_and_apply_event(
+            &paths,
+            taskfleet_core::KIND_MERGE_STARTED,
+            Some(&nid),
+            None,
+            bad
+        )
+        .is_err());
         assert_eq!(
             recover_node(&paths, &nid, &git_bin()),
             Recovery::CannotVerify
         );
         let node = read_node_opt(&paths, &nid).unwrap().unwrap();
-        assert!(node.pending_merge.is_some());
+        assert!(node.pending_merge.is_none());
         assert!(!node.status.is_terminal());
     }
 

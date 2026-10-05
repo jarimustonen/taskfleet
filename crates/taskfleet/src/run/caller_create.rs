@@ -40,12 +40,11 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, CliError> {
         .map_err(|e| CliError::system("git_failed", format!("git output is not UTF-8: {e}")))
 }
 fn crash_at(boundary: &str) {
-    // Test-only hard-kill seam. No production caller should set this variable.
-    if cfg!(debug_assertions)
-        && std::env::var("TASKFLEET_TEST_CALLER_CRASH_AT")
-            .ok()
-            .as_deref()
-            == Some(boundary)
+    // Explicit test-only failure injection also needed by release-mode nextest.
+    if std::env::var("TASKFLEET_TEST_CALLER_CRASH_AT")
+        .ok()
+        .as_deref()
+        == Some(boundary)
     {
         std::process::exit(71);
     }
@@ -221,7 +220,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
         },
     );
     proposed.caller_plan = Some(Box::new(plan));
-    let (record, _lease, replay) =
+    let (record, lease_guard, replay) =
         match idempotency::reserve(Some(&repo_string), Some(&source), &key, &proposed)? {
             Reservation::Reserved => (proposed, lease, false),
             Reservation::AlreadyReserved(existing) => {
@@ -367,7 +366,31 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
         ));
     }
     verify(&repo, &source, plan).map_err(|e| uncertain(id, plan, &e.message))?;
+    // Keep same-key calls serialized through boot, but never let the detached
+    // supervisor inherit this flock across exec after a killed creator.
+    lease_guard.close_on_exec()?;
     let pid = if let Some(pid) = supervisor_spawn::read_live_recorded_pid(&public) {
+        let start = crate::supervise::pid_file::read_pid_record(&public.supervisor_pid())
+            .and_then(|(recorded, start)| (recorded == pid).then_some(start).flatten());
+        let ready = RunLock::with_shared_lock(&public.lock(), || {
+            taskfleet_core::read_all_events(&public.events())
+        })
+        .map_err(from_core)?
+        .iter()
+        .any(|event| {
+            event.kind == "supervisor.ready"
+                && event.data.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(pid))
+                && event
+                    .data
+                    .get("pid_start_secs")
+                    .and_then(serde_json::Value::as_u64)
+                    == start
+        });
+        if !ready {
+            return Err(CliError::system("supervisor_boot_unconfirmed", format!(
+                "supervisor pid {pid} for run {id} is alive but has not recorded boot readiness; retry the same key after boot or inspect supervisor.stderr.log"
+            )).with_invalid_value(id));
+        }
         pid
     } else {
         match supervisor_spawn::spawn_for_run(&public, id)? {

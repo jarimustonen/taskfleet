@@ -629,6 +629,32 @@ pub fn dispatch(
         );
         finish_signal_exit(&run_id, our_pid, boot_signal);
     }
+    // A keyed caller-owned retry must be able to distinguish a claimed PID
+    // from a supervisor that actually finished boot when the create response
+    // was lost. Persist the receipt before signalling readiness. Ordinary runs
+    // keep their existing event stream unchanged.
+    let caller_owned = match read_manifest_opt(&paths) {
+        Ok(Some(m)) => m.agent_owner == taskfleet_core::AgentOwner::Caller,
+        Ok(None) => false,
+        Err(e) => {
+            readiness.error("supervisor_manifest_unreadable", &e.to_string());
+            pid_file::remove_if_owner(&pid_path, our_pid);
+            return Err(from_core(e));
+        }
+    };
+    if caller_owned {
+        if let Err(e) = append_and_apply_event(
+            &paths,
+            "supervisor.ready",
+            None,
+            None,
+            json!({"pid": our_pid, "pid_start_secs": watchdog::pid_start_time(our_pid)}),
+        ) {
+            readiness.error("supervisor_ready_failed", &e.to_string());
+            pid_file::remove_if_owner(&pid_path, our_pid);
+            return Err(from_core(e));
+        }
+    }
     // Init complete and no signal is pending: confirm boot to the parent BEFORE
     // the (potentially long-blocking) loop.
     readiness.ready(our_pid);

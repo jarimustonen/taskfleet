@@ -140,6 +140,28 @@ impl MaterializerLease {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Keep the creator's flock until publication/boot, but prevent a detached
+    /// supervisor from inheriting it across exec and blocking keyed retries.
+    pub fn close_on_exec(&self) -> Result<(), CliError> {
+        // SAFETY: F_GETFD/F_SETFD operate on this owned, open descriptor.
+        let flags = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GETFD) };
+        if flags < 0
+            || unsafe {
+                libc::fcntl(
+                    self.file.as_raw_fd(),
+                    libc::F_SETFD,
+                    flags | libc::FD_CLOEXEC,
+                )
+            } < 0
+        {
+            return Err(CliError::system(
+                "io_error",
+                format!("protect lease fd: {}", std::io::Error::last_os_error()),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for MaterializerLease {

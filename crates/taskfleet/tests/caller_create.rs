@@ -44,13 +44,13 @@ fn fixture() -> (TestHome, tempfile::TempDir, tempfile::TempDir) {
     }
     (home, workspace, tools)
 }
-fn create(
+fn create_cmd(
     home: &TestHome,
     workspace: &tempfile::TempDir,
     tools: &tempfile::TempDir,
     key: &str,
     crash: Option<&str>,
-) -> Output {
+) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     cmd.args([
         "--output",
@@ -87,7 +87,18 @@ fn create(
     if let Some(boundary) = crash {
         cmd.env("TASKFLEET_TEST_CALLER_CRASH_AT", boundary);
     }
-    cmd.output().unwrap()
+    cmd
+}
+fn create(
+    home: &TestHome,
+    workspace: &tempfile::TempDir,
+    tools: &tempfile::TempDir,
+    key: &str,
+    crash: Option<&str>,
+) -> Output {
+    create_cmd(home, workspace, tools, key, crash)
+        .output()
+        .unwrap()
 }
 #[test]
 fn git_only_create_and_replay_fence_settlement() {
@@ -115,6 +126,13 @@ fn git_only_create_and_replay_fence_settlement() {
     assert_eq!(again["data"]["run_id"], run);
     assert_eq!(again["data"]["worktree_path"], checkout);
     assert_eq!(again["data"]["idempotent_replay"], true);
+    let mut historical: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(home.path().join("runs").join(run).join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    historical.as_object_mut().unwrap().remove("agent_owner");
+    let old: taskfleet_core::Manifest = serde_json::from_value(historical).unwrap();
+    assert_eq!(old.agent_owner, taskfleet_core::AgentOwner::Taskfleet);
     let node: serde_json::Value = serde_json::from_slice(
         &std::fs::read(home.path().join("runs").join(run).join("nodes/n-0001.json")).unwrap(),
     )
@@ -164,6 +182,58 @@ fn concurrent_same_key_only_publishes_one_run() {
         );
     });
     assert!(!workspace.path().join("forbidden").exists());
+}
+
+#[test]
+fn live_pid_without_boot_receipt_is_not_reported_confirmed() {
+    let (home, workspace, tools) = fixture();
+    let mut child = create_cmd(&home, &workspace, &tools, "slow-boot", None)
+        .env("TASKFLEET_TEST_SLOW_BOOT", "3000")
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let pid_file = loop {
+        if let Ok(entries) = std::fs::read_dir(home.path().join("runs")) {
+            if let Some(path) = entries
+                .filter_map(Result::ok)
+                .map(|e| e.path().join("supervisor.pid"))
+                .find(|p| p.exists())
+            {
+                break path;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "supervisor did not claim pid"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let early = create(&home, &workspace, &tools, "slow-boot", None);
+    assert!(
+        !early.status.success(),
+        "early retry must not claim confirmed boot"
+    );
+    assert!(
+        String::from_utf8_lossy(&early.stderr).contains("supervisor_boot_unconfirmed"),
+        "{early:?}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    let success = loop {
+        let result = create(&home, &workspace, &tools, "slow-boot", None);
+        if result.status.success() {
+            break result;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "readiness not recovered: {result:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(pid_file.exists());
+    let parsed: serde_json::Value = serde_json::from_slice(&success.stdout).unwrap();
+    assert_eq!(parsed["data"]["supervisor"]["state"], "confirmed");
 }
 
 #[test]

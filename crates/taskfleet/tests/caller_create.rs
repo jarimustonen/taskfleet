@@ -1375,6 +1375,20 @@ fn caller_cancel_waits_for_writer_and_preserves_checkout() {
         1
     );
     assert_eq!(events.matches("\"kind\":\"run.status\"").count(), 1);
+    // The independent supervisor must record preservation and wind down; it
+    // cannot run caller-owned tmux/workmux teardown on cancellation.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let current = std::fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+        if current.contains("caller cancelled (branch preserved)") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "supervisor did not record preservation"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
     assert!(Path::new(checkout).exists());
     git(
         &workspace.path().join("repo"),

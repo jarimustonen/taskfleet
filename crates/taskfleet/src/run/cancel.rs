@@ -166,7 +166,7 @@ pub fn run(
 /// an active Pi only leaves a recoverable intent, never a terminal run.
 fn cancel_caller(
     paths: &taskfleet_core::RunPaths,
-    node: Option<&NodeId>,
+    selected_node: Option<&NodeId>,
     note: Option<&str>,
     key: Option<&str>,
     spec: &OutputSpec,
@@ -174,7 +174,7 @@ fn cancel_caller(
 ) -> Result<(), CliError> {
     use taskfleet_core::schema::SettlementOperation;
     use taskfleet_core::{read_all_events, read_node_opt, RunLock, Status};
-    if node.is_some() {
+    if selected_node.is_some() {
         return Err(CliError::user(
             "invalid_node",
             "caller-owned cancellation must settle the whole single-node run",
@@ -257,7 +257,20 @@ fn cancel_caller(
     }
     if manifest.status == Status::Cancelled {
         drop(guard);
-        drop(lease);
+        let authority = crate::run::merge::CallerMergeAuthority::acquire_with_lease(
+            paths,
+            intent.clone(),
+            lease,
+        );
+        let repo = manifest
+            .source_repo
+            .as_deref()
+            .ok_or_else(|| CliError::user("checkout_mismatch", "source repo missing"))?;
+        let source = manifest
+            .source_branch
+            .as_deref()
+            .ok_or_else(|| CliError::user("checkout_mismatch", "source branch missing"))?;
+        authority.verify(&n, repo, source)?;
         return emit(
             run_id,
             &taskfleet_core::CancelOutcome {

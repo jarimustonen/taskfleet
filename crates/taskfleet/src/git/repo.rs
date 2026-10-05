@@ -312,6 +312,31 @@ impl Git {
         }
     }
 
+    /// Delete an exact local ref only if its tip still equals the audited OID.
+    /// Unlike `branch -D`, update-ref does not protect checked-out branches:
+    /// caller MUST independently inspect all registered worktrees first.
+    /// Returns failure detail on CAS refusal or Git error.
+    pub fn branch_delete_oid(
+        &self,
+        repo: &str,
+        branch_ref: &str,
+        expected_oid: &str,
+    ) -> Option<String> {
+        if !branch_ref.starts_with("refs/heads/")
+            || branch_ref == "refs/heads/"
+            || !matches!(expected_oid.len(), 40 | 64)
+            || !expected_oid.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Some("invalid branch ref or expected OID".into());
+        }
+        let mut cmd = self.at(repo);
+        cmd.args(["update-ref", "-d", branch_ref, expected_oid]);
+        run_lenient_detail(
+            cmd,
+            &format!("git update-ref -d {branch_ref} <audited OID>"),
+        )
+    }
+
     /// `git -C <repo> branch -{d|D} -- <branch>` — lenient. `force` selects the
     /// flag and is the defense-in-depth safety net against the silent data loss
     /// of issue `blocked-report-deletes-branch`:

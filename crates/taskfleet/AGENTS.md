@@ -197,7 +197,8 @@ server, which is the one thing the command itself refuses to do.
 `run discard <full-id> --force --reason ... --settlement-key ...` is a
 separate, destructive operator action for a failed/cancelled single-node caller
 run. A Failed run can record a sticky Discard intent after terminalization;
-a Cancelled run reuses its existing Cancel intent and original key without
+a Cancelled run, or a Failed run whose Cancel intent preceded an unrelated
+failure report, reuses that existing Cancel intent and original key without
 replacing it. The new `run/caller_discard.rs` path holds the recorded writer
 inode under an exclusive lease, verifies Pi history (including the event-log
 proof that no Pi was ever reserved), source Git identity and source-relative

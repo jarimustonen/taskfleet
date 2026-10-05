@@ -46,6 +46,10 @@ Example nonzero error (no implied terminal state):
 
 Other stable errors: `settlement_conflict` (different intent/key), `writer_fence_unavailable` (missing/replaced lock, unsafe filesystem/path), `writer_uncertain` (unverifiable child/history/lock), `history_unavailable` (teardown postponed), `checkout_mismatch`, `merge_recovery_unverifiable`. Failure after an intent must disclose its persisted sequence and recovery command. A missing/unavailable daemon is **not** itself an error that authorizes cleanup: ask it to stop if reachable, otherwise wait on the inherited lease and verify history. Never use `caller.pi.exited`, PID disappearance, RPC EOF, or a same-UID API call alone as destructive authority.
 
+## Force-discard partial removal requiring manual recovery
+
+A SIGKILL inside `git worktree remove --force` can leave a *registered* checkout whose `.git` file was removed. The same-key retry refuses it with `checkout_damaged` (or `checkout_mismatch` when the damage is otherwise unverifiable); it must not relax the checkout identity guard or claim automatic recovery. Preserve the run state, audit receipt, branch, and remaining checkout. Stop all writers, inspect `git worktree list --porcelain`, the recorded checkout/branch/OID and `cleanup.discard_authorized`, and back up remaining files. An operator can then repair the worktree's Git metadata using Git's worktree repair facilities if its identity is independently established, or reconcile/remove the damaged registration and checkout manually after verifying the receipt and retained history. Retry with the original key and reason only after restoring the recorded identity; if manual removal has already finished, verify both absence and the receipt independently. Do not prune or force-remove an unknown checkout on a guess. Safe automated repair is separate work.
+
 ## Crash/race proof obligations
 
 | Boundary | Evidence and required result |

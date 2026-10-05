@@ -146,8 +146,8 @@ fn identities<'a>(
 fn history_checked(paths: &RunPaths, node: &Node, checkout: &str) -> Result<(), CliError> {
     let events = RunLock::with_shared_lock(&paths.lock(), || read_all_events(&paths.events()))
         .map_err(from_core)?;
-    let mut lifecycle = None;
-    let mut binding = None;
+    let mut lifecycle: Option<taskfleet_core::schema::CallerPiLifecycle> = None;
+    let mut binding: Option<taskfleet_core::schema::CallerPiSession> = None;
     for e in events
         .iter()
         .filter(|e| e.node_id.as_ref() == Some(&node.node_id))
@@ -170,14 +170,39 @@ fn history_checked(paths: &RunPaths, node: &Node, checkout: &str) -> Result<(), 
                 );
             }
             "caller.pi.session_bound" => {
-                binding = Some(
-                    serde_json::from_value::<taskfleet_core::schema::CallerPiSession>(
-                        e.data.clone(),
-                    )
-                    .map_err(|_| {
+                let bound: taskfleet_core::schema::CallerPiSession =
+                    serde_json::from_value(e.data.clone()).map_err(|_| {
                         CliError::user("history_unavailable", "invalid Pi binding in event log")
-                    })?,
-                );
+                    })?;
+                if binding.as_ref().is_some_and(|old| old != &bound)
+                    || bound.original_cwd != checkout
+                    || bound.original_cwd.is_empty()
+                    || bound.pi_session_id.is_empty()
+                    || bound.session_path.is_empty()
+                    || lifecycle.as_ref().is_some_and(|reserved| {
+                        reserved.pi_session_id != bound.pi_session_id
+                            || Some(reserved.generation) != bound.generation
+                            || reserved
+                                .session_path
+                                .as_deref()
+                                .is_some_and(|p| p != bound.session_path)
+                            || !matches!(
+                                reserved.state,
+                                taskfleet_core::schema::CallerPiState::Reserved
+                                    | taskfleet_core::schema::CallerPiState::Started
+                            )
+                    })
+                    || (bound.generation.is_some() && lifecycle.is_none())
+                {
+                    return Err(CliError::user(
+                        "history_unavailable",
+                        "Pi binding does not match reservation",
+                    ));
+                }
+                if let Some(current) = &mut lifecycle {
+                    current.session_path = Some(bound.session_path.clone());
+                }
+                binding = Some(bound);
             }
             _ => {}
         }
@@ -287,6 +312,16 @@ fn source_checked(
     let rows = git
         .worktree_registrations(repo)
         .ok_or_else(|| denied("worktree registrations unavailable"))?;
+    if rows.iter().any(|r| r.path == checkout)
+        && Path::new(checkout).exists()
+        && std::fs::symlink_metadata(Path::new(checkout).join(".git"))
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Err(CliError::user(
+            "checkout_damaged",
+            "registered caller checkout lacks .git metadata; preserve the run, branch and remaining files; inspect the receipt and registrations, then manually repair the recorded checkout identity before retrying the same key/reason (see issues/caller-owned-agent-runs/writer-fence.md)",
+        ));
+    }
     if git.head_branch(repo).as_deref() != Some(source)
         || !rows
             .iter()
@@ -376,7 +411,10 @@ pub(crate) fn completed(
             || !matches!(
                 (m.status, intent.operation),
                 (Status::Failed, SettlementOperation::Discard)
-                    | (Status::Cancelled, SettlementOperation::Cancel)
+                    | (
+                        Status::Cancelled | Status::Failed,
+                        SettlementOperation::Cancel
+                    )
             )
         {
             return Err(denied("intent changed"));
@@ -445,7 +483,8 @@ fn execute(
             intent.operation,
             SettlementOperation::Discard | SettlementOperation::Cancel
         )
-        || (intent.operation == SettlementOperation::Cancel && m.status != Status::Cancelled)
+        || (intent.operation == SettlementOperation::Cancel
+            && !matches!(m.status, Status::Cancelled | Status::Failed))
         || (intent.operation == SettlementOperation::Discard && m.status != Status::Failed)
         || intent.key != args.settlement_key.as_deref().unwrap_or_default()
         || intent.run_id != paths.run_id
@@ -462,7 +501,9 @@ fn execute(
     let git = Git::with_bin(git_bin());
     source_checked(&git, repo, source, checkout, branch)?;
     let observation = observe_checked(&m, &n, &git)?;
-    let oid = super::merge_recovery::read_oid(&git_bin(), repo, branch);
+    let branch_ref = format!("refs/heads/{branch}");
+    let branch_oid = || super::merge_recovery::read_oid(&git_bin(), repo, &branch_ref);
+    let oid = branch_oid();
     // An absent branch is only valid after a matching receipt. For a retry,
     // compare to the recorded immutable OID rather than mint a new target.
     let events = RunLock::with_shared_lock(&paths.lock(), || read_all_events(&paths.events()))
@@ -537,7 +578,7 @@ fn execute(
         if source_git_identity(repo)? != (expected.source_git_dev, expected.source_git_ino) {
             return Err(denied("source repository identity changed"));
         }
-        if let Some(actual) = super::merge_recovery::read_oid(&git_bin(), repo, branch) {
+        if let Some(actual) = branch_oid() {
             if actual != expected.branch_oid {
                 return Err(denied("worker branch tip changed"));
             }
@@ -567,12 +608,35 @@ fn execute(
     }
     check()?;
     if git.branch_exists(repo, branch) != Some(false) {
-        if super::merge_recovery::read_oid(&git_bin(), repo, branch).as_deref()
-            != Some(&expected.branch_oid)
-        {
+        if branch_oid().as_deref() != Some(&expected.branch_oid) {
             return Err(denied("worker branch moved before deletion"));
         }
-        if git.branch_delete(repo, branch, true).is_some() {
+        // update-ref has no branch -D checked-out guard: independently refuse
+        // deletion if ANY registered worktree still has this branch checked out.
+        let rows = git
+            .worktree_registrations(repo)
+            .ok_or_else(|| denied("worktree registrations unavailable before branch deletion"))?;
+        if rows.iter().any(|r| r.branch.as_deref() == Some(branch))
+            || rows.iter().any(|r| r.path == checkout)
+            || !path_absent(checkout)
+        {
+            return Err(denied("worker branch or checkout still registered"));
+        }
+        #[cfg(test)]
+        if let Some(moved_oid) = std::env::var_os("TASKFLEET_TEST_DISCARD_MOVE_REF_BEFORE_CAS") {
+            let moved_oid = moved_oid.to_str().expect("test OID");
+            let status = std::process::Command::new(git_bin())
+                .arg("-C")
+                .arg(repo)
+                .args(["update-ref", &branch_ref, moved_oid, &expected.branch_oid])
+                .status()
+                .expect("test ref move");
+            assert!(status.success());
+        }
+        if git
+            .branch_delete_oid(repo, &branch_ref, &expected.branch_oid)
+            .is_some()
+        {
             return Err(CliError::user(
                 "discard_partial_cleanup",
                 "Git refused caller branch deletion; retry the same key/reason",
@@ -633,12 +697,13 @@ mod tests {
         checkout: std::path::PathBuf,
         node: NodeId,
         spec: output::OutputSpec,
+        held_writer: Option<fs::File>,
     }
     impl Fixture {
         fn new(cancelled: bool) -> Self {
-            Self::new_internal(cancelled, false)
+            Self::new_internal(cancelled, false, false)
         }
-        fn new_internal(cancelled: bool, with_pi: bool) -> Self {
+        fn new_internal(cancelled: bool, with_pi: bool, cancel_failed: bool) -> Self {
             let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
             let repo = tmp.path().join("repo");
             fs::create_dir(&repo).unwrap();
@@ -723,15 +788,17 @@ mod tests {
                         "file_dev":meta.dev(),"file_ino":meta.ino(),"generation":1}),
                 )
                 .unwrap();
-                append_and_apply_event(
-                    &paths,
-                    "caller.pi.lifecycle",
-                    Some(&node),
-                    None,
-                    json!({"generation":1,"pi_session_id":id,"session_path":history,
-                        "state":"started","reason":null}),
-                )
-                .unwrap();
+                if std::env::var_os("TASKFLEET_TEST_RESERVED_BOUND_ONLY").is_none() {
+                    append_and_apply_event(
+                        &paths,
+                        "caller.pi.lifecycle",
+                        Some(&node),
+                        None,
+                        json!({"generation":1,"pi_session_id":id,"session_path":history,
+                            "state":"started","reason":null}),
+                    )
+                    .unwrap();
+                }
             }
             if cancelled {
                 writer_fence::record_intent(
@@ -745,12 +812,26 @@ mod tests {
                 )
                 .unwrap();
             }
+            let held_writer = if cancel_failed {
+                let fd = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(paths.root.join("writer.lock"))
+                    .unwrap();
+                assert_eq!(
+                    unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+                    0
+                );
+                Some(fd)
+            } else {
+                None
+            };
             append_and_apply_event(
                 &paths,
                 "node.report",
                 Some(&node),
                 None,
-                if cancelled {
+                if cancelled && !cancel_failed {
                     json!({"success":false,"cancelled":true,"reason":"stop"})
                 } else {
                     json!({"success":false,"reason":"failure"})
@@ -762,7 +843,7 @@ mod tests {
                 "run.status",
                 None,
                 None,
-                json!({"status":if cancelled {"cancelled"} else {"failed"}}),
+                json!({"status":if cancelled && !cancel_failed {"cancelled"} else {"failed"}}),
             )
             .unwrap();
             Self {
@@ -772,6 +853,7 @@ mod tests {
                 checkout,
                 node,
                 spec: output::OutputSpec::default(),
+                held_writer,
             }
         }
         fn args(&self, reason: &str) -> Args<'_> {
@@ -844,6 +926,43 @@ mod tests {
         );
         assert!(f.paths.root.join("writer.lock").exists());
         assert!(f.paths.events().exists());
+        assert!(crate::supervise::cleanup::cleanup_terminal_nodes(&f.paths));
+    }
+    #[test]
+    fn cancel_intent_then_unrelated_failure_can_discard_with_original_key() {
+        let mut f = Fixture::new_internal(true, false, true);
+        let before = read_manifest_opt(&f.paths)
+            .unwrap()
+            .unwrap()
+            .caller_settlement_intent
+            .unwrap();
+        assert_eq!(before.operation, SettlementOperation::Cancel);
+        assert_eq!(
+            read_node_opt(&f.paths, &f.node).unwrap().unwrap().status,
+            Status::Failed
+        );
+        assert_eq!(
+            run(&f.args("discard after failure"), &f.paths)
+                .unwrap_err()
+                .code,
+            "writer_active"
+        );
+        drop(f.held_writer.take());
+        let mut wrong = f.args("discard after failure");
+        wrong.settlement_key = Some("different".into());
+        assert_eq!(
+            run(&wrong, &f.paths).unwrap_err().code,
+            "settlement_conflict"
+        );
+        run(&f.args("discard after failure"), &f.paths).unwrap();
+        assert!(!f.checkout.exists());
+        assert_eq!(
+            read_manifest_opt(&f.paths)
+                .unwrap()
+                .unwrap()
+                .caller_settlement_intent,
+            Some(before)
+        );
         assert!(crate::supervise::cleanup::cleanup_terminal_nodes(&f.paths));
     }
     #[test]
@@ -949,6 +1068,81 @@ mod tests {
         );
     }
     #[test]
+    fn retry_with_same_name_tag_and_changed_branch_preserves_new_tip() {
+        let f = Fixture::new(false);
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::caller_discard::tests::crash_child")
+            .env("TASKFLEET_DISCARD_TEST_ROOT", &f.paths.root)
+            .env("TASKFLEET_TEST_CALLER_DISCARD_CRASH_AFTER_WORKTREE", "1")
+            .status()
+            .unwrap();
+        assert_eq!(child.code(), Some(77));
+        let old = git(&f.repo, &["rev-parse", "refs/heads/wt/worker"]);
+        git(&f.repo, &["tag", "wt/worker", &old]);
+        let moved = git(
+            &f.repo,
+            &[
+                "commit-tree",
+                &format!("{old}^{{tree}}"),
+                "-p",
+                &old,
+                "-m",
+                "moved",
+            ],
+        );
+        git(
+            &f.repo,
+            &["update-ref", "refs/heads/wt/worker", &moved, &old],
+        );
+        assert!(matches!(
+            run(&f.args("delete"), &f.paths).unwrap_err().code.as_str(),
+            "idempotency_conflict" | "checkout_mismatch"
+        ));
+        assert_eq!(git(&f.repo, &["rev-parse", "refs/heads/wt/worker"]), moved);
+    }
+    #[test]
+    fn branch_move_between_check_and_cas_preserves_new_tip() {
+        let f = Fixture::new(false);
+        let old = git(&f.repo, &["rev-parse", "refs/heads/wt/worker"]);
+        let moved = git(
+            &f.repo,
+            &[
+                "commit-tree",
+                &format!("{old}^{{tree}}"),
+                "-p",
+                &old,
+                "-m",
+                "moved",
+            ],
+        );
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::caller_discard::tests::crash_child")
+            .env("TASKFLEET_DISCARD_TEST_ROOT", &f.paths.root)
+            .env("TASKFLEET_TEST_DISCARD_MOVE_REF_BEFORE_CAS", &moved)
+            .status()
+            .unwrap();
+        assert!(child.success());
+        assert_eq!(git(&f.repo, &["rev-parse", "refs/heads/wt/worker"]), moved);
+        assert!(!f.checkout.exists());
+        assert!(run(&f.args("delete"), &f.paths).is_err());
+    }
+    #[test]
+    fn damaged_registered_checkout_requires_manual_repair() {
+        let f = Fixture::new(false);
+        fs::remove_file(f.checkout.join(".git")).unwrap();
+        assert_eq!(
+            run(&f.args("delete"), &f.paths).unwrap_err().code,
+            "checkout_damaged"
+        );
+        assert!(f.checkout.join("scratch").exists());
+        assert_eq!(
+            Git::with_bin("git").branch_exists(f.repo.to_str().unwrap(), "wt/worker"),
+            Some(true)
+        );
+    }
+    #[test]
     fn git_only_discard_under_stripped_path() {
         let f = Fixture::new(false);
         let bin = f.tmp.path().join("bin");
@@ -984,6 +1178,13 @@ mod tests {
             spec: &spec,
             warnings: &[],
         };
+        if std::env::var_os("TASKFLEET_TEST_DISCARD_MOVE_REF_BEFORE_CAS").is_some() {
+            assert_eq!(
+                run(&args, &paths).unwrap_err().code,
+                "discard_partial_cleanup"
+            );
+            return;
+        }
         run(&args, &paths).unwrap();
         assert!(
             std::env::var_os("TASKFLEET_TEST_CALLER_DISCARD_CRASH_AFTER_AUDIT").is_none()
@@ -1009,7 +1210,7 @@ mod tests {
         if std::env::var_os("TASKFLEET_DISCARD_HISTORY_CHILD").is_none() {
             return;
         }
-        let f = Fixture::new_internal(false, true);
+        let f = Fixture::new_internal(false, true, false);
         let binding = read_node_opt(&f.paths, &f.node)
             .unwrap()
             .unwrap()
@@ -1034,6 +1235,40 @@ mod tests {
         run(&f.args("delete"), &f.paths).unwrap();
         assert!(!f.checkout.exists());
         assert!(history.exists());
+    }
+    #[test]
+    fn reserved_bound_history_child() {
+        if std::env::var_os("TASKFLEET_TEST_RESERVED_BOUND_ONLY").is_none() {
+            return;
+        }
+        let f = Fixture::new_internal(false, true, false);
+        run(&f.args("delete"), &f.paths).unwrap();
+        assert!(!f.checkout.exists());
+        let mismatched = Fixture::new_internal(false, true, false);
+        let path = mismatched.paths.node(&mismatched.node);
+        let mut projection: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        projection["caller_pi_lifecycle"]["session_path"] = json!("/var/tmp/unrelated.jsonl");
+        fs::write(&path, serde_json::to_vec(&projection).unwrap()).unwrap();
+        assert_eq!(
+            run(&mismatched.args("delete"), &mismatched.paths)
+                .unwrap_err()
+                .code,
+            "history_unavailable"
+        );
+        assert!(mismatched.checkout.exists());
+    }
+    #[test]
+    fn reserved_bound_history_survives_without_started() {
+        let home = tempfile::tempdir_in("/var/tmp").unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("run::caller_discard::tests::reserved_bound_history_child")
+            .env("TASKFLEET_TEST_RESERVED_BOUND_ONLY", "1")
+            .env("HOME", home.path())
+            .status()
+            .unwrap();
+        assert!(child.success());
     }
     #[test]
     fn conflicting_merge_intent_and_replaced_lock_preserve_work() {

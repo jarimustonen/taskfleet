@@ -400,8 +400,11 @@ pub(super) fn record_intent(
         // that exact fence and the caller's original settlement key.
         if operation == taskfleet_core::schema::SettlementOperation::Discard
             && old.operation == taskfleet_core::schema::SettlementOperation::Cancel
-            && manifest.status == taskfleet_core::Status::Cancelled
-            && node.status == taskfleet_core::Status::Cancelled
+            && matches!(
+                manifest.status,
+                taskfleet_core::Status::Cancelled | taskfleet_core::Status::Failed
+            )
+            && node.status == manifest.status
             && old.key == key
             && old.run_id == paths.run_id
             && old.node_id == *node_id

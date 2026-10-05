@@ -177,3 +177,58 @@ pub(super) fn inspect(paths: &RunPaths) -> Result<Fence, CliError> {
     inspect_dir(&fresh, &fence)?;
     Ok(fence)
 }
+
+/// Validate a daemon-supplied descriptor pair against the durable ledger and
+/// observe conflicting locks through independent open-file descriptions. This
+/// cannot attest which process acquired the locks: the host must retain both
+/// descriptors and the gate through Start. No CLI reply is launch permission.
+pub(super) fn check_launch_fds(
+    paths: &RunPaths,
+    gate_fd: i32,
+    writer_fd: i32,
+) -> Result<Fence, CliError> {
+    use std::os::fd::BorrowedFd;
+    if gate_fd < 3 || writer_fd < 3 || gate_fd == writer_fd {
+        return Err(unavailable(
+            "distinct inherited gate and writer FDs >= 3 required",
+        ));
+    }
+    let fence = inspect(paths)?;
+    let dir = directory(&paths.root)?;
+    for (fd, name, expected) in [
+        (gate_fd, "launch-gate.lock", &fence.launch_gate),
+        (writer_fd, "writer.lock", &fence.writer),
+    ] {
+        // SAFETY: borrow only for this synchronous operation; fstat reports EBADF
+        // for a closed caller-supplied descriptor without assuming ownership.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let m = File::from(borrowed.try_clone_to_owned().map_err(unavailable)?)
+            .metadata()
+            .map_err(unavailable)?;
+        if !m.is_file()
+            || m.uid() != unsafe { libc::geteuid() }
+            || m.mode() & 0o7777 != 0o600
+            || m.nlink() != 1
+            || m.len() != 0
+            || (m.dev(), m.ino()) != (expected.dev, expected.ino)
+        {
+            return Err(unavailable(format!(
+                "inherited {name} FD differs from ledger"
+            )));
+        }
+        let probe = open_at(&dir, name, libc::O_RDWR | libc::O_NONBLOCK, 0)?;
+        // A different open-file description must NOT be able to take EX.
+        if unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Err(unavailable(format!(
+                "{name} is not locked by a separate holder"
+            )));
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(unavailable(format!("cannot probe {name} flock")));
+        }
+    }
+    if inspect(paths)? != fence {
+        return Err(unavailable("fence identity changed during FD check"));
+    }
+    Ok(fence)
+}

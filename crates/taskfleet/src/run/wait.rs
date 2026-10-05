@@ -249,6 +249,7 @@ fn caller_view(
 ) -> CallerAgentView {
     let settled = latched.filter(|v| v.state.needs_attention());
     let state = match current.state {
+        CallerPiState::Reserved => "reserved",
         CallerPiState::Started => "started",
         CallerPiState::Exited => "stopped-unmerged",
         CallerPiState::LaunchFailed => "launch-failed",
@@ -267,7 +268,7 @@ fn caller_view(
             CallerPiState::Exited => "stopped-unmerged",
             CallerPiState::LaunchFailed => "launch-failed",
             CallerPiState::ControlUncertain => "control-unknown",
-            CallerPiState::Started => unreachable!(),
+            CallerPiState::Started | CallerPiState::Reserved => unreachable!(),
         }),
         current_generation: current.generation,
         // A told exit describes that child; it is not a writer fence.

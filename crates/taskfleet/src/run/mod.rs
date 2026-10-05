@@ -395,6 +395,33 @@ pub enum RunAction {
 
 #[derive(Subcommand, Debug)]
 pub enum SessionAction {
+    /// Return persistent lock paths and immutable identities for a caller-owned run.
+    Fence {
+        run_id: String,
+        #[arg(long)]
+        node: String,
+        #[arg(long)]
+        checkout: String,
+    },
+    /// Persist an exact pre-Start attempt; requires inherited gate EX and writer SH FDs.
+    /// The reply alone is NOT launch permission: the host holds both through Pi Start.
+    Reserve {
+        run_id: String,
+        #[arg(long)]
+        node: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        generation: u64,
+        #[arg(long)]
+        pi_session_id: String,
+        #[arg(long)]
+        session_path: String,
+        #[arg(long)]
+        checkout: String,
+        #[arg(long)]
+        gate_fd: i32,
+        #[arg(long)]
+        writer_fd: i32,
+    },
     /// Attest one generation-bound Pi lifecycle transition. Never authorizes settlement.
     Update {
         /// Exact full run ID.
@@ -519,6 +546,38 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             };
             show::run(&run_id, spec, warnings)
         }
+        RunAction::Session {
+            action:
+                SessionAction::Fence {
+                    run_id,
+                    node,
+                    checkout,
+                },
+        } => session::fence(&run_id, &node, &checkout, spec, warnings),
+        RunAction::Session {
+            action:
+                SessionAction::Reserve {
+                    run_id,
+                    node,
+                    generation,
+                    pi_session_id,
+                    session_path,
+                    checkout,
+                    gate_fd,
+                    writer_fd,
+                },
+        } => session::reserve(session::ReserveArgs {
+            run_id: &run_id,
+            node_id: &node,
+            generation,
+            pi_id: &pi_session_id,
+            path: &session_path,
+            checkout: &checkout,
+            gate_fd,
+            writer_fd,
+            spec,
+            warnings,
+        }),
         RunAction::Session {
             action:
                 SessionAction::Update {

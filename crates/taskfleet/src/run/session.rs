@@ -244,6 +244,18 @@ pub fn bind(
             CliError::user("node_not_found", format!("no node {node_id} in {run_id}"))
         })?;
     if manifest.agent_owner != AgentOwner::Caller
+        || manifest.status.is_terminal()
+        || node.caller_pi_lifecycle.as_ref().is_some_and(|v| {
+            !matches!(
+                v.state,
+                taskfleet_core::schema::CallerPiState::Reserved
+                    | taskfleet_core::schema::CallerPiState::Started
+            )
+        })
+        || node
+            .caller_pi_lifecycle
+            .as_ref()
+            .is_some_and(|v| v.pi_session_id != pi_id || v.session_path != path)
         || node.run_id != run_id
         || node.worktree_path.as_deref() != Some(checkout)
         || !Path::new(checkout).is_absolute()
@@ -392,16 +404,21 @@ pub fn update(args: UpdateArgs<'_>) -> Result<(), CliError> {
         .ok_or_else(|| {
             CliError::user("node_not_found", format!("no node {node_id} in {run_id}"))
         })?;
-    let binding = node.caller_pi_session.as_ref().ok_or_else(|| {
-        conflict("bind the verified native Pi session before registering a generation")
-    })?;
+    let binding = node.caller_pi_session.as_ref();
     if manifest.agent_owner != AgentOwner::Caller
         || manifest.status.is_terminal()
         || node.run_id != run_id
         || node.worktree_path.as_deref() != Some(args.checkout)
-        || binding.original_cwd != args.checkout
-        || binding.pi_session_id != args.pi_id
-        || binding.session_path != args.path
+        || binding.is_some_and(|b| {
+            b.original_cwd != args.checkout
+                || b.pi_session_id != args.pi_id
+                || b.session_path != args.path
+        })
+        || (binding.is_none()
+            && !node
+                .caller_pi_lifecycle
+                .as_ref()
+                .is_some_and(|old| old.state == CallerPiState::Reserved))
     {
         return Err(conflict(
             "live caller-owned run/node/checkout/bound Pi identity mismatch",
@@ -457,4 +474,147 @@ pub fn update(args: UpdateArgs<'_>) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+pub struct ReserveArgs<'a> {
+    pub run_id: &'a str,
+    pub node_id: &'a str,
+    pub generation: u64,
+    pub pi_id: &'a str,
+    pub path: &'a str,
+    pub checkout: &'a str,
+    pub gate_fd: i32,
+    pub writer_fd: i32,
+    pub spec: &'a OutputSpec,
+    pub warnings: &'a [String],
+}
+
+fn launch_identity<'a>(
+    paths: &taskfleet_core::RunPaths,
+    node_id: &taskfleet_core::NodeId,
+    checkout: &'a str,
+) -> Result<(taskfleet_core::Manifest, taskfleet_core::Node), CliError> {
+    let manifest = read_manifest_opt(paths)
+        .map_err(from_core)?
+        .ok_or_else(|| conflict("missing run"))?;
+    let node = read_node_opt(paths, node_id)
+        .map_err(from_core)?
+        .ok_or_else(|| conflict("missing node"))?;
+    if manifest.agent_owner != AgentOwner::Caller
+        || manifest.status.is_terminal()
+        || node.run_id != paths.run_id
+        || node.worktree_path.as_deref() != Some(checkout)
+        || Path::new(checkout)
+            .canonicalize()
+            .map_err(|_| conflict("checkout unavailable"))?
+            .to_string_lossy()
+            != checkout
+    {
+        return Err(conflict("live caller run/node/checkout mismatch"));
+    }
+    Ok((manifest, node))
+}
+
+pub fn fence(
+    run: &str,
+    node: &str,
+    checkout: &str,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
+    let id = parse_run_id(run)?;
+    let nid = parse_node_id(node)?;
+    let paths = super::run_paths_exact(&crate::home::root_dir()?, &id)?;
+    let _lock = RunLock::acquire_shared(&paths.lock()).map_err(from_core)?;
+    let _ = launch_identity(&paths, &nid, checkout)?;
+    let identity = super::writer_fence::inspect(&paths)?;
+    output::emit_envelope(
+        &serde_json::json!({"run_id":run,"node_id":node,"checkout":checkout,
+        "launch_gate":{"path":paths.root.join("launch-gate.lock"),"identity":identity.launch_gate},
+        "writer":{"path":paths.root.join("writer.lock"),"identity":identity.writer},
+        "state":"foundation-only","launch_permission":false}),
+        spec,
+        warnings,
+    )
+}
+
+pub fn reserve(args: ReserveArgs<'_>) -> Result<(), CliError> {
+    use taskfleet_core::schema::{CallerPiLifecycle, CallerPiState};
+    let id = parse_run_id(args.run_id)?;
+    let nid = parse_node_id(args.node_id)?;
+    let uuid = uuid::Uuid::parse_str(args.pi_id).map_err(|_| invalid("Pi ID must be UUID"))?;
+    if uuid.to_string() != args.pi_id || args.generation == 0 {
+        return Err(invalid(
+            "canonical lowercase UUID and positive generation required",
+        ));
+    }
+    let path = Path::new(args.path);
+    let home = std::env::var_os("HOME").ok_or_else(|| invalid("HOME unavailable"))?;
+    let root = Path::new(&home).join(".pi/agent/sessions");
+    let relative = path
+        .strip_prefix(&root)
+        .map_err(|_| invalid("path outside Pi session store"))?;
+    if !path.is_absolute()
+        || path.extension().is_none_or(|e| e != "jsonl")
+        || relative.components().count() == 0
+        || relative.components().count() > 3
+        || path
+            .components()
+            .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(invalid(
+            "planned path must be absent absolute .jsonl beneath Pi sessions",
+        ));
+    }
+    let paths = super::run_paths_exact(&crate::home::root_dir()?, &id)?;
+    let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
+    let (_, node) = launch_identity(&paths, &nid, args.checkout)?;
+    let identity = super::writer_fence::check_launch_fds(&paths, args.gate_fd, args.writer_fd)?;
+    let events = taskfleet_core::read_all_events(&paths.events()).map_err(from_core)?;
+    if events
+        .iter()
+        .find(|e| e.kind == "run.created")
+        .and_then(|e| e.data.get("writer_fence"))
+        != Some(&serde_json::json!(identity))
+    {
+        return Err(conflict("writer fence differs from run creation event"));
+    }
+    let fact = CallerPiLifecycle {
+        generation: args.generation,
+        pi_session_id: args.pi_id.into(),
+        session_path: args.path.into(),
+        state: CallerPiState::Reserved,
+        reason: None,
+    };
+    let replay = node.caller_pi_lifecycle.as_ref() == Some(&fact);
+    if !replay && path.exists() {
+        return Err(invalid(
+            "planned native path already exists; reconcile ownership instead of reserving",
+        ));
+    }
+    if node.caller_pi_session.is_some() || (!replay && node.caller_pi_lifecycle.is_some()) {
+        return Err(conflict(
+            "reservation already exists; reconcile current generation; no second launch",
+        ));
+    }
+    if !replay {
+        append_and_apply_unlocked(
+            &guard.witness(),
+            &paths,
+            "caller.pi.lifecycle",
+            Some(&nid),
+            None,
+            serde_json::to_value(&fact)
+                .map_err(|e| CliError::system("internal_serialize", e.to_string()))?,
+        )
+        .map_err(|e| conflict(format!("reservation refused: {e}")))?;
+    }
+    drop(guard);
+    output::emit_envelope(
+        &serde_json::json!({"run_id":args.run_id,"node_id":args.node_id,
+        "caller_agent":fact,"writer_fence":identity,"idempotent_replay":replay,
+        "launch_permission":false}),
+        args.spec,
+        args.warnings,
+    )
 }

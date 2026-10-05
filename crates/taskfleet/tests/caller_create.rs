@@ -668,3 +668,202 @@ fn caller_pi_told_wait_and_generation_contract() {
         &["worktree", "remove", "--force", checkout],
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reservation_precedes_native_file_and_requires_held_matching_fds() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "reserve", None);
+    assert!(created.status.success(), "{created:?}");
+    let v: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = v["data"]["run_id"].as_str().unwrap();
+    let checkout = v["data"]["worktree_path"].as_str().unwrap();
+    let native_home = workspace.path().join("native-home");
+    let store = native_home.join(".pi/agent/sessions/project");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::set_permissions(
+        native_home.join(".pi/agent/sessions"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let path = store.join("native.jsonl");
+    let id = "b30d3508-a8d4-4aa7-bafa-7f5dfef72014";
+    let dir = home.path().join("runs").join(run);
+    let info = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .args([
+            "--output",
+            "json",
+            "run",
+            "session",
+            "fence",
+            run,
+            "--node",
+            "n-0001",
+            "--checkout",
+            checkout,
+        ])
+        .env("TASKFLEET_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(info.status.success(), "{info:?}");
+    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+    assert_eq!(info["data"]["launch_permission"], false);
+    assert_eq!(
+        info["data"]["writer"]["identity"]["ino"],
+        v["data"]["writer_fence"]["writer"]["ino"]
+    );
+    let gate = std::fs::File::open(dir.join("launch-gate.lock")).unwrap();
+    let writer = std::fs::File::open(dir.join("writer.lock")).unwrap();
+    let invoke = |generation: &str, supplied: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+        cmd.args([
+            "--output",
+            "json",
+            "run",
+            "session",
+            "reserve",
+            run,
+            "--node",
+            "n-0001",
+            "--generation",
+            generation,
+            "--pi-session-id",
+            id,
+            "--session-path",
+            path.to_str().unwrap(),
+            "--checkout",
+            checkout,
+            "--gate-fd",
+            "80",
+            "--writer-fd",
+            "81",
+        ])
+        .env("HOME", &native_home)
+        .env("TASKFLEET_HOME", home.path());
+        if supplied {
+            // SAFETY: dup2 only in the child between fork and exec; parent retains both locks.
+            let gate_raw = gate.as_raw_fd();
+            let writer_raw = writer.as_raw_fd();
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::dup2(gate_raw, 80) < 0 || libc::dup2(writer_raw, 81) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        cmd.output().unwrap()
+    };
+    assert!(!invoke("1", false).status.success());
+    assert!(unsafe { libc::flock(gate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0);
+    assert!(unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0);
+    let first = invoke("1", true);
+    assert!(first.status.success(), "{first:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&first.stdout).unwrap()["data"]
+            ["launch_permission"],
+        false
+    );
+    assert!(!path.exists());
+    let replay = invoke("1", true);
+    assert!(replay.status.success(), "{replay:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&replay.stdout).unwrap()["data"]
+            ["idempotent_replay"],
+        true
+    );
+    assert!(!invoke("2", true).status.success());
+    // A held FD cannot conceal replacement of its recorded pathname.
+    let writer_path = dir.join("writer.lock");
+    let moved = dir.join("writer.saved");
+    std::fs::rename(&writer_path, &moved).unwrap();
+    std::fs::write(&writer_path, "").unwrap();
+    std::fs::set_permissions(&writer_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(!invoke("1", true).status.success());
+    std::fs::remove_file(&writer_path).unwrap();
+    std::fs::rename(&moved, &writer_path).unwrap();
+    let command = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args(["--output", "json", "run"])
+            .args(args)
+            .env("HOME", &native_home)
+            .env("TASKFLEET_HOME", home.path())
+            .env("GIT_BIN", fixture_git_binary())
+            .output()
+            .unwrap()
+    };
+    let shown = command(&["show", run]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&shown.stdout).unwrap()["data"]["caller_agent"]
+            ["state"],
+        "reserved"
+    );
+    let pending = command(&["wait", run, "--timeout", "0", "--fail-on-error"]);
+    assert_eq!(pending.status.code(), Some(2));
+    std::fs::write(
+        &path,
+        format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"cwd\":\"{checkout}\"}}\n"),
+    )
+    .unwrap();
+    assert!(!command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        "b30d3508-a8d4-4aa7-bafa-7f5dfef72015",
+        "--session-path",
+        path.to_str().unwrap(),
+        "--checkout",
+        checkout
+    ])
+    .status
+    .success());
+    assert!(command(&[
+        "session",
+        "bind",
+        run,
+        "--node",
+        "n-0001",
+        "--pi-session-id",
+        id,
+        "--session-path",
+        path.to_str().unwrap(),
+        "--checkout",
+        checkout
+    ])
+    .status
+    .success());
+    assert!(command(&[
+        "session",
+        "update",
+        run,
+        "--node",
+        "n-0001",
+        "--generation",
+        "1",
+        "--pi-session-id",
+        id,
+        "--session-path",
+        path.to_str().unwrap(),
+        "--checkout",
+        checkout,
+        "--state",
+        "started"
+    ])
+    .status
+    .success());
+    assert!(!invoke("1", true).status.success());
+    assert!(!workspace.path().join("forbidden").exists());
+    drop(gate);
+    drop(writer);
+    git(
+        &workspace.path().join("repo"),
+        &["worktree", "remove", "--force", checkout],
+    );
+}

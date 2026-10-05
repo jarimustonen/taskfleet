@@ -858,7 +858,9 @@ pub struct CallerPiSession {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CallerPiState {
-    /// Launch registered before attempting to start Pi; not liveness proof.
+    /// Durable launch attempt, before Pi creates any native file. Never liveness proof.
+    Reserved,
+    /// Caller confirmed Start returned successfully; not continuing liveness proof.
     Started,
     /// Pi launch failed before a writer existed.
     LaunchFailed,
@@ -871,7 +873,7 @@ pub enum CallerPiState {
 impl CallerPiState {
     /// A told nonterminal condition requiring intervention.
     pub fn needs_attention(&self) -> bool {
-        !matches!(self, Self::Started)
+        !matches!(self, Self::Reserved | Self::Started)
     }
 }
 
@@ -882,7 +884,7 @@ pub struct CallerPiLifecycle {
     pub generation: u64,
     /// Verified bound native Pi UUID.
     pub pi_session_id: String,
-    /// Verified bound native Pi history path.
+    /// Planned native history path until binding; verified only after bind.
     pub session_path: String,
     /// Last attested state, not a writer fence.
     pub state: CallerPiState,

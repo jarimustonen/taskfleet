@@ -875,6 +875,17 @@ fn reduce_caller_pi_session_bound(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         Some(_) => return Err(bad("binding already exists with different identity")),
         None => {}
     }
+    if let Some(reserved) = &node.caller_pi_lifecycle {
+        if reserved.pi_session_id != binding.pi_session_id
+            || reserved.session_path != binding.session_path
+            || !matches!(
+                reserved.state,
+                CallerPiState::Reserved | CallerPiState::Started
+            )
+        {
+            return Err(bad("binding does not match the current launch reservation"));
+        }
+    }
     node.caller_pi_session = Some(binding);
     node.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(node)])
@@ -896,18 +907,23 @@ fn reduce_caller_pi_lifecycle(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
     let mut node = read_node_opt(paths, &id)?.ok_or_else(|| bad("missing node"))?;
     let fact: CallerPiLifecycle =
         serde_json::from_value(ev.data.clone()).map_err(|_| bad("invalid lifecycle fact"))?;
-    let binding = node
-        .caller_pi_session
-        .as_ref()
-        .ok_or_else(|| bad("unbound Pi session"))?;
+    let binding = node.caller_pi_session.as_ref();
     if fact.generation == 0
-        || fact.pi_session_id != binding.pi_session_id
-        || fact.session_path != binding.session_path
+        || binding.is_some_and(|b| {
+            fact.pi_session_id != b.pi_session_id || fact.session_path != b.session_path
+        })
+        || (binding.is_none()
+            && fact.state != CallerPiState::Reserved
+            && !node
+                .caller_pi_lifecycle
+                .as_ref()
+                .is_some_and(|old| old.state == CallerPiState::Reserved))
         || fact
             .reason
             .as_ref()
             .is_some_and(|r| r.trim().is_empty() || r.len() > 1024)
-        || (fact.state == CallerPiState::Started) != fact.reason.is_none()
+        || matches!(fact.state, CallerPiState::Started | CallerPiState::Reserved)
+            != fact.reason.is_none()
     {
         return Err(bad("invalid generation, session identity or reason"));
     }
@@ -918,12 +934,29 @@ fn reduce_caller_pi_lifecycle(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
         return Err(bad("terminal run cannot accept a new Pi transition"));
     }
     match &node.caller_pi_lifecycle {
-        None if fact.generation == 1 && fact.state == CallerPiState::Started => {}
+        None if fact.generation == 1
+            && fact.state == CallerPiState::Started
+            && binding.is_some() => {}
+        None if fact.generation == 1
+            && fact.state == CallerPiState::Reserved
+            && binding.is_none() => {}
         Some(old) if *old == fact => return Ok(vec![]),
         Some(old)
             if old.generation == fact.generation
                 && old.state == CallerPiState::Started
-                && fact.state != CallerPiState::Started => {}
+                && matches!(
+                    fact.state,
+                    CallerPiState::Exited | CallerPiState::ControlUncertain
+                ) => {}
+        Some(old)
+            if old.generation == fact.generation
+                && old.state == CallerPiState::Reserved
+                && old.pi_session_id == fact.pi_session_id
+                && old.session_path == fact.session_path
+                && (matches!(
+                    fact.state,
+                    CallerPiState::LaunchFailed | CallerPiState::ControlUncertain
+                ) || (fact.state == CallerPiState::Started && binding.is_some())) => {}
         Some(old)
             if old.generation.checked_add(1) == Some(fact.generation)
                 && matches!(

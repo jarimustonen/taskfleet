@@ -406,10 +406,16 @@ fn command_writes_state(command: &Command) -> bool {
                     crate::run::SessionAction::Bind { dry_run, .. }
                     | crate::run::SessionAction::Update { dry_run, .. },
             } => !dry_run,
-            crate::run::RunAction::Cancel { .. }
+            crate::run::RunAction::Session {
+                action: crate::run::SessionAction::Reserve { .. },
+            }
+            | crate::run::RunAction::Cancel { .. }
             | crate::run::RunAction::Reattach { .. }
             | crate::run::RunAction::UpgradeLock { .. } => true,
-            crate::run::RunAction::List { .. }
+            crate::run::RunAction::Session {
+                action: crate::run::SessionAction::Fence { .. },
+            }
+            | crate::run::RunAction::List { .. }
             | crate::run::RunAction::Show { .. }
             | crate::run::RunAction::Wait { .. } => false,
         },

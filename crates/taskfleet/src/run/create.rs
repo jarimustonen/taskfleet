@@ -22,7 +22,7 @@ use chrono::{Duration, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use taskfleet_core::{ensure_root, new_run_id, Kind, Lifecycle, RunId};
+use taskfleet_core::{ensure_root, new_run_id, AgentOwner, Kind, Lifecycle, RunId};
 
 use crate::error::CliError;
 use crate::idempotency;
@@ -73,6 +73,7 @@ impl Drop for ReservationGuard {
 /// lint is allowed here — same allowance as the help-module arg bags.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Args<'a> {
+    pub agent_owner: AgentOwner,
     pub skip_materialize: bool,
     pub kind: Kind,
     pub title: String,
@@ -203,6 +204,9 @@ struct SpawnResult {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
+    if args.agent_owner == AgentOwner::Caller {
+        return super::caller_create::run(&args);
+    }
     let title = require_nonempty(&args.title, "title")?;
     // Admission precedes all idempotency paths, including replay repair and
     // reclaim. Never wait for this gate while holding a per-run lock.
@@ -231,6 +235,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 args.source_branch.as_deref(),
                 key,
             )? {
+                if existing.caller_plan.is_some() {
+                    return Err(CliError::user(
+                        "idempotency_key_conflict",
+                        format!(
+                            "key belongs to caller-owned run {}; retry with --agent-owner caller",
+                            existing.run_id
+                        ),
+                    ));
+                }
                 let root = crate::home::root_dir()?;
                 if let ExistingReservation::Published(dir) =
                     classify_existing_reservation(&root, &existing, Utc::now())?
@@ -248,6 +261,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                             format!("published run {} has no manifest", existing.run_id),
                         )
                     })?;
+                    if manifest.agent_owner == AgentOwner::Caller {
+                        return Err(CliError::user("idempotency_key_conflict", format!("key belongs to caller-owned run {}; retry with --agent-owner caller", existing.run_id)));
+                    }
                     let parent_run_id = manifest.parent_run_id.as_ref().map(ToString::to_string);
                     let parent_node_id = manifest.parent_node_id.as_ref().map(ToString::to_string);
                     return emit(EmitInput {
@@ -441,6 +457,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let Some(existing) = observed.take() else {
                 break;
             };
+            if existing.caller_plan.is_some() {
+                return Err(CliError::user(
+                    "idempotency_key_conflict",
+                    format!(
+                        "key belongs to caller-owned run {}; retry with --agent-owner caller",
+                        existing.run_id
+                    ),
+                ));
+            }
             match classify_existing_reservation(&root, &existing, Utc::now())? {
                 ExistingReservation::Published(dir) => {
                     repair_parent_child_publication(&root, &dir)?;
@@ -457,6 +482,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                                 format!("published run {} has no manifest", existing.run_id),
                             )
                         })?;
+                    if manifest.agent_owner == AgentOwner::Caller {
+                        return Err(CliError::user("idempotency_key_conflict", format!("key belongs to caller-owned run {}; retry with --agent-owner caller", existing.run_id)));
+                    }
                     return emit(EmitInput {
                         run_id: &existing.run_id,
                         dir: dir.display().to_string(),

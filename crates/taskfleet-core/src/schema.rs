@@ -359,6 +359,18 @@ impl Lifecycle {
     }
 }
 
+/// Who launches and owns the agent. This is independent of lifecycle: an
+/// interactive Taskfleet worker is still a Taskfleet-owned worker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentOwner {
+    #[default]
+    /// Taskfleet launches and supervises its own worker.
+    Taskfleet,
+    /// An external process owns the agent; Taskfleet owns only the Git run.
+    Caller,
+}
+
 /// Run/node status (design.md §1.2).
 ///
 /// `Done`, `Failed`, and `Cancelled` are **terminal**: once a run or node
@@ -636,6 +648,9 @@ pub struct Manifest {
     /// How-run state (autonomous vs interactive), set once at `run create` from
     /// the explicit `--interactive` flag — never transitioned. See [`Lifecycle`].
     pub lifecycle: Lifecycle,
+    /// Absent on historic projections, which always launched Taskfleet workers.
+    #[serde(default)]
+    pub agent_owner: AgentOwner,
     /// Human-readable run title.
     pub title: String,
     /// Current aggregate run status.

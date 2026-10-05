@@ -104,6 +104,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .map_err(from_core)?
         .ok_or_else(|| CliError::user("run_not_found", format!("no run with id {run_id}")))?;
     crate::run::reject_legacy_kind(initial_manifest.kind, &run_id)?;
+    crate::run::require_writer_fence(&initial_manifest)?;
     if args.dry_run {
         let manifest = &initial_manifest;
         let last_seq = read_all_events(&paths.events())

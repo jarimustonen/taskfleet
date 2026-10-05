@@ -189,6 +189,8 @@ pub struct ManifestView<'a> {
     pub run_id: &'a RunId,
     pub kind: &'static str,
     pub lifecycle: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_owner: Option<&'static str>,
     pub title: &'a str,
     pub status: &'static str,
     pub created_at: DateTime<Utc>,
@@ -215,6 +217,7 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             run_id: &m.run_id,
             kind: kind_kebab(m.kind),
             lifecycle: lifecycle_kebab(m.lifecycle),
+            agent_owner: (m.agent_owner == taskfleet_core::AgentOwner::Caller).then_some("caller"),
             title: &m.title,
             status: status_kebab(m.status),
             created_at: m.created_at,
@@ -256,6 +259,8 @@ pub struct RunSummary {
     /// `status`. Poll `status` for completion; read `lifecycle` for how it's driven
     /// (design.md §6, state-integrity invariant 4).
     pub lifecycle: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_owner: Option<&'static str>,
     pub status: String,
     pub title: String,
     pub created_at: DateTime<Utc>,
@@ -437,6 +442,7 @@ impl From<&Manifest> for RunSummary {
             run_id: m.run_id.to_string(),
             kind: kind_kebab(m.kind).to_string(),
             lifecycle: lifecycle_kebab(m.lifecycle),
+            agent_owner: (m.agent_owner == taskfleet_core::AgentOwner::Caller).then_some("caller"),
             status: status_kebab(m.status).to_string(),
             title: m.title.clone(),
             created_at: m.created_at,
@@ -476,6 +482,7 @@ mod tests {
             run_id: RunId::parse_str("01arz3ndektsv4rrffq69g5fav").unwrap(),
             kind: Kind::Spinoff,
             lifecycle: Lifecycle::Autonomous,
+            agent_owner: taskfleet_core::AgentOwner::Taskfleet,
             title: "seed-run".to_string(),
             status: Status::Pending,
             created_at: ts(),

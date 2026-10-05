@@ -57,7 +57,7 @@ pub use report::{
 };
 pub use schema::aggregate_terminal_status;
 pub use schema::{
-    is_run_id_prefix, AgentSelection, AwaitingInput, ChildRef, Event, EvidenceStatus,
+    is_run_id_prefix, AgentOwner, AgentSelection, AwaitingInput, ChildRef, Event, EvidenceStatus,
     IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RetainedDisplay, RunId,
     SelectedAgentCandidate, SkippedAgentCandidate, Status, TmuxIdentity, TmuxRetentionPolicy,
     WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,

@@ -7,6 +7,7 @@
 mod admission;
 pub mod attention;
 pub mod awaiting_input;
+mod caller_create;
 pub mod cancel;
 pub mod create;
 pub mod discard;
@@ -63,6 +64,33 @@ impl From<KindArg> for Kind {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum AgentOwnerArg {
+    Taskfleet,
+    Caller,
+}
+
+impl From<AgentOwnerArg> for taskfleet_core::AgentOwner {
+    fn from(value: AgentOwnerArg) -> Self {
+        match value {
+            AgentOwnerArg::Taskfleet => Self::Taskfleet,
+            AgentOwnerArg::Caller => Self::Caller,
+        }
+    }
+}
+
+/// Refuse settlement until a cross-process writer fence is implemented.
+pub fn require_writer_fence(manifest: &taskfleet_core::Manifest) -> Result<(), CliError> {
+    if manifest.agent_owner == taskfleet_core::AgentOwner::Caller {
+        return Err(CliError::user("writer_fence_unavailable", format!(
+            "caller-owned run {} cannot be merged, cancelled, salvaged or discarded until a writer fence is implemented; preserve its checkout and inspect it manually",
+            manifest.run_id
+        )).with_invalid_value(manifest.run_id.to_string()));
+    }
+    Ok(())
+}
+
 // The `Create` variant is a wide clap arg-bag (~300 bytes of flags) next to
 // small verb variants — the classic `large_enum_variant` shape. It is parsed
 // exactly once per process and immediately destructured in `dispatch`; it is
@@ -76,6 +104,10 @@ pub enum RunAction {
     /// Create a new run. Top-level when `--parent-*` flags are absent,
     /// child-spawn when both are set (mutually required).
     Create {
+        /// Provision a Git-only worktree without launching an agent. Not yet safe for Pi:
+        /// merge/cancel/discard are fenced off until writer coordination exists.
+        #[arg(long, value_enum, default_value = "taskfleet")]
+        agent_owner: AgentOwnerArg,
         #[arg(long, value_enum)]
         kind: KindArg,
         #[arg(long)]
@@ -355,6 +387,7 @@ pub enum RunAction {
 pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match action {
         RunAction::Create {
+            agent_owner,
             kind,
             title,
             source_repo,
@@ -376,6 +409,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             dry_run,
             skip_materialize,
         } => create::run(create::Args {
+            agent_owner: agent_owner.into(),
             skip_materialize,
             kind: kind.into(),
             title,

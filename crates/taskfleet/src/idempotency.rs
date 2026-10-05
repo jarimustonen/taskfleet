@@ -186,6 +186,17 @@ pub struct ReservationRecord {
     /// between reclaim and cleanup does not lose the cleanup obligation.
     #[serde(default)]
     pub stale_run_ids: Vec<String>,
+    /// Immutable Git plan, persisted before the external effect.
+    #[serde(default)]
+    pub caller_plan: Option<Box<CallerPlan>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallerPlan {
+    pub request: String,
+    pub branch: String,
+    pub checkout: String,
+    pub base_sha: String,
 }
 
 impl ReservationRecord {
@@ -195,6 +206,7 @@ impl ReservationRecord {
             run_id: run_id.to_string(),
             creator: Some(creator),
             stale_run_ids: Vec::new(),
+            caller_plan: None,
         }
     }
 }
@@ -421,6 +433,7 @@ fn read_record(path: &Path) -> Result<Option<ReservationRecord>, CliError> {
             run_id: raw.trim().to_string(),
             creator: None,
             stale_run_ids: Vec::new(),
+            caller_plan: None,
         }))
     }
 }

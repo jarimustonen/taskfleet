@@ -212,6 +212,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // any merge/append so we never rewrite its manifest (and destroy its
     // provenance) or self-merge a legacy human-reviewed `code` run.
     crate::run::reject_legacy_kind(manifest.kind, &run_id)?;
+    crate::run::require_writer_fence(&manifest)?;
 
     let node = read_node_opt(&paths, &node_id)
         .map_err(from_core)?

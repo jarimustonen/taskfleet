@@ -456,6 +456,15 @@ fn record_session_retained(paths: &RunPaths, session: &str) {
 /// <removed-path>` would then fail), and kill the tmux window first so the
 /// agent's own Claude session ends before its worktree is pulled.
 pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
+    // Even a forged/late terminal report cannot authorize destructive teardown
+    // until the external writer has been fenced. Never infer safety from no PID.
+    if read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .is_none_or(|m| m.agent_owner == taskfleet_core::AgentOwner::Caller)
+    {
+        return;
+    }
     // Final evidence is a prerequisite, not a best-effort diagnostic. Capture
     // while the exact recorded pane and native transcript still exist; any
     // failure is durable and preserves all cleanup inputs for a later retry.

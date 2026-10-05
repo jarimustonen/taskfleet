@@ -22,6 +22,19 @@ the worktree/tmux/launcher transaction itself; it does not depend on Homebase or
 - **Research and decision workers.** `--kind research` (multi-source
   investigation into a sourced report) and `--kind technical-decision`
   (drives one architectural decision to an ADR).
+- **Experimental caller-owned Git worktree provisioning.** `run create
+  --agent-owner caller --kind spinoff --source-repo /absolute/repo
+  --source-branch main --title 'Task' --task 'Task' --idempotency-key <stable-key>`
+  reserves a single-node run, provisions a Git-only checkout without workmux,
+  tmux or an agent, verifies registration, and confirms its supervisor. The
+  JSON response includes full run/node IDs and the verified checkout/branch;
+  retrying the same key returns the same identities. A crash may instead yield
+  `creation_uncertain` with the original run and resource ledger: inspect it,
+  never force-prune the checkout. **Not ready for external Pi use:** there is
+  no external-writer fence or session binding yet. Merge, cancel, salvage and
+  discard refuse caller-owned runs pending the writer-fence implementation.
+  The supervisor detaches from the terminal, but not from a caller's systemd
+  service cgroup; a daemon integration must arrange independent launch.
 - **Interactive mode when you want hands on.** `run create --interactive`
   makes the supervisor wait for your explicit `run merge` or `run cancel`
   instead of finalizing the run itself.

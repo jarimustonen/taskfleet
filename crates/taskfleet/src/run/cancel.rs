@@ -78,7 +78,10 @@ pub fn run(
         // A run recorded under a removed kind is read-only (ADR §D7) — refuse
         // before core appends its cancel events and rewrites the manifest
         // (which would overwrite the legacy kind with `"unknown"`).
-        Some(m) => crate::run::reject_legacy_kind(m.kind, paths.run_id.as_str())?,
+        Some(m) => {
+            crate::run::reject_legacy_kind(m.kind, paths.run_id.as_str())?;
+            crate::run::require_writer_fence(&m)?;
+        }
     }
 
     if let Some(node_id) = node_id {

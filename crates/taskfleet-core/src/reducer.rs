@@ -507,6 +507,16 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         run_id: paths.run_id.clone(),
         kind,
         lifecycle,
+        agent_owner: d
+            .get("agent_owner")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| Error::CorruptEventLog {
+                path: events_path.clone(),
+                reason: format!("run.created invalid agent_owner: {e}"),
+            })?
+            .unwrap_or_default(),
         title,
         status: Status::Pending,
         created_at: ev.ts,

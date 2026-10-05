@@ -234,6 +234,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // A run recorded under a removed kind is read-only (ADR §D7) — refuse before
     // any fence/merge so we never rewrite its manifest / destroy its provenance.
     crate::run::reject_legacy_kind(manifest.kind, &run_id)?;
+    crate::run::require_writer_fence(&manifest)?;
 
     // Refuse the terminal states there is nothing to salvage from.
     match manifest.status {

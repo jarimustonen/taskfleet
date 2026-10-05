@@ -9,7 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Provision keyed caller-owned Git-only worktree runs without launching an agent; verify native Pi session identity and expose Pi-stop attention through `run wait`. Merge, cancel, salvage, and force-discard are fenced by the caller's writer lease. Omega Habitat host launch and browser integration are not shipped yet.
+
 ### Changed
+
+- `run merge` now uses a Rust-owned, recoverable Git driver instead of `workmux merge`, including for ordinary worker runs.
 
 ### Fixed
 <!-- oss-changelog:unreleased-end -->

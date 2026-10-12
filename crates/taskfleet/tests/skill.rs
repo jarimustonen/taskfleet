@@ -995,27 +995,27 @@ fn bundled_stint_guidance_distinguishes_untriaged_from_explicit_deferral() {
     let start_raw = std::fs::read_to_string(&start_path).unwrap();
     let start = normalized(&start_raw);
     assert!(
-        start.contains("candidate awaiting that gate stays `status: untriaged` with no `lane`, `lane_seq`, or `collision` assignment"),
+        start.contains("candidate awaiting the human lane-or-close gate stays `status: untriaged` with no `lane`, `lane_seq`, or `collision` assignment"),
         "stint-start must preserve unaccepted candidates as untriaged and unscheduled"
     );
     assert!(
-        start.contains("`status: deferred` is reserved for an explicit human/product decision"),
+        start.contains("`status: deferred` is reserved for an explicit human or product decision"),
         "stint-start must reserve deferred for an explicit human/product disposition"
     );
     assert!(
-        start.contains("mechanically says `spawnable: true`; never launch it until it has passed the human lane-or-close gate"),
+        start.contains("mechanically says `spawnable: true`; it becomes launchable only after it passes human triage"),
         "stint-start must not execute mechanically spawnable unscheduled rows"
     );
     assert!(
-        start.contains("Omission from this round alone authorizes no lifecycle change"),
+        start.contains("Omission from this round authorizes no lifecycle change"),
         "stint-start must not treat round omission as a deferral"
     );
     assert!(
-        start.contains("on human acceptance for execution, move the issue from `untriaged` to the project's accepted active status and assign its lane metadata; on an explicit human/product “not now” decision, set `deferred` and remove `lane`, `lane_seq`, and every scheduling `collision` assignment"),
+        start.contains("on human acceptance for execution, move the issue from `untriaged` to the accepted active status and assign its lane metadata; on an explicit \"not now\", set `deferred` and remove `lane`, `lane_seq`, and every scheduling `collision` assignment"),
         "stint-start must move lifecycle and scheduling state together"
     );
     assert!(
-        start.contains("Launch only a lane issue whose own `spawnable` field is true **and** whose status is an executable, triaged status"),
+        start.contains("Launch only a lane issue whose own `spawnable` field is true and whose status is an executable, triaged status"),
         "stint-start must status-gate the operative launch rule"
     );
     assert!(
@@ -1027,11 +1027,13 @@ fn bundled_stint_guidance_distinguishes_untriaged_from_explicit_deferral() {
     let handoff_raw = std::fs::read_to_string(&handoff_path).unwrap();
     let handoff = normalized(&handoff_raw);
     assert!(
-        handoff.contains("unaccepted candidate stays `status: untriaged`, with no `lane`, `lane_seq`, or `collision` assignment"),
+        handoff.contains("candidate stays `status: untriaged` with no `lane`, `lane_seq`, or `collision` assignment"),
         "stint-handoff must preserve review candidates as untriaged and unscheduled"
     );
     assert!(
-        handoff.contains("status is reserved for an explicit human/product “worthwhile, but not now” disposition"),
+        handoff.contains(
+            "reserved for an explicit human or product \"worthwhile, but not now\" disposition"
+        ),
         "stint-handoff must reserve deferred for explicit product disposition"
     );
     assert!(
@@ -1039,7 +1041,7 @@ fn bundled_stint_guidance_distinguishes_untriaged_from_explicit_deferral() {
         "stint-handoff must not present unscheduled rows as executable"
     );
     assert!(
-        handoff.contains("is created with no lane assignment"),
+        handoff.contains("is born with no lane"),
         "stint-handoff must not conflate no lane with the literal unlaned lane"
     );
     assert!(
@@ -1105,26 +1107,26 @@ fn bundled_workflow_skills_render_the_bounded_stint_contract() {
     let home = mk_home();
     let start = print_skill(&home, "stint-start");
     for required in [
-        "one exact next action",
-        "at most one smaller follow-up",
-        "normal source branch and both index and worktree are clean",
-        "Resolve only clearly mechanical, narrow conflicts",
-        "Never force-push",
-        "this session launches or explicitly adopts",
-        "Listing, showing, reserving, mentioning, or discovering a run never adopts it",
-        "reservations, not owned work",
-        "stop **spawning** as unverifiable",
-        "The worker chooses proportionate review after seeing the final diff",
-        "Reuse adequate existing evidence",
-        "if no review, decision, next wave, or integration action can use an individual result before the whole batch settles, use one aggregate `taskfleet run wait <id> …`",
-        "start one `taskfleet run wait <id>` per run through the harness's independently watched background-command facility",
-        "Give each waiter a completion/failure wake notification",
-        "do not shell-background commands or poll `run show`/process output to imitate notifications",
-        "If the harness cannot notify on independent command completion, fall back to one blocking aggregate `run wait --all`",
-        "Do not enter Phase 3 until **every owned run** has settled and each `landed` flag is true",
-        "after the one feedback follow-up report: `/stint-handoff`",
-        "applies to **every** return from Phases 0–3",
-        "No durable stint/checkpoint state",
+        "one concrete next action",
+        "one more, smaller round of the same shape",
+        "A dirty tree, a missing upstream, a non-standard checked-out branch",
+        "resolve only narrow mechanical conflicts",
+        "A force push destroys someone else's work and nothing in a stint justifies one",
+        "The runs this session launched, or was told by the user in a full run id to adopt",
+        "say so when you adopt one",
+        "reservations you honour and otherwise leave alone",
+        "cannot be mapped to its complete hold means you do not spawn this round",
+        "choose and explain a proportionate review level in its report",
+        "adequate existing evidence is reused",
+        "If nothing can use an individual result before the whole batch settles, one aggregate `taskfleet run wait <id> ...` (default `--all`) is simplest",
+        "start one `run wait` per run through the harness's independently watched background-command facility",
+        "with a wake on completion",
+        "do not shell-background commands or poll `run show` to imitate notifications",
+        "if the harness cannot wake you on completion, fall back to one blocking aggregate wait",
+        "Nothing is deployed until every owned run has settled with `landed` true",
+        "`/stint-handoff` regardless after the one follow-up round",
+        "on every return including a hard stop",
+        "There is no persisted stint state and no background loop",
     ] {
         assert!(start.contains(required), "stint-start missing {required:?}");
     }
@@ -1143,15 +1145,15 @@ fn bundled_workflow_skills_render_the_bounded_stint_contract() {
     let handoff = print_skill(&home, "stint-handoff");
     for required in [
         "session launched or explicitly adopted",
-        "treat session worker ownership as clear",
-        "exact issuectl hold array shape",
-        "An unmappable foreign run does not block terminal handoff",
-        "continue through steps 2–3",
+        "session ownership is clear",
+        "in the exact shape",
+        "An unmappable foreign run does not block a handoff",
+        "still record the answers, the owned run id and slug, and the preserved-work fact",
         "git diff --cached --quiet",
         "git diff --cached --name-only",
         "the user's explicit request to finish is sufficient",
-        "direct standalone invocation",
-        "No durable stint/checkpoint or global-run ownership",
+        "runs standalone",
+        "No checkpoint file is invented",
     ] {
         assert!(
             handoff.contains(required),

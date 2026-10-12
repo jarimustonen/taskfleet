@@ -1,5 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 234
 expression: value
 ---
 {
@@ -100,13 +101,13 @@ expression: value
       },
       {
         "cli_version": "0.12.0",
-        "description": "Run one bounded round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to: orient → plan → spawn worktrees → deploy when permitted → give a product-owner report and one exact next action. It may absorb one user-feedback follow-up, then stops for explicit `/stint-handoff`. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Maximally autonomous and generic: reads repository policy, TODO narrative, issuectl DAG, and session-owned run IDs. NOT a worktree, one-off coding task, durable stint/checkpoint, background loop, or terminal handoff.",
+        "description": "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and the issuectl DAG, spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`).",
         "name": "stint-start",
         "skill_schema_version": 1
       },
       {
         "cli_version": "0.12.0",
-        "description": "Explicitly finish a work-session (työrupeama, 'stint'): record current-turn answers, check only runs this session launched or adopted, update TODO.md, verify the issuectl DAG with foreign-run reservations, then `/wrap-up` and any declared reset. Run on the user's explicit go, either directly or after `/stint-start` names it as the next action. Generic and reconstructable from existing facts; adds no durable stint state. NOT the round engine, a global-run drain, bare `/wrap-up`, or a worktree.",
+        "description": "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the issuectl DAG with foreign-run reservations, then run `/wrap-up` and any declared reset. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree.",
         "name": "stint-handoff",
         "skill_schema_version": 1
       },
@@ -220,13 +221,13 @@ expression: value
     },
     {
       "cli_version": "0.12.0",
-      "description": "Run one bounded round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to: orient → plan → spawn worktrees → deploy when permitted → give a product-owner report and one exact next action. It may absorb one user-feedback follow-up, then stops for explicit `/stint-handoff`. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Maximally autonomous and generic: reads repository policy, TODO narrative, issuectl DAG, and session-owned run IDs. NOT a worktree, one-off coding task, durable stint/checkpoint, background loop, or terminal handoff.",
+      "description": "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and the issuectl DAG, spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`).",
       "name": "stint-start",
       "skill_schema_version": 1
     },
     {
       "cli_version": "0.12.0",
-      "description": "Explicitly finish a work-session (työrupeama, 'stint'): record current-turn answers, check only runs this session launched or adopted, update TODO.md, verify the issuectl DAG with foreign-run reservations, then `/wrap-up` and any declared reset. Run on the user's explicit go, either directly or after `/stint-start` names it as the next action. Generic and reconstructable from existing facts; adds no durable stint state. NOT the round engine, a global-run drain, bare `/wrap-up`, or a worktree.",
+      "description": "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the issuectl DAG with foreign-run reservations, then run `/wrap-up` and any declared reset. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree.",
       "name": "stint-handoff",
       "skill_schema_version": 1
     },

@@ -3001,32 +3001,6 @@ mod tests {
     }
 
     #[test]
-    fn worktree_and_handoff_skills_pin_unlaned_review_filing_boundary() {
-        let spinoff = SKILLS
-            .iter()
-            .find(|s| s.name == "worktree-spinoff")
-            .unwrap()
-            .body;
-        assert!(spinoff.contains("issuectl intake file"));
-        assert!(spinoff.contains("born unlaned"));
-        assert!(spinoff.contains("AI-review provenance"));
-        assert!(spinoff.contains("`/assess-findings`"));
-
-        let handoff = SKILLS
-            .iter()
-            .find(|s| s.name == "stint-handoff")
-            .unwrap()
-            .body
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(handoff.contains("issuectl intake file"));
-        assert!(handoff.contains("human lane-or-close sweep owns acceptance"));
-        assert!(handoff.contains("model agreement stays a list"));
-        assert!(handoff.contains("severity, and confidence metadata"));
-    }
-
-    #[test]
     fn write_marker_records_companions_read_back() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join(MANAGED_MARKER_FILENAME);

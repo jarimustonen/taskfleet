@@ -3016,11 +3016,14 @@ mod tests {
             .iter()
             .find(|s| s.name == "stint-handoff")
             .unwrap()
-            .body;
+            .body
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(handoff.contains("issuectl intake file"));
-        assert!(handoff.contains("human lane-or-close sweep owns scheduling"));
-        assert!(handoff.contains("Named model agreement stays a list"));
-        assert!(handoff.contains("severity/confidence metadata"));
+        assert!(handoff.contains("human lane-or-close sweep owns acceptance"));
+        assert!(handoff.contains("model agreement stays a list"));
+        assert!(handoff.contains("severity, and confidence metadata"));
     }
 
     #[test]

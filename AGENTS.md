@@ -91,7 +91,7 @@ manufactures work nobody asked for.
 
 ## Working in this repository
 
-This section is what `/stint-start` reads in Phase 0. Every project-specific
+This section is what `/stint-start` reads when it orients. Every project-specific
 fact an orchestrator or worker needs is here or pointed to from here.
 
 **Coding happens in worktrees.** The orchestrator session plans, spawns, reads,

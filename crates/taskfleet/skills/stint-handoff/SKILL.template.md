@@ -10,44 +10,59 @@ schema_version: 1
 
 ## Who you are at the end
 
-You are the conductor closing the stint, and the person you work for now is
+You are the conductor closing the stint, and the person you now work for is
 whoever opens this repository next: possibly a different agent, on a different
-day, with nothing but the repository to go on. A good handoff means they can
-resume from `jatketaan @TODO.md` alone. The answers the user gave this turn
-sit where a future reader will look for them, the `TODO.md` handoff block
-says where things stand, every worker this session was responsible for has
-landed or its leftovers are accounted for, the schedule the next round will
-read is valid, and `/wrap-up` has had its chance to save what was learned.
+day, with nothing but the repository to go on. A good handoff lets them resume
+from `jatketaan @TODO.md` alone. The answers the user gave this turn sit where
+a future reader will look for them, the `TODO.md` handoff block says where
+things stand, every worker this session was responsible for has landed or its
+leftovers are accounted for, the schedule the next round will read is valid,
+and `/wrap-up` has had its chance to save what was learned.
 
-The temperament this needs is tidiness without invention. You spawn nothing,
-deploy nothing, and write no product code; the round engine is
-`/stint-start`. You record facts and hand over choices rather than making
-dispositions on the user's behalf. And you stay honest about what you could
-not verify: the next `/stint-start` checks the narrative's claims against
-git, and a confident wrong claim costs it a round where "unverified" costs it
-a glance.
+**Your craft is a narrative that survives being checked.** The next
+`/stint-start` opens by testing the handoff's claims against git, the
+live-version check, and the DAG. A claim it confirms costs it a glance. A
+confident claim it refutes costs it a round of investigation and its trust in
+the rest of the text. A claim marked unverified costs it a glance and keeps
+its trust. So write what you established and how, write what you could not
+establish as exactly that, and leave out whatever the next round reads live
+anyway. The narrative carries intent, decisions, and the state of the work;
+it does not carry facts a tool recomputes.
 
-The user runs this skill at the end of a long session, when they want to
-leave. They often bundle their answers to the round's decision questions into
-the same message as "wrap it up", and those answers exist only in this
-context, so recording them is part of the handoff rather than something that
-could wait. Ask only when the outcomes differ in a way they would care about
-and nothing tells you which they would choose: which document owns a
-decision they gave, what to do with preserved work, what `/wrap-up` may save.
-Everything else is reconstructable from git, Taskfleet, and issuectl, so
-choose, say what you chose, and continue.
+**You record and hand over; you do not decide for the user.** Tidiness
+without invention. When something at the end is not what you expected, the
+three questions that ran the round still apply. What does a primary source
+say: `run show` for what a run owns, git for what landed, the DAG for the
+schedule. Whose decision is it: preserved work, issue dispositions, and what
+`/wrap-up` may save belong to the user; another conductor's run belongs to
+them; the record belongs to you. What would be lost: a deleted branch is
+irreplaceable, a paragraph in `TODO.md` is a minute. You spawn nothing, deploy
+nothing, and write no product code; the round engine is `/stint-start`.
+
+**You decide and move on everything else.** The user runs this skill when
+they want to leave, and they often bundle their answers to the round's
+decision questions into the same message as "wrap it up". Those answers exist
+only in this context, so recording them is part of the handoff rather than
+something that could wait. Ask only when the outcomes differ in a way they
+would care about and nothing tells you which they would choose: which
+document owns a decision they gave, what to do with preserved work, what
+`/wrap-up` may save. Everything else is reconstructable from git, Taskfleet,
+and issuectl, so choose, say what you chose, and continue.
 
 `/stint-start` normally names this skill as the next action, but that is
-guidance, not a token: the user's explicit request to finish is sufficient, and
-a green round or silence is not such a request.
+guidance, not a token: the user's explicit request to finish is sufficient,
+and a green round or silence is not such a request.
+
+## What the project supplies
 
 The skill is generic. Whether the project has a test-account reset preference
 and where its handoff block lives come from the repository's own `AGENTS.md`
 and `TODO.md`. Scheduling comes from `issuectl dag --json --reservations`,
-which derives everything from issue metadata on every read; if `--reservations`
-or the fields named below are missing, the project is unmigrated or
-incompatible, so report that and stop rather than fall back to a prose
-schedule.
+which derives everything from issue metadata on every read; if
+`--reservations` or the fields named below are missing, the project is
+unmigrated or incompatible, so report that and stop rather than fall back to
+a prose schedule. `taskfleet-run-overview` carries the full field lists of
+`run show` and `run wait`; this file repeats only what the handoff turns on.
 
 ## What is precious here
 
@@ -70,16 +85,16 @@ session. Reading `run show` on one is fine; managing it is not.
 **Human dispositions.** Which issues are accepted, deferred, or closed is a
 product decision, and an issue mentioned in the narrative, omitted from a
 round, or mechanically reported spawnable has not received one. Relabelling
-candidates at handoff time quietly turns review residuals into next round's
-agenda, or hides accepted work behind `deferred`, and both cost the user a
-triage pass to undo.
+candidates at handoff time turns review residuals into next round's agenda or
+hides accepted work behind `deferred`, and either costs the user a triage
+pass to undo.
 
 **`main` and the handoff commit.** The handoff commit is the first thing the
 next session reads, so it contains exactly the handoff files: a pre-existing
 staged change folded into it lands unreviewed work under a handoff message,
 and a `TODO.md` left modified but uncommitted means the next worktree
-branches from an ambiguous state. Someone else's unstaged edit to `TODO.md` or
-an answer file is a parallel session at work, not yours to absorb or
+branches from an ambiguous state. Someone else's unstaged edit to `TODO.md`
+or an answer file is a parallel session at work, not yours to absorb or
 overwrite.
 
 ## Where the facts live
@@ -90,20 +105,21 @@ such ids are in the conversation, session ownership is clear: inferring it
 from the global list would make you responsible for another conductor's run
 and block your handoff on work you did not do.
 
-**`taskfleet run show <full-run-id> --output json` is the inventory.** Its
-`.data.preserved_work` array is always present, including for `done`, and an
-empty array is the only confirmation that nothing is held. `run wait` carries
-the same array per run under `data.runs[]`, together with `report_only`, a
-`done` run settled by a success report rather than a recorded `run merge`.
-That can be legitimate (an external delivery) but is not proof that anything
-landed in source; read its report and acknowledge the delivery on its own
-terms. Reports persist on the node as `last_report`; `run show` exposes the
-single-worker one as `data.report`, and a multi-node run needs `node show` per
-node. The full `discussion_items`, `spinoff_proposals`, and
-`wrap_up_recommendations` the narrative may need are on `run show` /
-`node show`, not in the `run wait` summary.
+**`run show` is the inventory.** Its `.data.preserved_work` array is always
+present, including for `done`, and an empty array is the only confirmation
+that nothing is held. `run wait` carries the same array per run under
+`data.runs[]`, together with `report_only`, a `done` run settled by a success
+report rather than a recorded `run merge`. That can be legitimate (an
+external delivery) but is not proof that anything landed in source; read its
+report and acknowledge the delivery on its own terms. Reports persist on the
+node as `last_report`; `run show` exposes the single-worker one as
+`data.report`, and a multi-node run needs `node show` per node. The full
+`discussion_items`, `spinoff_proposals`, and `wrap_up_recommendations` the
+narrative may need are on `run show` / `node show`, not in the `run wait`
+summary.
 
 ```bash
+taskfleet run show <run-id> --output json
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
 taskfleet run show "$run_id" --output json | jq '.data.report'
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
@@ -126,21 +142,30 @@ fact and hands over the choice.
 
 **The schedule** is read with the holds of same-repository runs that may still
 own resources: live, awaiting input, attention-required, recoverable, or
-terminal with retained work. Find them with
-`taskfleet run list --output json --repo .`, use `run show` on terminal
-candidates since only it and `run wait` carry `preserved_work`, and build one
-hold per run from the run's issue metadata, in the exact shape
-`[{"lane":"backend","collision":["hot-token"]}]`; pass `'[]'` when there are
-none (an empty string is invalid). A token inferred from a path or lane name
-protects nothing. The verification exists because the next `/stint-start`
-begins by reading this graph: a broken graph found then costs a round, found
-now it is a sentence in the narrative and a decision for the user. A command
-failure, malformed JSON, a missing blocker, a self-dependency, a cycle, or an
+terminal with retained work. Find them with the repository-scoped list, use
+`run show` on terminal candidates since only it and `run wait` carry
+`preserved_work`, and build one hold per run from the run's issue metadata,
+in the exact shape `[{"lane":"backend","collision":["hot-token"]}]`; pass
+`'[]'` when there are none (an empty string is invalid). A token inferred from
+a path or lane name protects nothing.
+
+```bash
+taskfleet run list --output json --repo .
+```
+
+The verification exists because the next `/stint-start` begins by reading
+this graph: a broken graph found then costs a round, found now it is a
+sentence in the narrative and a decision for the user. A command failure,
+malformed JSON, a missing blocker, a self-dependency, a cycle, or an
 `untriaged`, `deferred`, or equivalent non-executable disposition sitting in
 `.data.lanes[]` makes the schedule invalid; lane presence and a mechanical
-`spawnable: true` never make such a row executable. The fix is a scheduling
-mutation, which is a human disposition and may touch an issue a live worker
-owns, so the handoff records it rather than performing it.
+`spawnable: true` never make such a row executable, and a `deferred` row in a
+lane serializes everything behind it on work nobody approved, because
+issuectl treats `deferred` as active-class. The fix is a scheduling mutation, which
+is a human disposition. If the user has already supplied that decision and no
+live worker owns the issue, apply it through issuectl and verify again;
+otherwise record the defect and the pending mutation for the next round
+rather than inventing a disposition to make the graph pass.
 
 **Triage state is not schedule state.** Review passes over-produce polish
 suggestions, so weigh each review-generated spin-off against real value before
@@ -190,8 +215,8 @@ before `/wrap-up` with one exact recovery action.
 Read the schedule with the foreign holds. An unmappable foreign run does not
 block a handoff, because the handoff spawns nothing; say in the terminal
 report, not in `TODO.md`, that the next `/stint-start` must resolve that
-reservation before spawning, since the run's state will have changed by then
-and `/stint-start` rebuilds holds from the live list, so a note in `TODO.md`
+reservation before spawning. The run's state will have changed by then and
+`/stint-start` rebuilds holds from the live list, so a note in `TODO.md`
 would outlive its truth. If verification fails, record the failure and the
 affected slugs for the narrative, commit the narrative, and stop there without
 calling `/wrap-up` or declaring the handoff complete, so the broken graph is
@@ -199,15 +224,15 @@ the one thing the user sees.
 
 Record the current-turn answers in the issue or document that already owns
 each decision, then update `## 🔄 Continue here` / `ALOITA TÄSTÄ`: where the
-round left off, what landed, the intended product direction, the unresolved
-decisions, a verification failure with its slugs, a run-ownership fact from
-preflight, and, as context only, an "awaiting human triage" note for
-`untriaged` candidates or a "not now" note for `deferred` work. Issue slugs
-give context; lane order, dependency edges, collision values, computed heads,
-spawnability, and any claim that an issue is currently ready or blocked do
-not belong there, because the next round reads them live and a prose copy is
-stale when it is written. No checkpoint file is invented; a second copy is the
-thing that drifts.
+round left off, what landed and how you confirmed it, the intended product
+direction, the unresolved decisions, a verification failure with its slugs, a
+run-ownership fact from preflight, and, as context only, an "awaiting human
+triage" note for `untriaged` candidates or a "not now" note for `deferred`
+work. Issue slugs give context; lane order, dependency edges, collision
+values, computed heads, spawnability, and any claim that an issue is currently
+ready or blocked do not belong there, because the next round reads them live
+and a prose copy is stale when it is written. No checkpoint file is invented
+for the same reason: a second copy is the thing that drifts.
 
 Stage `TODO.md` and any answer file by exact path, check that
 `git diff --cached --name-only` is exactly that set, and commit; if nothing

@@ -87,6 +87,7 @@ fn skill_list_json_pins_catalog_shape() {
         names,
         vec![
             "fan-out",
+            "night-stint-prep",
             "stint-handoff",
             "stint-start",
             "taskfleet-overview",

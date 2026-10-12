@@ -1,5 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 234
 expression: value
 ---
-{"schema_version":1,"error":{"code":"skill_not_found","message":"no skill named 'no-such-skill'; available: taskfleet-overview, taskfleet-run-overview, taskfleet-spawn-spinoff, worktree-spinoff, worktree-merge, worktree-research, worktree-technical-decision, worktree-bug-analysis, worktree, worktree-status, stint-start, stint-handoff, fan-out","invalid_value":"no-such-skill","expected":{"one_of":["taskfleet-overview","taskfleet-run-overview","taskfleet-spawn-spinoff","worktree-spinoff","worktree-merge","worktree-research","worktree-technical-decision","worktree-bug-analysis","worktree","worktree-status","stint-start","stint-handoff","fan-out"]}}}
+{"schema_version":1,"error":{"code":"skill_not_found","message":"no skill named 'no-such-skill'; available: taskfleet-overview, taskfleet-run-overview, taskfleet-spawn-spinoff, worktree-spinoff, worktree-merge, worktree-research, worktree-technical-decision, worktree-bug-analysis, worktree, worktree-status, stint-start, stint-handoff, night-stint-prep, fan-out","invalid_value":"no-such-skill","expected":{"one_of":["taskfleet-overview","taskfleet-run-overview","taskfleet-spawn-spinoff","worktree-spinoff","worktree-merge","worktree-research","worktree-technical-decision","worktree-bug-analysis","worktree","worktree-status","stint-start","stint-handoff","night-stint-prep","fan-out"]}}}

@@ -185,6 +185,8 @@ and it names a session on the invocation's socket, not a socket.
 - **`worktree-merge`** — the closing step of any worktree run.
 - **`stint-start`** / **`stint-handoff`** — running a bounded work session as
   an orchestrator.
+- **`night-stint-prep`** — preparing the handoff for an unattended overnight
+  session before anyone runs `stint-start`.
 
 `taskfleet skill list` shows the bundled catalog and `skill print <name>`
 streams any of them. For anything these skills do not cover, the binary's

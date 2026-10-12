@@ -154,6 +154,7 @@ runtime is intentionally owned outside this repository.
 | `worktree-status` | Plain-language status brief of a worktree session |
 | `fan-out` | N identical units in parallel |
 | `stint-start` / `stint-handoff` | Session-level orchestration round + handoff |
+| `night-stint-prep` | Prepare an unattended overnight stint: a committed `TODO.md` handoff for the next conductor |
 
 ## Development
 

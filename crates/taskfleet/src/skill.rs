@@ -195,6 +195,14 @@ const SKILLS: &[EmbeddedSkill] = &[
         path_in_repo: "crates/taskfleet/skills/stint-handoff/SKILL.template.md",
     },
     EmbeddedSkill {
+        name: "night-stint-prep",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/night-stint-prep/SKILL.md"
+        )),
+        path_in_repo: "crates/taskfleet/skills/night-stint-prep/SKILL.template.md",
+    },
+    EmbeddedSkill {
         name: "fan-out",
         body: include_str!(concat!(env!("OUT_DIR"), "/skills/fan-out/SKILL.md")),
         path_in_repo: "crates/taskfleet/skills/fan-out/SKILL.template.md",

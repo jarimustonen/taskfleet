@@ -99,13 +99,15 @@ before spawning, because treating the whole open backlog as the agenda would
 be invention. A handoff that ran and acknowledged nothing is simply no ready
 work: report that and skip spawning and deploy.
 
-The round ends with one next action. The user's reaction may drive one more,
-smaller round of the same shape. After that second report the next action is
-`/stint-handoff` whatever ideas came up: this conversation's context is
-finite, and larger work is better recorded for the next stint than squeezed
-into the end of this one. Acknowledgement, silence, or an empty frontier is
-not a request for another round, and `/stint-handoff` runs only when the user
-asks for it. There is no persisted stint state and no background loop. Git,
+The round ends with one next action. The user's reaction may drive another,
+smaller round of the same shape, and whether to offer one is a judgment about
+this conversation: its context is finite, and a round that would run on
+crowded or uncertain context, or whose work is large enough to deserve a
+fresh start, is better recorded in its issues and `TODO.md` for the next
+stint than squeezed into the end of this one. When that point is reached the
+next action is `/stint-handoff` whatever ideas came up. Acknowledgement,
+silence, or an empty frontier is not a request for another round, and
+`/stint-handoff` runs only when the user asks for it. There is no persisted stint state and no background loop. Git,
 issuectl, Taskfleet runs, and `TODO.md` are the only durable owners of facts;
 anything you know that lives in none of them dies with this session.
 
@@ -380,13 +382,13 @@ not an "A or B" menu: the specific answer you need from the user; the exact
 `taskfleet run wait <full-run-id>` or `run show` for an unsettled owned run;
 one exact inspection, repair, retry-with-harvest, or decision action for a
 failed validation or preserved work; `/stint-handoff` when nothing is
-unresolved after the first report, and `/stint-handoff` regardless after the
-one follow-up round. Do not promise an automatic wake; without a wake facility
+unresolved, or when another round would no longer fit this conversation. Do not promise an automatic wake; without a wake facility
 the copyable next action is what the user has.
 
-Light feedback, a handful of small asks, gets the one follow-up round on the
-smaller list, every change still through a worktree. Heavy feedback does not
-fit this session's context: land it in the affected issues, documentation,
-and `TODO.md`, then move to the handoff. Either way keep the schedule current
+Light feedback, a handful of small asks, gets a follow-up round on the
+smaller list while the conversation still has room for one, every change
+still through a worktree. Heavy feedback does not fit this session's context:
+land it in the affected issues, documentation, and `TODO.md`, then move to
+the handoff. Either way keep the schedule current
 before any re-run, through issuectl and committed by exact path, so the next
 DAG read sees it.

@@ -9,6 +9,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.13.0] - 2026-10-13
+
+### Added
+
 - Bundle the `night-stint-prep` skill, which prepares an unattended overnight stint's `TODO.md` handoff from the live issuectl DAG.
 
 ### Changed
@@ -21,7 +30,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `worktree-merge` no longer claims that fan-out drivers are not merged; `no_worktree` / `no_branch` describe a node without a recorded worktree or branch (`fanout-driver-merge-guidance`).
 - `taskfleet-run-overview` describes a bundled fan-out as a driver run plus one run per child, with the driver report as the batch verdict and children cancelled by their own run id (`fanout-child-run-state`).
 - `taskfleet-spawn-spinoff` and `taskfleet-overview` no longer promise that `run create --dry-run` validates the `--source-branch`; a missing branch fails only the real call (`spinoff-dry-run-source-branch`).
-<!-- oss-changelog:unreleased-end -->
+
+- Bundled stint handoff requires an unavailable wrap-up skill (`bundled-handoff-wrapup-dependency`).
+- Fan-out driver wait loop has no path for nonterminal settled child (`fanout-nonterminal-settlement`).
+- Fan-out run guide targets driver nodes instead of child runs (`fanout-child-run-state`).
+- Merge guide incorrectly says fan-out drivers cannot merge (`fanout-driver-merge-guidance`).
+- Spinoff dry-run promises to validate missing source branches (`spinoff-dry-run-source-branch`).
 
 ## [0.12.0] - 2026-10-05
 

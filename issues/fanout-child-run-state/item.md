@@ -1,8 +1,8 @@
 ---
 created: 2026-10-12
-updated: 2026-10-12
+updated: 2026-10-13
 type: bug
-status: untriaged
+status: fixed
 priority: normal
 labels:
 - review:should-fix
@@ -20,6 +20,8 @@ assessment_outcome: FIX
 review_confidence: high
 review_severity: medium
 review_target: crates/taskfleet/skills/
+closed: 2026-10-13
+closed_by: fable
 ---
 
 # Fan-out run guide targets driver nodes instead of child runs
@@ -33,3 +35,9 @@ The run-state guide says a fan-out has no single report and advises `run cancel 
 Verification: `fan-out` explicitly says `--parent-run-id <driver-run-id> --parent-node-id n-0001` records `children[]`, that each child has its own terminal report, and that each child run is cancelled by its own id. The driver report is the batch truth. The single-worker `run show` report projection applies to the driver, which has node `n-0001`.
 
 Assessment: CONFIRMED; likelihood OCCASIONAL (when a fan-out unit needs intervention); readability IMPROVES; architectural impact MINOR; confidence HIGH; FIX (Rule 5), should-fix. Finder: claude-fable-5-1; independent adversarial verifier: gpt-6-astra. Suggested direction: distinguish driver report from individual child-run reports, and cancel a child by its run id.
+
+## Resolution
+
+### 2026-10-13T05:45:31Z · @fable
+
+Applied in the bundled skill templates by the conductor session after reviewing each recommendation with Jari.

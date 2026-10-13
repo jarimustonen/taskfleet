@@ -1,8 +1,8 @@
 ---
 created: 2026-10-12
-updated: 2026-10-12
+updated: 2026-10-13
 type: bug
-status: untriaged
+status: fixed
 priority: normal
 labels:
 - review:should-fix
@@ -20,6 +20,8 @@ assessment_outcome: FIX
 review_confidence: high
 review_severity: medium
 review_target: crates/taskfleet/skills/
+closed: 2026-10-13
+closed_by: fable
 ---
 
 # Merge guide incorrectly says fan-out drivers cannot merge
@@ -33,3 +35,9 @@ The merge guide explains `no_worktree` / `no_branch` as "a driver node, not a wo
 Verification: the `run merge` code checks whether the node has a worktree path and branch, not whether its kind is fan-out. The fan-out instructions explicitly create the driver with a worktree and tell it to merge after child completion. The contradictory gloss is not a true property of fan-out drivers.
 
 Assessment: CONFIRMED; likelihood OCCASIONAL (generic closing guide used for fan-out); readability IMPROVES; architectural impact MINOR; confidence HIGH; FIX (Rule 5), should-fix. Finder: claude-fable-5-1; independent adversarial verifier: gpt-6-astra. Suggested direction: describe the missing recorded worktree/branch condition without claiming driver identity forbids merging.
+
+## Resolution
+
+### 2026-10-13T05:45:31Z · @fable
+
+Applied in the bundled skill templates by the conductor session after reviewing each recommendation with Jari.

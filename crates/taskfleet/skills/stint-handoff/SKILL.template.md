@@ -186,12 +186,17 @@ unscheduled. An unscheduled row's mechanical `spawnable: true` does not make
 it executable; it must pass human triage, move to an accepted active status,
 and gain a lane before a future round may launch it.
 
-**`/wrap-up` has its own contract.** It presents proposed `AGENTS.md`, issue,
-and preference changes and asks before writing, commits what it writes, and
-reports either what was saved or that nothing was; do not assume it committed
-unless it says so. It also runs the light "every open issue is in the DAG"
-check, which is a different question from whether the graph is valid for the
-next round.
+**`/wrap-up` has its own contract, and it is not bundled with Taskfleet.**
+It is a separate skill from the user's own environment. When installed, it
+presents proposed `AGENTS.md`, issue, and preference changes and asks before
+writing, commits what it writes, and reports either what was saved or that
+nothing was; do not assume it committed unless it says so. It also runs the
+light "every open issue is in the DAG" check, which is a different question
+from whether the graph is valid for the next round. When it is not installed,
+do its work yourself in the same spirit: write what this session learned and
+future agents need into the repository's most specific `AGENTS.md` or the
+issue it belongs to, check that every open issue is in the DAG, and commit
+those edits separately from the handoff narrative.
 
 ## The order, and why
 
@@ -237,6 +242,7 @@ for the same reason: a second copy is the thing that drifts.
 Stage `TODO.md` and any answer file by exact path, check that
 `git diff --cached --name-only` is exactly that set, and commit; if nothing
 changed, there is nothing to commit. Then call `/wrap-up` and let it run its
-own contract. Do or remind the user of any declared test-account reset. A
-handoff is complete when `git status --short` is clean; if `/wrap-up` wrote
-approved files without committing, follow its commit contract or ask.
+own contract, or do its work yourself when it is not installed. Do or remind
+the user of any declared test-account reset. A handoff is complete when
+`git status --short` is clean; if `/wrap-up` wrote approved files without
+committing, follow its commit contract or ask.

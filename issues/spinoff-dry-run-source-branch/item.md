@@ -1,8 +1,8 @@
 ---
 created: 2026-10-12
-updated: 2026-10-12
+updated: 2026-10-13
 type: bug
-status: untriaged
+status: fixed
 priority: normal
 labels:
 - review:should-fix
@@ -20,6 +20,8 @@ assessment_outcome: FIX
 review_confidence: high
 review_severity: medium
 review_target: crates/taskfleet/skills/
+closed: 2026-10-13
+closed_by: fable
 ---
 
 # Spinoff dry-run promises to validate missing source branches
@@ -33,3 +35,9 @@ The spinoff guide says the complete `run create --dry-run` "validates everything
 Verification: the release-mode 0.12.0 binary was built in the review checkout and exercised with disposable HOME, TASKFLEET_HOME, and Git repository: a nonexistent `--source-branch` passed `run create --dry-run`. In source, `crates/taskfleet/src/run/create.rs` returns the dry-run envelope before source-branch resolution during materialization. The tests validating fenced CLI examples only test parsing with `--help`, not this behaviour.
 
 Assessment: CONFIRMED; likelihood OCCASIONAL (a typo or stale local branch); readability IMPROVES; architectural impact NONE; confidence HIGH; FIX (Rule 5), should-fix. Finder: claude-fable-5-1; independent adversarial verifier: gpt-6-astra. Suggested direction: describe dry-run as an argument/profile/placement preflight, not a guarantee that the named source branch exists.
+
+## Resolution
+
+### 2026-10-13T05:45:31Z · @fable
+
+Applied in the bundled skill templates by the conductor session after reviewing each recommendation with Jari.

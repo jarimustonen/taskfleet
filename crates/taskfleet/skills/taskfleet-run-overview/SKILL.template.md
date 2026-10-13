@@ -147,9 +147,11 @@ The computed fields are the ones decisions turn on:
   neither could be established. Trust this over your own `git merge-base`
   reasoning.
 - `report` — the terminal worker report, present only for a single-node run
-  and only once its worker has reported. A fan-out has no single report; read
-  each worker with `node show <run-id> <node-id>`, whose `data.report` and
-  `data.last_report` carry the same value. `run wait` folds only a report's
+  and only once its worker has reported. A bundled fan-out is a set of
+  single-node runs: the driver run's report is the batch verdict with one
+  `discussion_items[]` entry per unit that did not complete, and each child
+  run carries its own report, read with `node show <child-run-id> n-0001`.
+  On any node, `data.report` and `data.last_report` carry the same value. `run wait` folds only a report's
   `summary` in; the full `discussion_items`, `spinoff_proposals`, and
   `wrap_up_recommendations` arrays are on `run show` and `node show`.
 - `recoverable_work` — on a `failed` run, the block the supervisor stamps when
@@ -215,8 +217,10 @@ Reading is free. The follow-up verbs differ in what they put at risk, and that,
 rather than their category, decides how much care each deserves.
 
 - `run cancel <run-id>` stops a run and preserves both committed and
-  uncommitted work. With `--node <id>` it cancels one live fan-out child,
-  preserving its branch, while the run stays live until every sibling settles.
+  uncommitted work. A stuck unit of a bundled fan-out is its own run and is
+  cancelled by its own run id; the driver sees it settle as `cancelled`. The
+  `--node <id>` form cancels one live node of a multi-node run, preserving its
+  branch, while the run stays live until every sibling settles.
   Re-cancelling a `cancelled` run, or a node that is already terminal, is a
   no-op success; a `done` or `failed` run is refused with
   `run_already_terminal`. Cancelling costs nothing but the worker's remaining

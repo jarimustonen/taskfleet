@@ -138,7 +138,9 @@ the error's `expected` list is empty, the installation predates profiles and the
 real call omits `--profile`. If profiles exist but neither is defined, surface
 the structured error rather than pick an arbitrary one, and an unknown profile
 the caller chose explicitly is theirs to fix. Then make the real call with
-exactly the selector whose dry-run passed. Child spawns are the one exception:
+exactly the selector whose dry-run passed. The dry-run checks arguments,
+profile, and placement, not that the `--source-branch` exists; that is
+`base_ref_not_found` from the real call. Child spawns are the one exception:
 `--parent-run-id` / `--parent-node-id` cannot be dry-run truthfully, so preflight
 without the parent flags and restore them on the real, idempotency-keyed call.
 
@@ -184,7 +186,8 @@ and it names a session on the invocation's socket, not a socket.
   autonomous task.
 - **`worktree-merge`** — the closing step of any worktree run.
 - **`stint-start`** / **`stint-handoff`** — running a bounded work session as
-  an orchestrator.
+  an orchestrator. The handoff ends by calling a `/wrap-up` skill that is not
+  bundled here; without it, the handoff does that work itself.
 - **`night-stint-prep`** — preparing the handoff for an unattended overnight
   session before anyone runs `stint-start`.
 

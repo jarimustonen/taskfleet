@@ -9,9 +9,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Bundle the `night-stint-prep` skill, which prepares an unattended overnight stint's `TODO.md` handoff from the live issuectl DAG.
+
 ### Changed
 
+- `stint-handoff` and `taskfleet-overview` name `/wrap-up` as an external prerequisite and describe what the handoff does itself when it is not installed (`bundled-handoff-wrapup-dependency`).
+
 ### Fixed
+
+- `fan-out`'s driver wait loop now handles a child that settles without finishing (stalled, attention-required, or awaiting input) instead of re-waiting on it forever (`fanout-nonterminal-settlement`).
+- `worktree-merge` no longer claims that fan-out drivers are not merged; `no_worktree` / `no_branch` describe a node without a recorded worktree or branch (`fanout-driver-merge-guidance`).
+- `taskfleet-run-overview` describes a bundled fan-out as a driver run plus one run per child, with the driver report as the batch verdict and children cancelled by their own run id (`fanout-child-run-state`).
+- `taskfleet-spawn-spinoff` and `taskfleet-overview` no longer promise that `run create --dry-run` validates the `--source-branch`; a missing branch fails only the real call (`spinoff-dry-run-source-branch`).
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.12.0] - 2026-10-05

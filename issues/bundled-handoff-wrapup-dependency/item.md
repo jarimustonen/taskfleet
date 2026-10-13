@@ -1,8 +1,8 @@
 ---
 created: 2026-10-12
-updated: 2026-10-12
+updated: 2026-10-13
 type: bug
-status: untriaged
+status: fixed
 priority: normal
 labels:
 - review:should-fix
@@ -20,6 +20,8 @@ assessment_outcome: FIX_WITH_CARE
 review_confidence: high
 review_severity: medium
 review_target: crates/taskfleet/skills/
+closed: 2026-10-13
+closed_by: fable
 ---
 
 # Bundled stint handoff requires an unavailable wrap-up skill
@@ -33,3 +35,9 @@ The handoff skill defines completion in terms of calling `/wrap-up` to save sess
 Verification: `stint-handoff` says "Then call `/wrap-up` and let it run its own contract"; earlier it describes responsibilities but does not authorize an equivalent fallback. The catalog of fourteen bundled skills has no `wrap-up`. The requirement is a terminal step, unlike optional references to `/complex-rebase`.
 
 Assessment: CONFIRMED; likelihood OCCASIONAL (a clean installation without Jari's other skills); readability IMPROVES; architectural impact MODERATE (handoff and overview contract); confidence HIGH; FIX_WITH_CARE (Rule 4), should-fix. Finder: claude-fable-5-1; independent adversarial verifier: gpt-6-astra. Suggested direction: explicitly state the external prerequisite or give a harness-neutral fallback that records learnings and the light issue check before declaring handoff complete.
+
+## Resolution
+
+### 2026-10-13T05:45:31Z · @fable
+
+Applied in the bundled skill templates by the conductor session after reviewing each recommendation with Jari.

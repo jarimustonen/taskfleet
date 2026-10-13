@@ -188,7 +188,17 @@ The driver brief is the whole operating manual of the batch. It contains:
   `data.runs[]` for each run's `status` and `summary`; several may have
   settled at once. Spawn the next unit for every freed slot. A settled child
   with `status: failed`, or `done` with a report disclosing a failure, is a
-  failed attempt.
+  failed attempt. A child can also settle without finishing: `run wait`
+  returns a `pending` or `running` child whose `stalled`,
+  `attention_required`, or `awaiting_input` flag is set, because it can no
+  longer progress on its own. Waiting on it again returns immediately with the
+  same answer, so take it out of the live set first. Its slot stays taken
+  until it is resolved: a stalled supervisor is revived with
+  `run reattach <child-run-id>`; a child that exited cleanly without
+  `run merge` is a failed attempt, cancelled with `run cancel <child-run-id>`
+  so its branch is preserved; a child awaiting input in an autonomous batch
+  has hit a brief gap, which is also a failed attempt. Only then does the
+  slot free.
 - **The retry budget**: a finite whole-unit count, stated as total attempts
   or as retries after the first, each attempt with a fresh idempotency key.
   A child's own bounded tool retries are separate. At exhaustion the unit is

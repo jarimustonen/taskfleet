@@ -1,8 +1,8 @@
 ---
 created: 2026-10-12
-updated: 2026-10-12
+updated: 2026-10-13
 type: bug
-status: untriaged
+status: fixed
 priority: normal
 labels:
 - review:should-fix
@@ -20,6 +20,8 @@ assessment_outcome: FIX
 review_confidence: high
 review_severity: medium
 review_target: crates/taskfleet/skills/
+closed: 2026-10-13
+closed_by: fable
 ---
 
 # Fan-out driver wait loop has no path for nonterminal settled child
@@ -33,3 +35,9 @@ The driver brief tells an agent to wait on all live child runs with `run wait --
 Verification: `taskfleet-run-overview` explicitly documents nonterminal settled results and their `attention_required` / `awaiting_input` / `stalled` fields. `crates/taskfleet/src/run/wait.rs` treats them as settled and returns from its wait loop before sleeping. Fan-out's self-contained driver brief does not state how to remove or resolve them; its terminal-only slot model does not apply.
 
 Assessment: CONFIRMED; likelihood OCCASIONAL (clean exit without run merge or unattended input prompt in a batch); readability IMPROVES; architectural impact MINOR; confidence HIGH; FIX (Rule 5), should-fix. Finder: claude-fable-5-1; independent adversarial verifier: gpt-6-astra. Suggested direction: distinguish terminal from nonterminal settlements, retain the reservation, resolve/escalate or cancel the child by its run id, then continue without re-waiting on the unchanged settled condition.
+
+## Resolution
+
+### 2026-10-13T05:45:31Z · @fable
+
+Applied in the bundled skill templates by the conductor session after reviewing each recommendation with Jari.

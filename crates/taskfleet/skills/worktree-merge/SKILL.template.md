@@ -204,8 +204,10 @@ can be re-run once the cause is fixed.
   `taskfleet run reattach <run-id>`.
 - `worktree_missing` — a live run whose worktree no longer exists; if the run
   actually finished, `run reattach` completes the roll-up.
-- `no_worktree` / `no_branch` — a driver node, not a worker; drivers are not
-  merged.
+- `no_worktree` / `no_branch` — the node has no recorded worktree path or
+  branch, so there is nothing to rebase. Nothing about a run's kind causes
+  this: a `fan-out` driver is a worker with a worktree and a branch and
+  merges its integration branch exactly like a spinoff.
 - `invalid_merge_report`, `schema_violation`, `report_not_object`,
   `report_file_invalid_json`, `report_file_unreadable`,
   `report_file_too_large` (1 MiB) — the report file, caught before any git

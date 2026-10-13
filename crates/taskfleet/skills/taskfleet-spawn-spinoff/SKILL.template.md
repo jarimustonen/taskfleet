@@ -254,8 +254,10 @@ What the flags do that `--help` does not tell you:
 - `--profile <name>` picks a user-owned executable profile from the taskfleet
   home's `config.toml`; the names an installation defines are its own, so an
   installation may lack the one you would pick. Find out before creating
-  state: run the complete intended command with `--dry-run`, which validates
-  everything and materializes nothing. `unknown_profile` with an empty
+  state: run the complete intended command with `--dry-run`, which checks the
+  arguments, the profile, and the tmux placement and materializes nothing. It
+  does not prove the named `--source-branch` exists; a missing branch fails
+  only the real call, with `base_ref_not_found`. `unknown_profile` with an empty
   `expected` list means the installation predates profiles and the real call
   omits the flag. The capability matrix behind profile choice is in
   `taskfleet-overview`; omitting the flag uses the configured default.

@@ -11,6 +11,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `night-stint-prep` is rewritten to explain what the morning conductor can and cannot read instead of listing checks; fact-checked against issuectl and the binary, together with `stint-handoff` and `worktree-bug-analysis`.
+
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 

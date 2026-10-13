@@ -8,73 +8,83 @@ schema_version: 1
 
 # Prepare an overnight stint
 
-The next conductor will work while the user is absent. Give it an agenda
-grounded in the current repository, not a promise that every mechanically
-spawnable DAG head will be done by morning. Preparation ends with a committed
-handoff and a short briefing to the user; it does not launch workers, deliver
-a design package, or deploy.
+The user is about to leave, and a `/stint-start` conductor will work through
+the night from what you leave behind. Your product is a committed `TODO.md`
+handoff and a short briefing. You do not launch workers, write a design
+package, or deploy; the conductor does that, from the live repository, in the
+morning's absence.
 
-Read the repository's `AGENTS.md`, its session workflow, `TODO.md`, its issue
-policy, and the current `issuectl dag --json` before planning. Read the actual
-issue text of every plausible night unit, including `testing` heads: some
-have code left to do, others wait only for a human verdict. Check
-dependencies, collisions, and in-flight runs through the `taskfleet-overview`
-skill before describing concurrency. A snapshot taken during preparation is
-not a reservation for tonight; the next conductor rebuilds reservations and
-the DAG at launch. Do not infer a worker's ownership from a global run list
-or touch another session's uncommitted files. If the checkout cannot be
-synced cleanly, state the limitation rather than inventing a current
-frontier.
+## What the conductor can and cannot read
 
-Choose a bounded, useful wave from the DAG: substantive implementation that
-can be tested without the user, independent fixes or evidence preparation,
-and a next slice only after its predecessor has landed. Distinguish a design
-or architecture issue whose investigation can proceed from the authority
-decision that cannot. Treat `untriaged` and unscheduled items as candidates,
-not runnable work; if the user has explicitly accepted particular candidates
-for scheduling, record that decision and either apply it through `issuectl`
-or give the next conductor an unambiguous issuectl handoff. Do not silently
-schedule the rest. Leave the exact lane order, blocker edges, collision
-tokens, computed heads, and live holds in issuectl, not in TODO prose: they
-change as workers land, and a prose copy is stale when written.
+The conductor has the repository, the issues, and the live `issuectl dag
+--json --reservations …` output. It does not have this conversation. So the
+handoff carries intent and judgment, and the things that change by themselves
+stay where they are computed: lane order, blocker edges, collision tokens,
+computed heads, and which runs currently hold what. A prose copy of those is
+stale the moment it is written, and the `stint-start` skill tells the
+conductor to trust the DAG over the narrative. The same holds for your own
+reading of in-flight runs: a snapshot taken now is not a reservation for
+tonight, and the conductor rebuilds reservations at launch.
 
-The user's attention is unavailable overnight. A worker can prepare a
-recommendation, test with disposable synthetic identities, assemble a
-redacted package for an outside party, document what to ask them, run the
-repository's gate, and deploy to a disposable test server when the
-repository grants that autonomy. Sending material to an outside party,
-asking the user to perform a real browser or provider test, enrolling
-another person, and choosing a major authority or security boundary are
-morning activities. A worker should make progress around those boundaries
-rather than claim a missing human check passed. The repository's deployment
-policy, not the word "night", determines whether deployment is permitted; a
-red or partially integrated pile does not become a test release. State which
-evidence a morning test would add beyond synthetic results.
+Read the repository's `AGENTS.md`, its session workflow, the current
+`TODO.md`, and the issue policy before planning, since each repository decides
+for itself what a worker may deploy and what the handoff block looks like.
+Then read the actual text of every issue that might go into the wave,
+`testing` heads included. The frontmatter says an issue is at the head of a
+lane; only the body says whether it still has code to write or waits on a
+human verdict. If the checkout cannot be synced cleanly, say so in the
+handoff instead of describing a frontier you could not verify, and leave
+another session's uncommitted files alone.
 
-Default to one conductor with parallel worktree workers, even if the work
-spans server and UI: there is one current DAG, one set of resource
-reservations, and one integration and deployment decision. If two conductors
-really have separable deliverables, define their issue ownership,
-integration point, and communication channel before leaving. A jointly
-edited `TODO.md` is a poor live mailbox; it is a handoff narrative, while
-issue results and Taskfleet reports hold the work facts. Do not create a
-second task tracker just for the night.
+## Choosing the wave
 
-Write the repository's `TODO.md` handoff in its existing style. Name the
-chosen issue slugs and their user-visible outcomes, distinguish
-implementation from preparation and human-gated work, and say what the
-morning report should contain: landed work, validation and installed
-revision, packages ready but unsent, real-user checks not run, decisions
-with a recommendation, and unresolved worker work. Preserve useful
-historical context without claiming an old live version is still installed.
-The new conductor reads the live DAG and adjusts if concurrent work changed
-it; TODO is intent, not scheduling authority. Commit only your own handoff
-and issue metadata, push under repository policy, and leave pre-existing
-edits alone.
+A good night wave is bounded and useful: implementation that can be tested
+without the user, independent fixes, evidence preparation, and a next slice
+only after its predecessor has landed. The question for every candidate is
+what a worker can finish alone. A design or architecture issue often splits:
+the investigation can proceed, the authority decision cannot, and the handoff
+should say which half tonight gets.
 
-Before calling the plan ready, ask whether a fresh agent could tell what to
-do first, what can follow if it lands, what waits for the user, and what
-should not be started just because it appears at the DAG head. If not, the
-handoff is still too generic. Brief the user on those choices and any
-genuinely unresolved product decision; do not start `/stint-start` unless
-asked.
+`untriaged` and unscheduled issues are candidates, not runnable work. If the
+user has accepted particular ones for scheduling, apply that through
+`issuectl` or hand the conductor an unambiguous `issuectl` instruction, and
+record that it was the user's decision. The rest stay unscheduled; the
+conductor must not learn from your handoff that something is approved when
+nobody approved it.
+
+What waits for morning is anything that needs the user's presence or
+authority: sending material to an outside party, a real browser or provider
+test, enrolling another person, a major authority or security boundary. A
+worker can get right up to those edges by preparing the recommendation,
+testing with disposable synthetic identities, assembling a redacted package,
+writing down what to ask, running the gate, and deploying to a disposable
+test server where the repository grants that. It should not claim a missing
+human check passed, and the word "night" does not relax the repository's
+deployment policy: a red or half-integrated pile is not a test release. Say
+what evidence a morning test would add beyond the synthetic results.
+
+Plan for one conductor with parallel worktree workers even when the work
+spans server and UI. There is one DAG, one set of reservations, and one
+integration and deployment decision, and two conductors sharing them need
+their issue ownership, integration point, and channel defined before anyone
+leaves. `TODO.md` is a poor live mailbox between them; it is a handoff
+narrative, while issue results and Taskfleet reports hold the facts. Do not
+invent a second tracker for the night.
+
+## Writing the handoff
+
+Write in the repository's existing `TODO.md` style. Name the chosen slugs and
+what the user will be able to see when each lands, distinguish implementation
+from preparation and from human-gated work, and say what the morning report
+should contain: landed work, validation and the installed revision, packages
+ready but unsent, real-user checks not run, decisions with a recommendation,
+and unresolved worker work. Keep the useful history, but do not let an old
+narrative claim a version is still installed when it is not. Commit only your
+own handoff and issue metadata, push under the repository's policy, and leave
+pre-existing edits alone.
+
+Before calling it ready, read it as the fresh conductor would: is it clear
+what to do first, what can follow if that lands, what waits for the user, and
+what should not be started merely because it sits at a DAG head? If not, the
+handoff is still too generic. Then brief the user on the choices and any
+genuinely unresolved product decision. Starting `/stint-start` is their call.

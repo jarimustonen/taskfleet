@@ -2,7 +2,7 @@
 created: 2026-10-13
 updated: 2026-10-15
 type: bug
-status: open
+status: in-progress
 priority: normal
 lane: lifecycle
 lane_seq: 20

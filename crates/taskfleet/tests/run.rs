@@ -294,13 +294,14 @@ default="local"
         )
     });
     let expected_prefix = format!(
-        "{run_id}\nn-0001\n0\nunset\nunset\n7\n{}\none two\nquote'arg\n--session\n",
+        "{run_id}\nn-0001\n0\nunset\nunset\n9\n{}\none two\nquote'arg\n--extension\n",
         worker.display()
     );
     assert!(
         observed_bytes.starts_with(&expected_prefix),
         "observed={observed_bytes:?}"
     );
+    assert!(observed_bytes.contains(&format!("/.creating/message-{run_id}.ts\n--session\n")));
     assert!(
         observed_bytes.contains(&format!("/.creating/pi-sessions/{run_id}/pi-session-")),
         "exact private session path reaches the selected Pi argv: {observed_bytes:?}"

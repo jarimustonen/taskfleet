@@ -743,12 +743,11 @@ fn envelope(out: &Output, success: bool) -> Value {
         } else {
             out.stdout.is_empty()
         },
-        "unexpected output: {:?}",
-        out
+        "unexpected output: {out:?}"
     );
     let mut de = serde_json::Deserializer::from_slice(stream).into_iter::<Value>();
     let value = de.next().unwrap().unwrap();
-    assert!(de.next().is_none(), "multiple envelopes: {:?}", out);
+    assert!(de.next().is_none(), "multiple envelopes: {out:?}");
     value
 }
 

@@ -4841,11 +4841,15 @@ EOF
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let observed = std::fs::read_to_string(observed).unwrap();
-        let expected_prefix = format!("{}\nn-0001\n3\n4\n--session\n", manifest.run_id);
+        let expected_prefix = format!("{}\nn-0001\n3\n6\n--extension\n", manifest.run_id);
         assert!(
             observed.starts_with(&expected_prefix),
             "observed={observed:?}"
         );
+        assert!(observed.contains(&format!(
+            "/.creating/message-{}.ts\n--session\n",
+            manifest.run_id
+        )));
         assert!(
             observed.contains(&format!(
                 "/.creating/pi-sessions/{}/pi-session-",

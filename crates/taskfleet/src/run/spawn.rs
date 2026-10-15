@@ -277,6 +277,11 @@ pub fn write_agent_launcher(
         inner_body.extend_from_slice(b" --session ");
         inner_body.extend_from_slice(&shell_literal_path(path));
     }
+    // Claude's print mode consumes the workmux-supplied prompt and exits;
+    // permission policy remains entirely in the user-owned profile argv.
+    if selected.harness == "claude" && selection.interaction == "autonomous" {
+        inner_body.extend_from_slice(b" --print");
+    }
     inner_body.extend_from_slice(b" \"$@\"\n");
     write_executable(&inner, &inner_body)?;
 
@@ -1143,6 +1148,31 @@ pub(crate) mod tests {
             "same id binds helper and Pi path"
         );
         assert!(launcher.path().is_absolute());
+    }
+
+    #[test]
+    fn claude_headless_launcher_uses_print_without_pi_session_or_telemetry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("runs/01jxsnap000000000000000000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let selection = builtin_agent_selection("claude", true);
+        write_agent_launcher(
+            &run_dir,
+            tmp.path(),
+            &selection,
+            "01jxsnap000000000000000000",
+            "n-0001",
+            0,
+        )
+        .unwrap();
+        let inner =
+            std::fs::read_to_string(run_dir.join("candidate-launch-n-0001-attempt-0.sh")).unwrap();
+        let outer =
+            std::fs::read_to_string(run_dir.join("agent-launch-n-0001-attempt-0.sh")).unwrap();
+        assert!(inner.contains("exec 'claude' --print \"$@\""));
+        assert!(!inner.contains("--pi-session"));
+        assert!(!outer.contains("export TASKFLEET_RUN_ID="));
+        assert!(outer.contains("run-worker"));
     }
 
     #[test]

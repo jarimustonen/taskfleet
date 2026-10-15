@@ -16,7 +16,17 @@ the worktree/tmux/launcher transaction itself; it does not depend on Homebase or
 
 - **One autonomous agent in a worktree.** `run create --kind spinoff` spawns
   an agent that works in its own git worktree and merges itself back with
-  `run merge` when done. Zero manual cleanup.
+  `run merge` when done. Zero manual cleanup. To select Claude Code for a
+  headless run, define a **user-owned** profile in `~/.taskfleet/config.toml`:
+  `agents = [{ harness = "claude", command = ["claude"] }]`
+  under `[profiles.claude]` (with `description`, `capability`, and `residency`),
+  then pass `--profile claude --headless`. The launcher adds `--print` and
+  records the true exit; only an explicit `run merge` marks success. Choose
+  permission flags deliberately in the user profile if unattended tool use
+  requires them; never take permission policy from repository config. Claude
+  has no `worker-v1` telemetry or Pi transcript: the final pane and terminal
+  report are archived under the run's `evidence/<node-id>/`, with a
+  `claude-headless.json` capability marker. Failed exits preserve unmerged work.
 - **N identical units in parallel.** `--kind fan-out` runs many disjoint
   workers, each in its own worktree, each merging itself back.
 - **Research and decision workers.** `--kind research` (multi-source

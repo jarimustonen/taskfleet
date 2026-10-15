@@ -1,4 +1,4 @@
-//! Final durable evidence capture for native Pi workers.
+//! Final durable evidence capture for native Pi and headless Claude workers.
 //!
 //! Capture runs before terminal pane/worktree cleanup. A failed capture is a
 //! durable `worker.evidence.failed` fact and vetoes cleanup, preserving the live
@@ -38,7 +38,24 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Capture terminal evidence, returning false only when cleanup must be deferred.
 pub(crate) fn archive_before_cleanup(paths: &RunPaths, node: &Node, tmux: &str) -> bool {
     let Some(recorded) = node.evidence.as_ref() else {
-        return true;
+        // Claude does not write a Pi session or worker-v1 telemetry. Archive
+        // only the pane and terminal report we actually own before teardown.
+        return match read_manifest_opt(paths) {
+            Ok(Some(manifest))
+                if manifest
+                    .agent_selection
+                    .as_ref()
+                    .is_some_and(|s| s.selected.harness == "claude") =>
+            {
+                archive_claude(paths, node, tmux)
+            }
+            Ok(Some(_)) => true,
+            Err(error) => {
+                eprintln!("supervisor evidence: cannot read run manifest: {error}");
+                false
+            }
+            Ok(None) => false,
+        };
     };
     let retry_key = retry_key(paths, node);
     if recorded.status == taskfleet_core::EvidenceStatus::Complete {
@@ -102,6 +119,87 @@ pub(crate) fn archive_before_cleanup(paths: &RunPaths, node: &Node, tmux: &str) 
         }
         Err(error) => record_failure(paths, node, recorded, error),
     }
+}
+
+// Claude's headless mode has no session transcript to resume. The completion
+// marker is written last so a crash between artifact writes is safely retried.
+fn archive_claude(paths: &RunPaths, node: &Node, tmux: &str) -> bool {
+    let dir = paths.root.join("evidence").join(node.node_id.as_str());
+    let marker = dir.join("claude-headless.json");
+    let result = (|| -> Result<(), String> {
+        let identity = node
+            .tmux_identity
+            .as_ref()
+            .ok_or("terminal worker has no qualified tmux identity")?;
+        if marker.exists() {
+            let prior: Value =
+                serde_json::from_slice(&std::fs::read(&marker).map_err(|e| e.to_string())?)
+                    .map_err(|e| format!("invalid Claude evidence marker: {e}"))?;
+            if prior["window_id"] == identity.window_id
+                && prior["retry_attempts"] == json!(node.retry_attempts)
+                && prior["branch"] == json!(node.branch)
+            {
+                return Ok(());
+            }
+        }
+
+        let report = node
+            .last_report
+            .as_ref()
+            .ok_or("terminal node has no report")?;
+        let mut command = Command::new(tmux);
+        if let Some(socket) = identity.socket.as_deref() {
+            command.args(["-S", socket]);
+        }
+        command.args([
+            "capture-pane",
+            "-p",
+            "-S",
+            "-",
+            "-E",
+            "-",
+            "-t",
+            identity.capture_target(),
+        ]);
+        let pane = match crate::proc::run_with_timeout(command, CAPTURE_TIMEOUT, MAX_PANE_BYTES) {
+            crate::proc::TimedOutcome::Exited { status, stdout, .. } if status.success() => {
+                stdout.bytes
+            }
+            crate::proc::TimedOutcome::Exited { status, stderr, .. } => {
+                return Err(format!(
+                    "tmux capture-pane exited {:?}: {}",
+                    status.code(),
+                    String::from_utf8_lossy(&stderr.bytes)
+                ))
+            }
+            crate::proc::TimedOutcome::TimedOut => return Err("tmux capture-pane timed out".into()),
+            crate::proc::TimedOutcome::SpawnErr(error) => {
+                return Err(format!("tmux capture-pane spawn failed: {error}"))
+            }
+        };
+        let root = paths.root.join("evidence");
+        ensure_private_directory(&root)?;
+        ensure_private_directory(&dir)?;
+        write_atomic(&dir.join("final-pane.log"), &pane)?;
+        let mut report_bytes = serde_json::to_vec_pretty(report).map_err(|e| e.to_string())?;
+        report_bytes.push(b'\n');
+        write_atomic(&dir.join("terminal-report.json"), &report_bytes)?;
+        let metadata = json!({
+            "harness": "claude", "mode": "headless", "transcript": "unavailable",
+            "telemetry": "unsupported", "window_id": identity.window_id,
+            "pane_id": identity.pane_id, "retry_attempts": node.retry_attempts,
+            "branch": node.branch,
+        });
+        let mut bytes = serde_json::to_vec(&metadata).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        write_atomic(&marker, &bytes)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        eprintln!("supervisor Claude evidence capture failed for {}/{}: {error}; preserving worker resources", paths.run_id, node.node_id);
+        return false;
+    }
+    true
 }
 
 fn record_failure(

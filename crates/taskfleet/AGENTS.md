@@ -137,9 +137,10 @@ create time from static eligibility (missing executable, autonomous harness
 support, telemetry support), so a launch or runtime failure never advances to
 the next candidate; and a retry regenerates its launcher from the recorded
 `manifest.agent_selection`, never from current config, so a run reproduces
-its own launch. Autonomous runs accept only pi with the `worker-v1` telemetry
-adapter (`contracts/worker-telemetry-v1/`); explicit interactive runs accept
-pi or Claude.
+its own launch. Autonomous runs accept pi with the `worker-v1` telemetry adapter
+(`contracts/worker-telemetry-v1/`) or Claude without telemetry. Explicit
+interactive runs accept pi or Claude. Claude's headless launcher adds `--print`
+and archives only its final pane and terminal report, not a Pi transcript.
 
 Launch is native code in `src/run/spawn.rs`. The generated launcher publishes
 its own PID through the hidden `worker-handshake` command immediately before

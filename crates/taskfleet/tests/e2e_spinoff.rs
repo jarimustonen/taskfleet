@@ -358,3 +358,157 @@ fn wait_for_manifest_status(run_dir: &Path, wanted: &str) {
     }
     panic!("timed out waiting for manifest status {wanted}");
 }
+
+#[test]
+fn claude_headless_stub_merges_and_archives_truthful_evidence() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let tools = NativeSpawnTools::new();
+    let worker = scratch.path().join("claude-stub.sh");
+    executable(&worker, "#!/bin/sh\n[ \"$1\" = --print ] || exit 42\n[ \"$2\" = -- ] || exit 43\ncase \"$3\" in *'do work'*) ;; *) exit 44 ;; esac\n[ -z \"${TASKFLEET_RUN_ID:-}\" ] || exit 45\nexec /bin/sleep 120\n");
+    std::fs::write(home.path().join("config.toml"), format!(
+        "[profiles.claude]\ndescription=\"headless fixture\"\ncapability=\"fast\"\nresidency=\"local\"\nagents=[{{harness=\"claude\",command=[\"{}\"]}}]\n[profile]\ndefault=\"claude\"\n", worker.display())).unwrap();
+    let worktree = tools.worktree("claude-merged");
+    let mut create = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+    create
+        .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
+    tools.configure(&mut create, &worktree, "headless");
+    let output = create
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--headless",
+            "--title",
+            "claude e2e",
+            "--task",
+            "do work",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "create: {}; stub: {}",
+        String::from_utf8_lossy(&output.stderr),
+        std::fs::read_to_string(tools.agent_stderr()).unwrap_or_default()
+    );
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = created["data"]["run_id"].as_str().unwrap();
+    assert_eq!(
+        created["data"]["selection"]["selected"]["harness"],
+        "claude"
+    );
+    assert_eq!(
+        created["data"]["selection"]["selected"]["telemetry"],
+        Value::Null
+    );
+    let dir = home.path().join("runs").join(id);
+    let events = dir.join("events.jsonl");
+    wait_event(&events, "supervisor.started");
+    std::fs::write(worktree.join("WORK"), "committed work").unwrap();
+    for args in [
+        vec!["add", "-A"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "work",
+        ],
+    ] {
+        let output = Command::new("git")
+            .current_dir(&worktree)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let merged = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
+            .args(["--output", "json", "run", "merge", id, "--source", "main"]),
+    );
+    assert_eq!(merged["data"]["merged"], true);
+    wait_event(&events, "supervisor.exited");
+    wait_path_missing(&worktree);
+    let evidence = dir.join("evidence/n-0001");
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &std::fs::read(evidence.join("claude-headless.json")).unwrap()
+        )
+        .unwrap()["transcript"],
+        "unavailable"
+    );
+    assert_eq!(
+        std::fs::read_to_string(evidence.join("final-pane.log")).unwrap(),
+        "fixture final pane\n"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &std::fs::read(evidence.join("terminal-report.json")).unwrap()
+        )
+        .unwrap()["via"],
+        "explicit-merge"
+    );
+    assert!(!evidence.join("pi-session.original.jsonl").exists());
+}
+
+#[test]
+fn claude_headless_nonzero_exit_preserves_unmerged_work() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let tools = NativeSpawnTools::new();
+    let worker = scratch.path().join("claude-stub.sh");
+    executable(
+        &worker,
+        "#!/bin/sh\n[ \"$1\" = --print ] || exit 42\n/bin/sleep 1\nexit 17\n",
+    );
+    std::fs::write(home.path().join("config.toml"), format!(
+        "[profiles.claude]\ndescription=\"headless fixture\"\ncapability=\"fast\"\nresidency=\"local\"\nagents=[{{harness=\"claude\",command=[\"{}\"]}}]\n[profile]\ndefault=\"claude\"\n", worker.display())).unwrap();
+    let worktree = tools.worktree("claude-failed");
+    let mut create = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+    create
+        .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
+    tools.configure(&mut create, &worktree, "headless");
+    let created = run_ok(create.args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--headless",
+        "--title",
+        "claude failure",
+        "--task",
+        "do work",
+    ]));
+    let dir = home
+        .path()
+        .join("runs")
+        .join(created["data"]["run_id"].as_str().unwrap());
+    std::fs::write(worktree.join("UNMERGED"), "retain").unwrap();
+    wait_event(&dir.join("events.jsonl"), "worker.exited");
+    wait_for_manifest_status(&dir, "failed");
+    wait_event(&dir.join("events.jsonl"), "supervisor.exited");
+    assert!(worktree.join("UNMERGED").exists());
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        events.lines().any(|l| serde_json::from_str::<Value>(l)
+            .is_ok_and(|v| v["kind"] == "worker.exited" && v["data"]["exit_code"] == 17)),
+        "{events}"
+    );
+    assert!(dir.join("evidence/n-0001/claude-headless.json").exists());
+}

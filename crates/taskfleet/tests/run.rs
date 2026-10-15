@@ -124,16 +124,10 @@ fn profile_resolution_matches_dry_run_persisted_create_and_show() {
     assert_eq!(selection["profile"], "capable");
     assert_eq!(selection["selection_source"], "user-default");
     assert_eq!(selection["interaction"], "autonomous");
-    assert_eq!(selection["selected"]["candidate_index"], 1);
-    assert_eq!(selection["selected"]["harness"], "pi");
-    assert_eq!(
-        selection["selected"]["command"],
-        json!(["/bin/sh", "--fictional"])
-    );
-    assert_eq!(
-        selection["fallback"][0]["reason"],
-        "autonomous_harness_unsupported"
-    );
+    assert_eq!(selection["selected"]["candidate_index"], 0);
+    assert_eq!(selection["selected"]["harness"], "claude");
+    assert_eq!(selection["selected"]["command"], json!(["/bin/sh"]));
+    assert_eq!(selection["fallback"], json!([]));
     assert!(
         !home.path().join("runs").exists(),
         "dry-run created run state"
@@ -153,16 +147,15 @@ fn telemetry_requirement_and_support_come_only_from_recorded_policy() {
     let home = TestHome::new();
     write_profiles(&home);
 
-    // Autonomous resolution skips Claude and records adapted pi. No sample is
-    // needed for support to be configured.
+    // Headless Claude has no worker-v1 adapter; no Pi-shaped sample is invented.
     let autonomous = run_ok(bin(&home).args([
         "--output", "json", "run", "create", "--kind", "spinoff", "--title", "auto",
     ]));
     let autonomous_id = autonomous["data"]["run_id"].as_str().unwrap();
     create_node(&home, autonomous_id, "n-0001");
     let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", autonomous_id]));
-    assert_eq!(shown["data"]["telemetry"][0]["requirement"], "required");
-    assert_eq!(shown["data"]["telemetry"][0]["support"], "configured");
+    assert_eq!(shown["data"]["telemetry"][0]["requirement"], "optional");
+    assert_eq!(shown["data"]["telemetry"][0]["support"], "unsupported");
     assert_eq!(shown["data"]["telemetry"][0]["sample"], "absent");
 
     // Explicit interaction selects the first (Claude) candidate. Interaction,

@@ -569,10 +569,13 @@ impl AgentSelection {
         }
         validate_selected_candidate(&self.selected)?;
         if self.interaction == "autonomous"
-            && (self.selected.harness != "pi"
-                || self.selected.telemetry.as_deref() != Some("worker-v1"))
+            && !((self.selected.harness == "pi"
+                && self.selected.telemetry.as_deref() == Some("worker-v1"))
+                || (self.selected.harness == "claude" && self.selected.telemetry.is_none()))
         {
-            return Err("autonomous selection requires pi with worker-v1 telemetry".into());
+            return Err(
+                "autonomous selection requires pi/worker-v1 or claude without telemetry".into(),
+            );
         }
         if self.selected.candidate_index >= 8
             || self.fallback.len() != usize::from(self.selected.candidate_index)

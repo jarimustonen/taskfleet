@@ -10,8 +10,8 @@ use serde::Serialize;
 use taskfleet_core::{Lifecycle, Manifest, RunPaths, TelemetrySampleStatus, TelemetryView};
 
 /// CLI telemetry row. Requirement and support are static recorded policy, not
-/// runtime inference: interaction alone determines requirement and the recorded
-/// selected candidate alone determines support. Sample arrival affects neither.
+/// runtime inference: interaction and the recorded selected candidate determine
+/// requirement and support. Sample arrival affects neither.
 #[derive(Debug, Serialize)]
 pub struct NodeTelemetryView {
     pub node_id: String,
@@ -48,9 +48,15 @@ pub fn read_views(
     paths: &RunPaths,
     manifest: &Manifest,
 ) -> (Vec<NodeTelemetryView>, Option<String>) {
-    let requirement = match manifest.lifecycle {
-        Lifecycle::Autonomous => "required",
-        Lifecycle::Interactive => "optional",
+    let requirement = if manifest.lifecycle == Lifecycle::Autonomous
+        && manifest
+            .agent_selection
+            .as_ref()
+            .is_some_and(|selection| selection.selected.harness == "pi")
+    {
+        "required"
+    } else {
+        "optional"
     };
     let support = if manifest
         .agent_selection

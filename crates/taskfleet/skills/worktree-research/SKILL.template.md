@@ -244,9 +244,11 @@ after a transient error return the original run instead of spawning a second
 one. Output defaults to `--output jsonl`.
 
 The worker runs under the pi harness by default, and on an installation with
-executable profiles configured an autonomous run accepts only a pi candidate
-with `worker-v1` telemetry; `--harness claude` is honoured only on an
-installation that predates profiles. The routing matrix in `taskfleet-overview`
+executable profiles configured an autonomous run accepts pi with `worker-v1`
+telemetry or Claude without telemetry. Claude uses headless `--print` mode;
+its exit is recorded separately from the explicit `run merge` completion.
+The profile argv and permission policy must be defined in the user's config,
+not the repository's selection-only config. The routing matrix in `taskfleet-overview`
 recommends no profile for research, so forward an explicit caller `--profile`
 as their selection and otherwise let the installation's default apply. When you
 are unsure a selector exists, preflight the complete command with `--dry-run`;

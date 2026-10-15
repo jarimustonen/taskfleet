@@ -398,9 +398,13 @@ fn skip_reason(
     };
     if !available(executable) {
         Some("executable_missing")
-    } else if lifecycle == Lifecycle::Autonomous && candidate.harness != "pi" {
+    } else if lifecycle == Lifecycle::Autonomous
+        && candidate.harness != "pi"
+        && candidate.harness != "claude"
+    {
         Some("autonomous_harness_unsupported")
     } else if lifecycle == Lifecycle::Autonomous
+        && candidate.harness == "pi"
         && candidate.telemetry.as_deref() != Some("worker-v1")
     {
         Some("telemetry_unsupported")
@@ -508,7 +512,7 @@ mod tests {
     fn autonomous_skips_in_exact_reason_order() {
         let cfg = config(vec![
             candidate("claude", "missing", None),
-            candidate("claude", "claude", None),
+            candidate("pi", "pi", None),
             candidate("pi", "pi", None),
             candidate("pi", "pi-adapted", Some("worker-v1")),
         ]);
@@ -531,10 +535,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "executable_missing",
-                "autonomous_harness_unsupported",
+                "telemetry_unsupported",
                 "telemetry_unsupported"
             ]
         );
+    }
+
+    #[test]
+    fn autonomous_accepts_claude_without_pi_telemetry() {
+        let cfg = config(vec![candidate("claude", "claude", None)]);
+        let got = resolve_test(
+            Lifecycle::Autonomous,
+            &cfg,
+            &RepoConfig::default(),
+            None,
+            None,
+        )
+        .unwrap()
+        .selection
+        .unwrap();
+        assert_eq!(got.selected.harness, "claude");
+        assert_eq!(got.selected.telemetry, None);
     }
 
     #[test]

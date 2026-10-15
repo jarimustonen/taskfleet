@@ -14,6 +14,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.14.0] - 2026-10-15
+
+### Added
+
+- Record the parent run of runs a worker spawns (`intake-feature-taskfleet-7e8ef9b4b70c`).
+- Run Claude Code as an autonomous headless harness (`claude-headless-harness`).
+- Send a message to a running worker (`intake-feature-taskfleet-c1e2052e8b57`).
+- Support worktree runs with caller-owned agents (`caller-owned-agent-runs`).
+
+### Fixed
+
+- Flaky test: managed_session_retained_when_attached fails under the full suite (`flaky-test-managed`).
+- Supervisor stays alive after its run fails, blocking discard (`supervisor-outlives-failed-run`).
+- Teardown leaves worktree dirs when Go module cache is read-only (`intake-bug-taskfleet-de6a06403413`).
+- run cancel --node help describes the retired multi-node fan-out model (`run-cancel-node`).
+- run discard leaves partial state after first call; retries refuse (`intake-bug-taskfleet-0f680b1ff932`).
+- run merge refuses on unrelated untracked files in the target worktree (`merge-untracked-refusal`).
+- run wait returns immediately while a run awaits input (`run-wait-returns-while-awaiting-input`).
+
 ## [0.13.1] - 2026-10-13
 
 ### Changed

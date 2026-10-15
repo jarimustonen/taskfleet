@@ -20,6 +20,7 @@ use crate::run::worker::{classify_worker, WorkerState};
 use crate::run::{from_core, run_paths_from_cli_arg};
 
 const EVENT_KIND: &str = "cleanup.discard_authorized";
+const FORCE_UPGRADE_KIND: &str = "cleanup.discard_force_authorized";
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -271,7 +272,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // Inputs remain pinned even if the recorded path no longer looks like a
         // worktree. An old receipt without inode proof cannot authorize orphan
         // deletion; keep that directory for manual recovery.
-        if recorded.reason != args.reason || recorded.force != args.force {
+        let upgraded = !recorded.force
+            && args.force
+            && force_upgrade_recorded(
+                &witness,
+                &paths,
+                &node.node_id,
+                prior.seq,
+                &recorded.reason,
+            )?;
+        if recorded.reason != args.reason
+            || (recorded.force != args.force
+                && !upgraded
+                && !orphan_retry_allowed(recorded, &observation, args.force))
+        {
             return Err(CliError::user(
                 "idempotency_conflict",
                 format!("node {node_id} has an incomplete discard authorization with different reason/force inputs"),
@@ -375,7 +389,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
 
-    let force_required = observation.view.cleanliness == "dirty";
+    let force_required = observation.view.cleanliness == "dirty"
+        || (orphan && !prior_auth.as_ref().is_some_and(|auth| auth.force));
     if args.dry_run {
         return emit(
             Payload {
@@ -403,7 +418,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         return Err(CliError::user(
             "force_required",
             format!(
-                "node {node_id}'s worktree is dirty; --force explicitly authorizes deletion of staged, modified, and untracked files"
+                "node {node_id}'s worktree is dirty or partially removed; --force explicitly authorizes deletion of remaining files"
             ),
         )
         .with_expected(json!({"force": true})));
@@ -437,6 +452,34 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         )
         .map_err(from_core)?
     };
+
+    if orphan && !auth.force {
+        // A clean non-force authorization cannot cover files added after Git
+        // lost registration. A separate durable, target-bound force upgrade
+        // makes that new destructive choice explicit without rewriting history.
+        let key = format!("discard-force:{run_id}:{node_id}");
+        let expected = json!({"authorization_seq":seq,"reason":auth.reason,"actor":format!("uid:{}", unsafe { libc::geteuid() })});
+        if let Some(old) =
+            find_prior_with_key(&witness, &paths, FORCE_UPGRADE_KIND, &key).map_err(from_core)?
+        {
+            if old.data != expected || old.node_id.as_deref() != Some(node.node_id.as_str()) {
+                return Err(CliError::user(
+                    "idempotency_conflict",
+                    "force upgrade does not match recorded discard",
+                ));
+            }
+        } else {
+            append_and_apply_unlocked(
+                &witness,
+                &paths,
+                FORCE_UPGRADE_KIND,
+                Some(&node.node_id),
+                Some(&key),
+                expected,
+            )
+            .map_err(from_core)?;
+        }
+    }
 
     let repo = observation
         .source_repo
@@ -492,6 +535,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             return Err(CliError::system(
                 "discard_partial_cleanup",
                 "checkout still present or registered; branch preserved",
+            ));
+        }
+        if prior_auth_missing_oid(&auth) {
+            return Err(CliError::system(
+                "preserved_work_unverifiable",
+                "older discard receipt has no branch OID; preserving branch for manual recovery",
             ));
         }
         let detail = auth
@@ -609,6 +658,51 @@ fn path_absent(path: Option<&str>) -> bool {
     path.is_none_or(|p| {
         std::fs::symlink_metadata(p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
     })
+}
+
+fn force_upgrade_recorded(
+    witness: &taskfleet_core::LockedRun<'_>,
+    paths: &taskfleet_core::RunPaths,
+    node: &NodeId,
+    seq: u64,
+    reason: &str,
+) -> Result<bool, CliError> {
+    let key = format!("discard-force:{}:{node}", paths.run_id);
+    let prior = find_prior_with_key(witness, paths, FORCE_UPGRADE_KIND, &key).map_err(from_core)?;
+    if let Some(event) = prior {
+        let expected = json!({"authorization_seq":seq,"reason":reason,"actor":format!("uid:{}", unsafe { libc::geteuid() })});
+        if event.node_id.as_deref() != Some(node.as_str()) || event.data != expected {
+            return Err(CliError::user(
+                "idempotency_conflict",
+                "force upgrade does not match recorded discard",
+            ));
+        }
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn orphan_retry_allowed(
+    auth: &Authorization,
+    observation: &Option<RetainedObservation>,
+    force: bool,
+) -> bool {
+    force
+        && !auth.force
+        && auth.identity.is_some()
+        && observation
+            .as_ref()
+            .is_some_and(|o| o.view.worktree_present && !o.verified_for_discard())
+}
+
+fn prior_auth_missing_oid(auth: &Authorization) -> bool {
+    auth.branch_oid.is_none()
+        && auth
+            .identity
+            .as_ref()
+            .and_then(|id| id.branch_oid.as_ref())
+            .is_none()
 }
 
 fn created_ns(meta: &std::fs::Metadata) -> Result<u128, CliError> {

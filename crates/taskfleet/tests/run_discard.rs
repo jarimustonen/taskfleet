@@ -543,6 +543,7 @@ fn positively_live_worker_overrides_stale_told_exit_before_authorization() {
 #[test]
 fn interrupted_branch_only_retry_preserves_original_authorization_contract() {
     let f = Fixture::failed();
+    let oid = git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]);
     let node = NodeId::parse_str("n-0001").unwrap();
     append_and_apply_event(
         &f.paths,
@@ -552,7 +553,7 @@ fn interrupted_branch_only_retry_preserves_original_authorization_contract() {
         json!({
             "actor":"uid:recorded", "reason":"superseded", "force":false,
             "worktree_path":f.worktree, "branch":"wt/retained",
-            "cleanliness":"clean", "unmerged_commits":0
+            "cleanliness":"clean", "unmerged_commits":0, "branch_oid":oid
         }),
     )
     .unwrap();
@@ -696,6 +697,7 @@ fn current_candidates_beat_history_and_two_current_nodes_require_selection() {
 #[test]
 fn incomplete_authorization_rejects_changed_inputs_and_reuses_recorded_actor() {
     let f = Fixture::failed();
+    let oid = git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]);
     let node = NodeId::parse_str("n-0001").unwrap();
     append_and_apply_event(
         &f.paths,
@@ -705,7 +707,7 @@ fn incomplete_authorization_rejects_changed_inputs_and_reuses_recorded_actor() {
         json!({
             "actor":"uid:recorded", "reason":"superseded", "force":false,
             "worktree_path":f.worktree, "branch":"wt/retained",
-            "cleanliness":"clean", "unmerged_commits":0
+            "cleanliness":"clean", "unmerged_commits":0, "branch_oid":oid
         }),
     )
     .unwrap();
@@ -957,4 +959,72 @@ fn branch_only_discard_pins_ref_even_when_checkout_is_already_absent() {
         git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]),
         moved
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_nonforce_partial_retry_preserves_new_files_until_force_upgrade() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::failed();
+    let readonly = f.worktree.join("readonly");
+    std::fs::create_dir(&readonly).unwrap();
+    std::fs::write(readonly.join("tracked"), "initial").unwrap();
+    git(&f.worktree, &["add", "readonly/tracked"]);
+    git(&f.worktree, &["commit", "-qm", "tracked work"]);
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let plain = ["run", "discard", &f.run_id, "--reason", "operator"];
+    assert_eq!(
+        envelope(&command(&f.home, &plain), false)["error"]["code"],
+        "discard_partial_cleanup"
+    );
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(readonly.join("new-after-discard"), "new work").unwrap();
+    assert_eq!(
+        envelope(&command(&f.home, &plain), false)["error"]["code"],
+        "force_required"
+    );
+    assert!(readonly.join("new-after-discard").exists());
+    let forced = [
+        "run", "discard", &f.run_id, "--reason", "operator", "--force",
+    ];
+    assert_eq!(
+        envelope(&command(&f.home, &forced), true)["data"]["discarded"],
+        true
+    );
+    assert!(!f.worktree.exists());
+    assert_eq!(
+        envelope(&command(&f.home, &forced), true)["data"]["already_discarded"],
+        true
+    );
+    let events = std::fs::read_to_string(f.paths.events()).unwrap();
+    assert_eq!(events.matches("cleanup.discard_authorized").count(), 1);
+    assert_eq!(
+        events.matches("cleanup.discard_force_authorized").count(),
+        1
+    );
+}
+
+#[test]
+fn legacy_branch_only_receipt_without_oid_preserves_branch() {
+    let f = Fixture::failed();
+    let node = NodeId::parse_str("n-0001").unwrap();
+    append_and_apply_event(&f.paths, "cleanup.discard_authorized", Some(&node),
+        Some(&format!("discard-authorized:{}:n-0001", f.run_id)),
+        json!({"actor":"uid:old", "reason":"operator", "force":false,
+            "worktree_path":f.worktree,"branch":"wt/retained", "cleanliness":"clean","unmerged_commits":0})).unwrap();
+    git(
+        f.source.path(),
+        &["worktree", "remove", f.worktree.to_str().unwrap()],
+    );
+    assert_eq!(
+        envelope(
+            &command(
+                &f.home,
+                &["run", "discard", &f.run_id, "--reason", "operator"]
+            ),
+            false
+        )["error"]["code"],
+        "preserved_work_unverifiable"
+    );
+    assert!(!git(f.source.path(), &["branch", "--list", "wt/retained"]).is_empty());
 }

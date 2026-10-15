@@ -284,7 +284,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if recorded.reason != args.reason
             || (recorded.force != args.force
                 && !upgraded
-                && !orphan_retry_allowed(recorded, &observation, args.force))
+                && !orphan_retry_allowed(recorded, observation.as_ref(), args.force))
         {
             return Err(CliError::user(
                 "idempotency_conflict",
@@ -685,15 +685,13 @@ fn force_upgrade_recorded(
 
 fn orphan_retry_allowed(
     auth: &Authorization,
-    observation: &Option<RetainedObservation>,
+    observation: Option<&RetainedObservation>,
     force: bool,
 ) -> bool {
     force
         && !auth.force
         && auth.identity.is_some()
-        && observation
-            .as_ref()
-            .is_some_and(|o| o.view.worktree_present && !o.verified_for_discard())
+        && observation.is_some_and(|o| o.view.worktree_present && !o.verified_for_discard())
 }
 
 fn prior_auth_missing_oid(auth: &Authorization) -> bool {

@@ -413,8 +413,8 @@ impl Git {
     }
 }
 
-/// Run a best-effort git command, logging its outcome to both `tracing` and
-/// stderr (captured to `supervisor.stderr.log`) so the teardown is auditable.
+/// Run a best-effort git command, logging its outcome through `tracing`.
+/// Printing to stderr here would corrupt the CLI's single JSON error envelope.
 /// Returns `true` only when the command exited successfully; a non-zero exit or
 /// spawn error is logged at `warn`, swallowed, and reported as `false` — cleanup
 /// is best-effort by contract, but the boolean lets a caller fall back rather
@@ -432,7 +432,6 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
     match cmd.output() {
         Ok(out) if out.status.success() => {
             info!(target: "taskfleet::supervise", step = label, "cleanup step ok");
-
             None
         }
         Ok(out) => {
@@ -444,7 +443,6 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
                 detail = %detail,
                 "cleanup step non-zero (treated as already-done/refused; continuing)"
             );
-
             Some(detail)
         }
         Err(e) => {
@@ -454,7 +452,6 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
                 error = %e,
                 "cleanup step could not spawn (continuing)"
             );
-
             Some(format!("spawn failed: {e}"))
         }
     }

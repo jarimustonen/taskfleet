@@ -2,11 +2,13 @@
 created: 2026-10-13
 updated: 2026-10-15
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 lane: lifecycle
 lane_seq: 20
 collision: [supervise-cleanup]
+closed: 2026-10-15
+closed_by: agent
 ---
 
 # Flaky test: managed_session_retained_when_attached fails under the full suite
@@ -31,3 +33,9 @@ The test guards safety gate #2 of session cleanup: a tmux session with an attach
 ## Where to look
 
 `crates/taskfleet/src/supervise/cleanup.rs` around the test and `cleanup_managed_session_with`, and whatever `events_of_kind` reads: the test uses a fake tmux script and a temp run dir, so shared state across tests (environment variables, a shared fake-tmux log path, or the current directory) is the first suspect.
+
+## Resolution
+
+### 2026-10-15T18:44:04Z · @agent
+
+Reproduced ETXTBSY under the full release-mode libtest suite; fake tmux scripts now run through a stable shell interpreter. An open writer regression still verifies both no kill and one retention event. Workspace release nextest passed (1186 tests); stripped-PATH regression passed.

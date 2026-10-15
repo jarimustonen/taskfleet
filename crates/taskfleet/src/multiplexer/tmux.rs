@@ -84,6 +84,8 @@ pub enum TmuxError {
 /// already-resolved binary name through so tests can inject a fake tmux).
 pub struct Tmux {
     bin: String,
+    #[cfg(test)]
+    script: Option<String>,
 }
 
 impl Default for Tmux {
@@ -95,13 +97,28 @@ impl Default for Tmux {
 impl Tmux {
     /// A backend using the `TMUX_BIN`-resolved binary.
     pub fn new() -> Self {
-        Self { bin: tmux_bin() }
+        Self::with_bin(tmux_bin())
     }
 
     /// A backend pinned to `bin` (the supervisor's already-resolved binary; also
     /// the seam tests inject a fake tmux through).
     pub fn with_bin(bin: impl Into<String>) -> Self {
-        Self { bin: bin.into() }
+        Self {
+            bin: bin.into(),
+            #[cfg(test)]
+            script: None,
+        }
+    }
+
+    /// Run a test script as data through a stable interpreter instead of execing
+    /// the freshly written file. Parallel libtest subprocesses can inherit an
+    /// open writer for the script and make direct exec fail with ETXTBSY.
+    #[cfg(test)]
+    pub(crate) fn with_script(script: impl Into<String>) -> Self {
+        Self {
+            bin: "/bin/sh".into(),
+            script: Some(script.into()),
+        }
     }
 
     /// A `Command` for `self.bin`, with the optional server socket threaded in
@@ -109,6 +126,10 @@ impl Tmux {
     /// parses server options.
     fn base(&self, socket: Option<&str>) -> Command {
         let mut cmd = Command::new(&self.bin);
+        #[cfg(test)]
+        if let Some(script) = &self.script {
+            cmd.arg(script);
+        }
         if let Some(s) = socket {
             cmd.args(["-S", s]);
         }
@@ -335,36 +356,10 @@ fn run_lenient(mut cmd: Command, label: &str) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    static FAKE_TMUX_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// A fake tmux plus the guard that serializes its creation and execution.
-    ///
-    /// `Command::spawn` forks the whole test process. A child may transiently
-    /// inherit another thread's still-open stub write descriptor before exec,
-    /// which makes Linux reject execution of that stub with `ETXTBSY`. Keeping
-    /// this guard until the test ends prevents any fake-tmux spawn while another
-    /// fake tmux is being written.
-    struct FakeTmux {
-        tmux: Tmux,
-        _serial: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl std::ops::Deref for FakeTmux {
-        type Target = Tmux;
-
-        fn deref(&self) -> &Self::Target {
-            &self.tmux
-        }
-    }
 
     /// Write a fake `tmux` script that records its argv to `<dir>/tmux.log` and
     /// runs `body` (a shell snippet with `$@`/`$*` available).
-    fn fake_tmux(dir: &std::path::Path, body: &str) -> FakeTmux {
-        let serial = FAKE_TMUX_SERIAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn fake_tmux(dir: &std::path::Path, body: &str) -> Tmux {
         let path = dir.join("tmux");
         let log = dir.join("tmux.log");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -378,11 +373,7 @@ mod tests {
         .unwrap();
         file.sync_all().unwrap();
         drop(file);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        FakeTmux {
-            tmux: Tmux::with_bin(path.to_string_lossy()),
-            _serial: serial,
-        }
+        Tmux::with_script(path.to_string_lossy())
     }
 
     fn log_of(dir: &std::path::Path) -> String {

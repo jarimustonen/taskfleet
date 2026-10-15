@@ -568,6 +568,10 @@ pub fn cleanup_managed_session(paths: &RunPaths) {
 /// [`cleanup_managed_session`] with the tmux binary injected, so tests can drive
 /// the teardown against a stub without racing on the `TMUX_BIN` env var.
 fn cleanup_managed_session_with(paths: &RunPaths, tmux: &str) {
+    cleanup_managed_session_with_mux(paths, &Tmux::with_bin(tmux));
+}
+
+fn cleanup_managed_session_with_mux(paths: &RunPaths, mux: &Tmux) {
     if read_manifest_opt(paths)
         .ok()
         .flatten()
@@ -583,7 +587,6 @@ fn cleanup_managed_session_with(paths: &RunPaths, tmux: &str) {
         return;
     };
     let socket = managed_session_socket(paths, &session);
-    let mux = Tmux::with_bin(tmux);
     let Some((attached, names)) = mux.list_session_windows(socket.as_deref(), &session) else {
         // The session is already gone (its last window was the agent's, with no
         // surviving bootstrap shell) or tmux is unavailable — nothing to do.
@@ -2036,9 +2039,9 @@ mod tests {
     /// All events of a given `kind` recorded in the run's event log.
     fn events_of_kind(paths: &RunPaths, kind: &str) -> Vec<serde_json::Value> {
         std::fs::read_to_string(paths.events())
-            .unwrap_or_default()
+            .expect("run event log must be readable")
             .lines()
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("valid event log line"))
             .filter(|v| v["kind"] == kind)
             .collect()
     }
@@ -3433,7 +3436,7 @@ mod tests {
                esac"#,
         );
 
-        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         let log = tmux_log(tmp.path());
         assert!(
@@ -3459,7 +3462,7 @@ mod tests {
                esac"#,
         );
 
-        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         let log = tmux_log(tmp.path());
         assert!(
@@ -3488,7 +3491,15 @@ mod tests {
                esac"#,
         );
 
-        cleanup_managed_session_with(&paths, &tmux);
+        // Hold a writer on the fake script as another libtest thread (or a
+        // forked child) can. Executing the script directly fails with ETXTBSY
+        // on Linux; reading it through the shell still exercises the real
+        // list-windows parse and attached-session cleanup decision.
+        let _writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&tmux)
+            .unwrap();
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         let log = tmux_log(tmp.path());
         assert!(
@@ -3496,7 +3507,12 @@ mod tests {
             "an attached session must not be killed: {log:?}"
         );
         let evs = events_of_kind(&paths, "cleanup.session_retained");
-        assert_eq!(evs.len(), 1, "the skip must be recorded once");
+        assert_eq!(
+            evs.len(),
+            1,
+            "the skip must be recorded once; tmux invocations: {log:?}; events: {:?}",
+            std::fs::read_to_string(paths.events()).unwrap()
+        );
         assert_eq!(evs[0]["data"]["session"], "headless");
     }
 
@@ -3510,7 +3526,7 @@ mod tests {
         bootstrap(&paths, 0); // no managed_tmux_session on the manifest
         let tmux = fake_tmux(tmp.path(), "");
 
-        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         // The fake tmux logs every invocation; a foreground run must produce none.
         assert!(
@@ -3537,7 +3553,7 @@ mod tests {
         bootstrap_headless(&paths, "headless");
         let tmux = fake_tmux(tmp.path(), r#"case "$*" in *list-windows*) exit 1;; esac"#);
 
-        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         let log = tmux_log(tmp.path());
         assert!(!log.contains("kill-session"), "log={log:?}");
@@ -3563,8 +3579,8 @@ mod tests {
             r#"case "$*" in *list-windows*) printf '0\tzsh\n';; esac"#,
         );
 
-        cleanup_managed_session_with(&paths, &tmux);
-        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         assert_eq!(events_of_kind(&paths, "cleanup.session_killed").len(), 1);
     }
@@ -3592,7 +3608,7 @@ mod tests {
             r#"case "$*" in *list-windows*) printf '0\tzsh\n';; esac"#,
         );
 
-        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with_mux(&paths, &Tmux::with_script(&tmux));
 
         let log = tmux_log(tmp.path());
         assert!(

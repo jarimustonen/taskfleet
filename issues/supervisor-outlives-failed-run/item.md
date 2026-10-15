@@ -3,13 +3,15 @@ created: 2026-10-12
 updated: 2026-10-15
 type: bug
 reporter: claude
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent
 provenance_detail: native-agent-host wrap-up 2026-10-12
 lane: lifecycle
 lane_seq: 10
 collision: [supervise-cleanup]
+closed: 2026-10-15
+closed_by: agent
 ---
 
 # Supervisor stays alive after its run fails, blocking discard

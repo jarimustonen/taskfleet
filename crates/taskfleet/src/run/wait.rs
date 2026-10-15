@@ -114,6 +114,13 @@ impl Condition {
     }
 }
 
+/// Whether non-terminal attention can satisfy the wait condition.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WaitMode {
+    AttentionOrTerminal,
+    TerminalOnly,
+}
+
 pub struct Args<'a> {
     pub run_ids: Vec<String>,
     /// `--any` was passed (return on the first terminal run). When false the
@@ -125,7 +132,7 @@ pub struct Args<'a> {
     /// original block-until-terminal behaviour.
     pub timeout: Option<Duration>,
     /// Ignore non-terminal attention verdicts when deciding whether to return.
-    pub terminal: bool,
+    pub mode: WaitMode,
     pub fail_on_error: bool,
     pub progress: bool,
     /// `--poll-interval` override. When set, the fixed cadence replaces the
@@ -355,7 +362,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         args.timeout,
         args.poll_interval,
         args.progress,
-        args.terminal,
+        args.mode == WaitMode::TerminalOnly,
     )?;
     let waited_ms = start.elapsed().as_millis() as u64;
 
@@ -364,7 +371,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let mut outcomes = Vec::with_capacity(runs.len());
     for (i, (run_id, paths)) in runs.iter().enumerate() {
         let mut latched = latched_settle[i].clone();
-        if args.terminal {
+        if args.mode == WaitMode::TerminalOnly {
             // Keep current hints visible in the outcome, but do not call an
             // attention signal the reason this terminal-only wait settled.
             latched.awaiting_input = None;
@@ -384,7 +391,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // without ever finishing `done`, so each grades as a failure too.
     let exit_code: u8 = match stop {
         Stop::TimedOut => 2,
-        Stop::ConditionMet if args.fail_on_error && any_settled_error(&outcomes, args.terminal) => {
+        Stop::ConditionMet
+            if args.fail_on_error
+                && any_settled_error(&outcomes, args.mode == WaitMode::TerminalOnly) =>
+        {
             3
         }
         Stop::ConditionMet => 0,

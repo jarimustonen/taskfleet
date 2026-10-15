@@ -778,7 +778,11 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             run_ids: run_id,
             any,
             timeout,
-            terminal,
+            mode: if terminal {
+                wait::WaitMode::TerminalOnly
+            } else {
+                wait::WaitMode::AttentionOrTerminal
+            },
             fail_on_error,
             progress,
             poll_interval,

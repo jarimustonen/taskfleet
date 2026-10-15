@@ -268,10 +268,34 @@ pub fn write_agent_launcher(
     ));
     inner_body.extend_from_slice(b"unset ");
     inner_body.extend_from_slice(TOKEN_ENV.as_bytes());
+    if selected.harness == "pi" {
+        // Stable outside the staging directory: publication renames the run tree.
+        let control_dir = state_root.join(".creating");
+        ensure_private_directory(&control_dir)?;
+        let extension = control_dir.join(format!("message-{run_id}.ts"));
+        std::fs::write(&extension, include_str!("message-extension.ts"))
+            .map_err(|e| io_error("write message adapter", &extension, e))?;
+        let socket = control_dir.join(format!("message-{run_id}-{attempt}.sock"));
+        inner_body.extend_from_slice(b"export TASKFLEET_MESSAGE_SOCKET=");
+        inner_body.extend_from_slice(&shell_literal_path(&socket));
+        inner_body.extend_from_slice(b"\nexport TASKFLEET_MESSAGE_SESSION=");
+        inner_body.extend_from_slice(
+            shell_literal(&pi_session.as_ref().expect("pi session").0).as_bytes(),
+        );
+        inner_body.extend_from_slice(b"\n");
+        // The adapter is bundled with this binary, not loaded from a project.
+        inner_body.extend_from_slice(b"export TASKFLEET_MESSAGE_ADAPTER=1\n");
+        inner_body.extend_from_slice(b"export TASKFLEET_MESSAGE_EXTENSION=");
+        inner_body.extend_from_slice(&shell_literal_path(&extension));
+        inner_body.extend_from_slice(b"\n");
+    }
     inner_body.extend_from_slice(b"\nexec");
     for arg in &selected.command {
         inner_body.push(b' ');
         inner_body.extend_from_slice(shell_literal(arg).as_bytes());
+    }
+    if pi_session.is_some() {
+        inner_body.extend_from_slice(b" --extension \"$TASKFLEET_MESSAGE_EXTENSION\"");
     }
     if let Some((_, path)) = pi_session.as_ref() {
         inner_body.extend_from_slice(b" --session ");
@@ -1138,7 +1162,8 @@ pub(crate) mod tests {
         assert!(inner.contains("worker-handshake"));
         assert!(inner.contains("--pi-session-id"));
         assert!(inner.contains("--pi-session-path"));
-        assert!(inner.contains("exec 'pi' --session"));
+        assert!(inner.contains("exec 'pi' --extension \"$TASKFLEET_MESSAGE_EXTENSION\" --session"));
+        assert!(inner.contains("TASKFLEET_MESSAGE_SOCKET="));
         let marker = "/pi-session-";
         let id_start = inner.find(marker).unwrap() + marker.len();
         let id = &inner[id_start..id_start + 36];

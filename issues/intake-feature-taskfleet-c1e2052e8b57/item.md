@@ -3,7 +3,7 @@ created: 2026-10-01
 updated: 2026-10-15
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-wrapup-2026-10-01-run-message

@@ -411,6 +411,7 @@ fn command_writes_state(command: &Command) -> bool {
             }
             | crate::run::RunAction::SettlementIntent { .. }
             | crate::run::RunAction::Cancel { .. }
+            | crate::run::RunAction::Message { .. }
             | crate::run::RunAction::Reattach { .. }
             | crate::run::RunAction::UpgradeLock { .. } => true,
             crate::run::RunAction::Session {

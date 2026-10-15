@@ -18,6 +18,7 @@ pub mod landed;
 pub mod list;
 pub mod merge;
 pub mod merge_recovery;
+pub mod message;
 pub mod ownership;
 pub mod reattach;
 pub mod retained;
@@ -250,6 +251,17 @@ pub enum RunAction {
         /// is an error; this never falls back to a run-id prefix.
         #[arg(long)]
         current: bool,
+    },
+    /// Send a steering message to a live Taskfleet-launched Pi worker with an
+    /// acknowledged extension adapter. Acceptance does not prove it was read or acted on.
+    Message {
+        run_id: String,
+        #[arg(long, default_value = "n-0001")]
+        node: String,
+        #[arg(conflicts_with = "body_file")]
+        text: Option<String>,
+        #[arg(long, conflicts_with = "text")]
+        body_file: Option<PathBuf>,
     },
     /// Manage a caller-owned native Pi session association (not writer authority).
     Session {
@@ -695,6 +707,19 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             &session_path,
             &checkout,
             generation,
+            spec,
+            warnings,
+        ),
+        RunAction::Message {
+            run_id,
+            node,
+            text,
+            body_file,
+        } => message::run(
+            &run_id,
+            &node,
+            text.as_deref(),
+            body_file.as_deref(),
             spec,
             warnings,
         ),

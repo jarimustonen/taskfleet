@@ -1026,5 +1026,8 @@ fn legacy_branch_only_receipt_without_oid_preserves_branch() {
         )["error"]["code"],
         "preserved_work_unverifiable"
     );
-    assert!(!git(f.source.path(), &["branch", "--list", "wt/retained"]).is_empty());
+    assert_ne!(
+        git(f.source.path(), &["branch", "--list", "wt/retained"]),
+        ""
+    );
 }

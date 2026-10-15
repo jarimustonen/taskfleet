@@ -111,12 +111,29 @@ pub fn run(
 ) -> Result<(), CliError> {
     let text = match (text, body_file) {
         (Some(text), None) => text.to_owned(),
-        (None, Some(path)) => std::fs::read_to_string(path).map_err(|e| {
-            CliError::user(
-                "invalid_message_file",
-                format!("read {}: {e}", path.display()),
-            )
-        })?,
+        (None, Some(path)) => {
+            let file = std::fs::File::open(path).map_err(|e| {
+                CliError::user(
+                    "invalid_message_file",
+                    format!("open {}: {e}", path.display()),
+                )
+            })?;
+            let mut bytes = Vec::new();
+            file.take((MAX_MESSAGE + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|e| {
+                    CliError::user(
+                        "invalid_message_file",
+                        format!("read {}: {e}", path.display()),
+                    )
+                })?;
+            String::from_utf8(bytes).map_err(|e| {
+                CliError::user(
+                    "invalid_message_file",
+                    format!("{} is not UTF-8: {e}", path.display()),
+                )
+            })?
+        }
         _ => {
             return Err(CliError::user(
                 "invalid_message",
@@ -178,20 +195,19 @@ pub fn run(
         if !extension.is_file() || !socket.exists() {
             return Err(CliError::user("message_unsupported", "this worker has no reachable acknowledged Pi message adapter (older runs are unsupported)"));
         }
-        let seq = append_and_apply_unlocked(&witness, &paths, "worker.message.attempted", Some(&node_id), Some(&id), json!({"message_id":id,"sender":whoami(),"adapter":"pi-extension-v1","bytes":text.len(),"attempt":evidence.attempt})).map_err(from_core)?;
+        let seq = append_and_apply_unlocked(&witness, &paths, "worker.message.attempted", Some(&node_id), Some(&id), json!({"message_id":id,"sender":whoami(),"sender_uid":unsafe { libc::geteuid() },"adapter":"pi-extension-v1","bytes":text.len(),"attempt":evidence.attempt})).map_err(from_core)?;
         (evidence.session_id.clone(), evidence.attempt, seq)
     };
     let socket = root
         .join(".creating")
         .join(format!("message-{}-{attempt}.sock", paths.run_id));
-    let result = UnixStream::connect(&socket)
-        .map_err(io)
-        .and_then(|mut stream| exchange(&mut stream, &id, &session, &text));
-    // Even a timeout is recorded as unknown, never silently retried: Pi could
-    // have accepted it before the connection failed. No sensitive text in events.
-    let status = match result {
+    let result = deliver(&socket, &id, &session, &text);
+    // A failed connect sent nothing. Once connected, a timeout is unknown:
+    // Pi may have accepted the message before the acknowledgement was lost.
+    let status = match &result {
         Ok(true) => "accepted",
         Ok(false) => "rejected",
+        Err(error) if error.code == "message_undeliverable" => "failed",
         Err(_) => "unknown",
     };
     let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
@@ -214,7 +230,7 @@ pub fn run(
     };
     if let Err(error) = result {
         return Err(
-            error.with_details(json!({"message_id":id,"delivery":"unknown","attempt_seq":seq}))
+            error.with_details(json!({"message_id":id,"delivery":status,"attempt_seq":seq}))
         );
     }
     if status == "rejected" {
@@ -231,6 +247,16 @@ pub fn run(
         }
         _ => output::emit_envelope(&payload, spec, warnings),
     }
+}
+
+fn deliver(socket: &Path, id: &str, session: &str, text: &str) -> Result<bool, CliError> {
+    let mut stream = UnixStream::connect(socket).map_err(|e| {
+        CliError::user(
+            "message_undeliverable",
+            format!("adapter is not accepting connections (no message sent): {e}"),
+        )
+    })?;
+    exchange(&mut stream, id, session, text)
 }
 
 fn whoami() -> String {
@@ -260,6 +286,14 @@ mod tests {
         assert!(exchange(&mut stream, "m1", "s1", "private instruction").unwrap());
         worker.join().unwrap();
         assert!(check_text("  ").is_err());
+    }
+    #[test]
+    fn stale_socket_is_definitely_undeliverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("socket");
+        drop(UnixListener::bind(&path).unwrap());
+        let error = deliver(&path, "m", "s", "text").unwrap_err();
+        assert_eq!(error.code, "message_undeliverable");
     }
     #[test]
     fn wrong_ack_is_not_receipt() {

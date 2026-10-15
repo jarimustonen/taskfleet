@@ -88,6 +88,12 @@ impl AgentLauncher {
     pub fn cleanup_private_session(&self) {
         if let Some(path) = self.pi_session_source_path.as_deref() {
             let _ = std::fs::remove_file(path);
+            if let Some(creating) = path.parent().and_then(Path::parent).and_then(Path::parent) {
+                let _ = std::fs::remove_file(creating.join(format!("message-{}.ts", self.run_id)));
+                let _ = std::fs::remove_file(
+                    creating.join(format!("message-{}-{}.sock", self.run_id, self.attempt)),
+                );
+            }
             if let Some(parent) = path.parent() {
                 let _ = std::fs::remove_dir(parent);
             }
@@ -268,6 +274,7 @@ pub fn write_agent_launcher(
     ));
     inner_body.extend_from_slice(b"unset ");
     inner_body.extend_from_slice(TOKEN_ENV.as_bytes());
+    inner_body.extend_from_slice(b"\n");
     if selected.harness == "pi" {
         // Stable outside the staging directory: publication renames the run tree.
         let control_dir = state_root.join(".creating");
@@ -284,7 +291,6 @@ pub fn write_agent_launcher(
         );
         inner_body.extend_from_slice(b"\n");
         // The adapter is bundled with this binary, not loaded from a project.
-        inner_body.extend_from_slice(b"export TASKFLEET_MESSAGE_ADAPTER=1\n");
         inner_body.extend_from_slice(b"export TASKFLEET_MESSAGE_EXTENSION=");
         inner_body.extend_from_slice(&shell_literal_path(&extension));
         inner_body.extend_from_slice(b"\n");
@@ -1118,9 +1124,26 @@ pub(crate) mod tests {
         std::fs::write(&sibling, "sibling").unwrap();
         let mut launcher = launcher(tmp.path());
         launcher.pi_session_source_path = Some(owned.clone());
+        let control = tmp.path().join(".creating");
+        let extension = control.join(format!("message-{}.ts", launcher.run_id));
+        let own_socket = control.join(format!(
+            "message-{}-{}.sock",
+            launcher.run_id, launcher.attempt
+        ));
+        let sibling_socket = control.join(format!(
+            "message-{}-{}.sock",
+            launcher.run_id,
+            launcher.attempt + 1
+        ));
+        for path in [&extension, &own_socket, &sibling_socket] {
+            std::fs::write(path, "fixture").unwrap();
+        }
 
         launcher.cleanup_private_session();
 
+        assert!(!extension.exists());
+        assert!(!own_socket.exists());
+        assert!(sibling_socket.exists());
         assert!(!owned.exists());
         assert!(sibling.exists(), "sibling attempt transcript survives");
         assert!(
@@ -1163,7 +1186,9 @@ pub(crate) mod tests {
         assert!(inner.contains("--pi-session-id"));
         assert!(inner.contains("--pi-session-path"));
         assert!(inner.contains("exec 'pi' --extension \"$TASKFLEET_MESSAGE_EXTENSION\" --session"));
-        assert!(inner.contains("TASKFLEET_MESSAGE_SOCKET="));
+        assert!(inner.contains(&format!(
+            "unset {TOKEN_ENV}\nexport TASKFLEET_MESSAGE_SOCKET="
+        )));
         let marker = "/pi-session-";
         let id_start = inner.find(marker).unwrap() + marker.len();
         let id = &inner[id_start..id_start + 36];

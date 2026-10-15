@@ -61,7 +61,10 @@ pub(crate) fn archive_before_cleanup(paths: &RunPaths, node: &Node, tmux: &str) 
     if recorded.status == taskfleet_core::EvidenceStatus::Complete {
         retries().lock().unwrap().remove(&retry_key);
         return match remove_live_session(paths, &recorded.live_session_path) {
-            Ok(()) => true,
+            Ok(()) => {
+                remove_message_adapter(paths, recorded.attempt);
+                true
+            }
             Err(error) => {
                 eprintln!(
                     "supervisor evidence: archived source cleanup failed for {}/{}: {error}",
@@ -104,7 +107,10 @@ pub(crate) fn archive_before_cleanup(paths: &RunPaths, node: &Node, tmux: &str) 
             {
                 retries().lock().unwrap().remove(&retry_key);
                 match remove_live_session(paths, &recorded.live_session_path) {
-                    Ok(()) => true,
+                    Ok(()) => {
+                        remove_message_adapter(paths, recorded.attempt);
+                        true
+                    }
                     Err(error) => {
                         eprintln!(
                             "supervisor evidence: archived source cleanup failed for {}/{}: {error}",
@@ -419,6 +425,17 @@ fn checked_live_path(paths: &RunPaths, recorded: &str) -> Result<PathBuf, String
         return Err("recorded native transcript path is outside its private run source".into());
     }
     Ok(state_root.join(relative))
+}
+
+/// A terminal attempt no longer has an input channel. These paths are derived
+/// from the run/attempt, never from untrusted extension output. Best-effort:
+/// failure to delete a tiny adapter artifact must not veto evidence teardown.
+fn remove_message_adapter(paths: &RunPaths, attempt: u32) {
+    if let Some(state_root) = paths.root.parent().and_then(Path::parent) {
+        let dir = state_root.join(".creating");
+        let _ = std::fs::remove_file(dir.join(format!("message-{}-{attempt}.sock", paths.run_id)));
+        let _ = std::fs::remove_file(dir.join(format!("message-{}.ts", paths.run_id)));
+    }
 }
 
 pub(crate) fn discard_superseded_source(paths: &RunPaths, node: &Node) {

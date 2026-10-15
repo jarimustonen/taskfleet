@@ -1696,6 +1696,20 @@ fn caller_merge_noop_already_integrated_reports_and_cleans() {
     assert!(retry.status.success(), "{retry:?}");
     let response: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
     assert_eq!(response["data"]["cleanup"], "complete");
+    // A lost create response can arrive after explicit settlement removed the
+    // checkout. Replay must return the original identity, not recreate it or
+    // claim that an absent checkout has been verified.
+    let replay = create(&home, &workspace, &tools, "already-integrated", None);
+    assert!(replay.status.success(), "{replay:?}");
+    let replay: serde_json::Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(replay["data"]["run_id"], run);
+    assert_eq!(replay["data"]["worktree_path"], checkout);
+    assert_eq!(replay["data"]["status"], "done");
+    assert_eq!(replay["data"]["checkout_verified"], false);
+    assert_eq!(replay["data"]["supervisor"]["state"], "terminal");
+    assert_eq!(replay["data"]["idempotent_replay"], true);
+    assert!(!Path::new(checkout).exists());
+    assert!(!workspace.path().join("forbidden").exists());
     assert!(!String::from_utf8_lossy(
         &Command::new(fixture_git_binary())
             .arg("-C")

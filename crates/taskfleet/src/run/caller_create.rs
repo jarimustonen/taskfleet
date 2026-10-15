@@ -2,7 +2,8 @@
 //! it records the immutable run, branch, checkout and fork OID before Git runs.
 //! No error path releases this reservation or deletes the checkout. A retry
 //! serializes on its run's lease and can only adopt an exactly registered tree.
-//! This mode is NOT safe for an external Pi writer until settlement fencing ships.
+//! A create response is not Pi launch permission: the host must still hold the
+//! launch gate and inherited writer lease through child start.
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -416,11 +417,21 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
         ));
     }
     drop(fence_read);
-    verify(&repo, &source, plan).map_err(|e| uncertain(id, plan, &e.message))?;
+    // A keyed response may be lost and retried after explicit settlement and
+    // cleanup. The original checkout is then intentionally gone: return the
+    // reserved identity and current terminal state, never recreate the tree
+    // or restart supervision. A live run still requires fresh Git verification.
+    let status = m.as_ref().unwrap().status;
+    let terminal = status.is_terminal();
+    if !terminal {
+        verify(&repo, &source, plan).map_err(|e| uncertain(id, plan, &e.message))?;
+    }
     // Keep same-key calls serialized through boot, but never let the detached
     // supervisor inherit this flock across exec after a killed creator.
     lease_guard.close_on_exec()?;
-    let pid = if let Some(pid) = supervisor_spawn::read_live_recorded_pid(&public) {
+    let pid = if terminal {
+        None
+    } else if let Some(pid) = supervisor_spawn::read_live_recorded_pid(&public) {
         let start = crate::supervise::pid_file::read_pid_record(&public.supervisor_pid())
             .and_then(|(recorded, start)| (recorded == pid).then_some(start).flatten());
         let ready = RunLock::with_shared_lock(&public.lock(), || {
@@ -442,20 +453,24 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
                 "supervisor pid {pid} for run {id} is alive but has not recorded boot readiness; retry the same key after boot or inspect supervisor.stderr.log"
             )).with_invalid_value(id));
         }
-        pid
+        Some(pid)
     } else {
         match supervisor_spawn::spawn_for_run(&public, id)? {
-            supervisor_spawn::SupervisorSpawn::Confirmed { pid } => pid,
+            supervisor_spawn::SupervisorSpawn::Confirmed { pid } => Some(pid),
             supervisor_spawn::SupervisorSpawn::Unconfirmed { reason } => return Err(CliError::system("supervisor_spawn_failed", format!("run {id} is published with a verified checkout but supervisor did not confirm: {reason}; retry the same key or use `taskfleet run reattach {id}`")).with_invalid_value(id)),
         }
     };
-    let payload = json!({"run_id":id,"node_id":"n-0001","dir":public.root,"kind":"spinoff","agent_owner":"caller","lifecycle":"interactive","status":super::status_kebab(m.unwrap().status),"source_repo":repo_string,"source_branch":source,"branch":plan.branch,"worktree_path":plan.checkout,"checkout_verified":true,"supervisor":{"state":"confirmed","pid":pid},"idempotent_replay":replay,"writer_fence":{"state":"foundation-only","writer":fence.writer,"launch_gate":fence.launch_gate}});
+    let supervisor = match pid {
+        Some(pid) => json!({"state":"confirmed","pid":pid}),
+        None => json!({"state":"terminal"}),
+    };
+    let payload = json!({"run_id":id,"node_id":"n-0001","dir":public.root,"kind":"spinoff","agent_owner":"caller","lifecycle":"interactive","status":super::status_kebab(status),"source_repo":repo_string,"source_branch":source,"branch":plan.branch,"worktree_path":plan.checkout,"checkout_verified":!terminal,"supervisor":supervisor,"idempotent_replay":replay,"writer_fence":{"state":"foundation-only","writer":fence.writer,"launch_gate":fence.launch_gate}});
     match args.spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, args.spec, args.warnings)?;
         }
         OutputFormat::Text => {
-            println!("caller-owned run {id} node n-0001: {} (supervisor {pid}); writer fence foundation only (launch and settlement unavailable)", plan.checkout);
+            println!("caller-owned run {id} node n-0001: {} ({}; Pi launch requires host-held gate and writer lease)", plan.checkout, super::status_kebab(status));
             output::emit_text_warnings(args.warnings);
         }
     }

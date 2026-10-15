@@ -3,12 +3,14 @@ created: 2026-10-12
 updated: 2026-10-15
 type: bug
 reporter: claude
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent
 provenance_detail: native-agent-host wrap-up 2026-10-12
 lane: control
 lane_seq: 10
+closed: 2026-10-15
+closed_by: agent
 ---
 
 # run wait returns immediately while a run awaits input
@@ -20,3 +22,9 @@ lane_seq: 10
 Observed with run 01m46ejsy4eyx4krx1hy2fqsqe (taskfleet 0.11.6) on 2026-10-05.
 
 Expected: a way to wait for terminal status only (for example `run wait --terminal`), or `run wait` reporting awaiting-input once and then blocking until the signal is resolved or the run terminates.
+
+## Comments
+
+### 2026-10-15T17:38:52Z · @agent
+
+Resolution: Added run wait --terminal to ignore non-terminal attention for the wait predicate while retaining default decision wake. Covered resolution followed by terminalization, timeout, --all/--any, and status versus landed in integration tests.

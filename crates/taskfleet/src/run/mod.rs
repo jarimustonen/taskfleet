@@ -256,17 +256,16 @@ pub enum RunAction {
         #[command(subcommand)]
         action: SessionAction,
     },
-    /// Cancel a run (all live nodes → `run.status: cancelled`), or a single
-    /// live node with `--node <id>` (branch-preserving; the run stays live
-    /// while siblings run and the supervisor rolls it up once every node
-    /// settles). Idempotent.
+    /// Cancel a run (all live nodes → `run.status: cancelled`), or one live
+    /// node of a multi-node run with `--node <id>` (preserving its branch;
+    /// the run stays live while siblings run). Bundled fan-out units are
+    /// separate runs: cancel a unit by its own run id. Idempotent.
     Cancel {
         run_id: String,
-        /// Cancel exactly ONE live node (e.g. `n-0002`) instead of the whole
-        /// run — for unblocking a single stuck fan-out child without killing
-        /// the batch. The node's branch + worktree are preserved
-        /// (source-relative teardown); the run is NOT terminalized while other
-        /// nodes remain live.
+        /// Cancel one live node (e.g. `n-0002`) of this run instead of the
+        /// whole run. Its branch and worktree are preserved; the run stays
+        /// live while other nodes remain. Bundled fan-out children are
+        /// separate runs: cancel one with `run cancel <child-run-id>`.
         #[arg(long)]
         node: Option<String>,
         #[arg(long)]

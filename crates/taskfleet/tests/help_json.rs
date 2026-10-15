@@ -167,6 +167,48 @@ fn leaf_verb_help_json() {
 }
 
 #[test]
+fn cancel_help_distinguishes_nodes_from_fan_out_child_runs() {
+    let stdout = help_stdout(&["run", "cancel", "--help", "--json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let about = v["data"]["about"].as_str().expect("cancel description");
+    let node = v["data"]["flags"]
+        .as_array()
+        .expect("flags")
+        .iter()
+        .find(|f| f["name"] == "node")
+        .and_then(|f| f["help"].as_str())
+        .expect("node help");
+    for help in [about, node] {
+        assert!(help.contains("separate runs"), "fan-out topology: {help}");
+        assert!(
+            help.contains("run id") || help.contains("<child-run-id>"),
+            "cancel child by run id: {help}"
+        );
+        assert!(
+            !help.contains("stuck fan-out child"),
+            "retired model: {help}"
+        );
+    }
+    assert!(node.contains("branch and worktree are preserved"));
+    assert!(node.contains("run stays live while other nodes remain"));
+    assert!(node.contains("run cancel <child-run-id>"));
+
+    let text = bin()
+        .args(["run", "cancel", "--help"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).expect("text help is utf8");
+    assert!(
+        text.contains("run cancel <child-run-id>"),
+        "text help: {text}"
+    );
+    assert!(!text.contains("stuck fan-out child"), "text help: {text}");
+}
+
+#[test]
 fn noun_only_help_json_lists_verbs() {
     // A noun-only node lists its verbs as nested subcommands.
     let stdout = help_stdout(&["run", "--help", "--output", "json"]);

@@ -433,14 +433,27 @@ fn checked_live_path(paths: &RunPaths, recorded: &str) -> Result<PathBuf, String
 fn remove_message_adapter(paths: &RunPaths, attempt: u32) {
     if let Some(state_root) = paths.root.parent().and_then(Path::parent) {
         let dir = state_root.join(".creating");
-        let _ = std::fs::remove_file(dir.join(format!("message-{}-{attempt}.sock", paths.run_id)));
+        remove_message_socket(paths, attempt);
         let _ = std::fs::remove_file(dir.join(format!("message-{}.ts", paths.run_id)));
+    }
+}
+
+fn remove_message_socket(paths: &RunPaths, attempt: u32) {
+    if let Some(state_root) = paths.root.parent().and_then(Path::parent) {
+        let _ = std::fs::remove_file(
+            state_root
+                .join(".creating")
+                .join(format!("message-{}-{attempt}.sock", paths.run_id)),
+        );
     }
 }
 
 pub(crate) fn discard_superseded_source(paths: &RunPaths, node: &Node) {
     if let Some(recorded) = node.evidence.as_ref() {
         let _ = remove_live_session(paths, &recorded.live_session_path);
+        // A replacement attempt may already be running and shares the adapter
+        // source file; remove only the dead attempt's socket here.
+        remove_message_socket(paths, recorded.attempt);
     }
 }
 
@@ -586,6 +599,30 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use taskfleet_core::{append_and_apply_event, read_node, NodeId};
     use tempfile::TempDir;
+
+    #[test]
+    fn superseded_socket_cleanup_keeps_replacement_adapter() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let root = tmp.path().join("runs").join(run_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = RunPaths::new(root, run_id).unwrap();
+        let dir = tmp.path().join(".creating");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join(format!("message-{run_id}-0.sock"));
+        let next = dir.join(format!("message-{run_id}-1.sock"));
+        let extension = dir.join(format!("message-{run_id}.ts"));
+        for path in [&old, &next, &extension] {
+            std::fs::write(path, "fixture").unwrap();
+        }
+        remove_message_socket(&paths, 0);
+        assert!(!old.exists());
+        assert!(next.exists());
+        assert!(extension.exists());
+        remove_message_adapter(&paths, 1);
+        assert!(!next.exists());
+        assert!(!extension.exists());
+    }
 
     fn setup(tmp: &TempDir) -> (RunPaths, NodeId, Vec<u8>) {
         let run_id = "01jxsnap000000000000000000";

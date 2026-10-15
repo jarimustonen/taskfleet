@@ -211,7 +211,7 @@ pub fn write_agent_launcher(
         None
     };
     let mut private_session_guard =
-        PrivateSessionGuard(pi_session.as_ref().map(|(_, path)| path.clone()));
+        PrivateSessionGuard(pi_session.as_ref().map(|(_, path)| path.clone()), None);
     match std::fs::symlink_metadata(&handshake_path) {
         Ok(meta) if meta.file_type().is_file() || meta.file_type().is_symlink() => {
             std::fs::remove_file(&handshake_path)
@@ -280,6 +280,7 @@ pub fn write_agent_launcher(
         let control_dir = state_root.join(".creating");
         ensure_private_directory(&control_dir)?;
         let extension = control_dir.join(format!("message-{run_id}.ts"));
+        private_session_guard.1 = Some(extension.clone());
         std::fs::write(&extension, include_str!("message-extension.ts"))
             .map_err(|e| io_error("write message adapter", &extension, e))?;
         let socket = control_dir.join(format!("message-{run_id}-{attempt}.sock"));
@@ -359,6 +360,7 @@ pub fn write_agent_launcher(
         pi_session_source_path: pi_session.as_ref().map(|(_, path)| path.clone()),
     };
     private_session_guard.0 = None;
+    private_session_guard.1 = None;
     Ok(launcher)
 }
 
@@ -902,10 +904,13 @@ fn query_tmux_window(
     })
 }
 
-struct PrivateSessionGuard(Option<PathBuf>);
+struct PrivateSessionGuard(Option<PathBuf>, Option<PathBuf>);
 
 impl Drop for PrivateSessionGuard {
     fn drop(&mut self) {
+        if let Some(path) = self.1.as_deref() {
+            let _ = std::fs::remove_file(path);
+        }
         if let Some(path) = self.0.as_deref() {
             let _ = std::fs::remove_file(path);
             if let Some(parent) = path.parent() {

@@ -18,7 +18,7 @@ export default function (pi: any) {
       peer.setTimeout(3000, () => peer.destroy());
       peer.on("data", (chunk) => {
         input = Buffer.concat([input, chunk]);
-        if (input.length > 65536) { peer.destroy(); return; }
+        if (input.length > 262144) { peer.destroy(); return; }
         const end = input.indexOf(10); // LF only; Unicode line separators are payload.
         if (end < 0) return;
         peer.removeAllListeners("data");

@@ -210,7 +210,13 @@ pub fn run(
         Err(error) if error.code == "message_undeliverable" => "failed",
         Err(_) => "unknown",
     };
-    let guard = RunLock::acquire_existing(&paths.lock()).map_err(from_core)?;
+    let audit_error = |error: taskfleet_core::Error| {
+        from_core(error).with_details(json!({
+            "message_id":id,"attempt_seq":seq,"delivery":status,
+            "audit":"result_not_recorded","read_or_acted":"unconfirmed"
+        }))
+    };
+    let guard = RunLock::acquire_existing(&paths.lock()).map_err(audit_error)?;
     append_and_apply_unlocked(
         &guard.witness(),
         &paths,
@@ -219,7 +225,7 @@ pub fn run(
         Some(&id),
         json!({"message_id":id,"attempt_seq":seq,"delivery":status,"read_or_acted":"unconfirmed"}),
     )
-    .map_err(from_core)?;
+    .map_err(audit_error)?;
     let payload = Receipt {
         run_id: paths.run_id.as_str(),
         node,

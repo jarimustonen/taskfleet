@@ -259,6 +259,25 @@ impl Git {
         parse_worktree_registrations(&out.stdout)
     }
 
+    /// Absolute common Git directory, used to authenticate an orphaned linked
+    /// checkout after Git has already unregistered it.
+    pub fn common_dir(&self, repo: &str) -> Option<std::path::PathBuf> {
+        let out = self
+            .at(repo)
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let path = std::str::from_utf8(&out.stdout).ok()?.trim();
+        if path.is_empty() {
+            return None;
+        }
+        std::fs::canonicalize(path).ok()
+    }
+
     /// Whether an exact local branch ref exists. `None` on any Git error.
     pub fn branch_exists(&self, repo: &str, branch: &str) -> Option<bool> {
         if branch.is_empty() {

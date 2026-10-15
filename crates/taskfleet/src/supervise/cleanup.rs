@@ -41,10 +41,10 @@
 //!      uses `git branch -d` (which refuses an unmerged branch) rather than the
 //!      force `-D`, which is reserved for a confirmed `run merge`.
 //!
-//! Every external command is best-effort and lenient: a missing tmux window, an
-//! already-removed worktree, or a `git` refusal (locked / dirty tree) is logged
-//! and stepped past, never fatal — the merge skill's own detached cleanup races
-//! us and either actor finishing first leaves the other a clean no-op. The tmux
+//! External commands are best-effort: a missing window or already-removed
+//! worktree does not fail the run. A merged worktree left on disk after Git's
+//! removal is reported and its branch retained, rather than silently declaring
+//! an unverifiable directory to be preserved work. The tmux
 //! and git binaries are resolved through `TMUX_BIN` / `GIT_BIN` overrides (as
 //! the watchdog already does for tmux) so tests can stub them.
 
@@ -932,7 +932,27 @@ fn cleanup_node_after_evidence(paths: &RunPaths, n: &Node, tmux: &str, git: &str
     // clean tree could still orphan the new commit) — that residual needs a rescue
     // ref / worktree lease and is tracked as a follow-up
     // (`detached-head-teardown-toctou`).
-    if !remove_worktree(repo, worktree_path, git, merged) {
+    // Git may unregister a linked checkout before its recursive filesystem
+    // removal fails (notably on Go's 0555 module cache). Authenticate the
+    // checkout BEFORE asking Git to remove it, so a stranded directory can be
+    // retried without treating an arbitrary directory at the recorded path as
+    // disposable. The retry is merge-only; source-relative teardown still
+    // relies on Git's non-force cleanliness check.
+    let orphan_identity = merged.then(|| orphan_checkout_identity(repo, worktree_path, git));
+    let mut removed = remove_worktree(repo, worktree_path, git, merged);
+    if merged && !removed && Path::new(worktree_path).exists() {
+        let retry = orphan_identity
+            .as_ref()
+            .and_then(|identity| identity.as_ref().ok());
+        if retry.is_none_or(|identity| {
+            remove_unregistered_checkout(repo, worktree_path, git, identity).is_err()
+        }) {
+            record_worktree_remove_failed(paths, n, worktree_path);
+            return; // Never delete the branch while a checkout remains on disk.
+        }
+        removed = true; // The authenticated filesystem retry completed removal.
+    }
+    if !removed {
         if !std::path::Path::new(worktree_path).exists() {
             // The dir is simply gone (user removed it manually, or merge.sh's
             // detached cleanup won the race): a non-fatal miss, then continue to
@@ -956,12 +976,154 @@ fn cleanup_node_after_evidence(paths: &RunPaths, n: &Node, tmux: &str, git: &str
             );
             return;
         }
-        // A forced (merge) removal that failed with a still-present dir is unusual
-        // (locked); fall through to branch cleanup as before — the merge confirmed
-        // the work landed, so nothing is lost.
     }
     if let Some(branch) = n.branch.as_deref() {
         let _ = delete_branch(paths, n, repo, branch, git, merged);
+    }
+}
+
+/// Proof of a linked checkout's root and Git pointer before removal. The
+/// pointer remains readable if Git removes its own admin dir first.
+struct OrphanIdentity {
+    root: std::fs::Metadata,
+    git_file: Vec<u8>,
+    admin: std::path::PathBuf,
+}
+
+fn orphan_checkout_identity(
+    repo: &str,
+    checkout: &str,
+    git: &str,
+) -> Result<OrphanIdentity, String> {
+    let root = std::fs::symlink_metadata(checkout).map_err(|e| e.to_string())?;
+    if !root.is_dir() || root.file_type().is_symlink() {
+        return Err("checkout root is not a real directory".into());
+    }
+    let pointer = Path::new(checkout).join(".git");
+    let meta = std::fs::symlink_metadata(&pointer).map_err(|e| e.to_string())?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return Err("checkout .git is not a regular file".into());
+    }
+    let git_file = std::fs::read(&pointer).map_err(|e| e.to_string())?;
+    let common = Git::with_bin(git)
+        .common_dir(repo)
+        .ok_or("common Git directory unavailable")?;
+    let target = std::str::from_utf8(&git_file)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .strip_prefix("gitdir: ")
+        .ok_or("invalid .git pointer")?;
+    let admin = Path::new(target);
+    if !admin.is_absolute() || admin.parent() != Some(common.join("worktrees").as_path()) {
+        return Err("checkout .git does not belong to this repository".into());
+    }
+    // The recorded path alone is not authority: the .git pointer must name
+    // this repository's linked-worktree administration directory.
+    let admin = admin.to_path_buf();
+    Ok(OrphanIdentity {
+        root,
+        git_file,
+        admin,
+    })
+}
+
+fn remove_unregistered_checkout(
+    repo: &str,
+    checkout: &str,
+    git: &str,
+    identity: &OrphanIdentity,
+) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let path = Path::new(checkout);
+    let now = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !now.is_dir()
+        || now.file_type().is_symlink()
+        || (now.dev(), now.ino()) != (identity.root.dev(), identity.root.ino())
+    {
+        return Err("checkout identity changed during Git removal".into());
+    }
+    // Git can unlink .git before it encounters a read-only cache. The root
+    // inode, captured before Git touched the tree, remains the identity proof.
+    match std::fs::read(path.join(".git")) {
+        Ok(bytes) if bytes == identity.git_file => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err("checkout .git changed during Git removal".into()),
+    }
+    if std::fs::symlink_metadata(&identity.admin).is_ok() {
+        return Err("checkout admin directory still exists".into());
+    }
+    let registrations = Git::with_bin(git)
+        .worktree_registrations(repo)
+        .ok_or("Git registrations unavailable")?;
+    let canonical_checkout = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if registrations.iter().any(|row| {
+        // An unreadable registration is not evidence of absence.
+        std::fs::canonicalize(&row.path).map_or(true, |p| p == canonical_checkout)
+    }) {
+        return Err("checkout still registered; refusing manual removal".into());
+    }
+    // Refuse nested repositories before changing permissions. Symlinks are
+    // never traversed (including links into caches outside this worktree).
+    fn check_nested(dir: &Path, top: bool, device: u64) -> Result<(), String> {
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::symlink_metadata(dir)
+            .map_err(|e| e.to_string())?
+            .dev()
+            != device
+        {
+            return Err(format!(
+                "mounted directory inside checkout: {}",
+                dir.display()
+            ));
+        }
+        if !top && std::fs::symlink_metadata(dir.join(".git")).is_ok() {
+            return Err(format!("nested repository: {}", dir.display()));
+        }
+        for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                check_nested(&entry.path(), false, device)?;
+            }
+        }
+        Ok(())
+    }
+    check_nested(path, true, identity.root.dev())?;
+    fn make_dirs_writable(dir: &Path) -> Result<(), String> {
+        let meta = std::fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            return Err(format!("unexpected directory type: {}", dir.display()));
+        }
+        let mut permissions = meta.permissions();
+        permissions.set_mode(permissions.mode() | 0o700);
+        std::fs::set_permissions(dir, permissions).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                make_dirs_writable(&entry.path())?;
+            }
+        }
+        Ok(())
+    }
+    make_dirs_writable(path)?;
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+}
+
+fn record_worktree_remove_failed(paths: &RunPaths, n: &Node, checkout: &str) {
+    warn!(target: "taskfleet::supervise", node = %n.node_id, checkout,
+        "merged worktree remains after Git removal; refusing branch deletion");
+    eprintln!("supervisor cleanup: merged worktree remains at {checkout}; removal failed (branch retained)");
+    let key = format!(
+        "cleanup.worktree_remove_failed:{}:{}",
+        paths.run_id, n.node_id
+    );
+    if let Err(e) = append_and_apply_event(
+        paths,
+        "cleanup.worktree_remove_failed",
+        Some(&n.node_id),
+        Some(&key),
+        json!({"worktree_path":checkout,"branch":n.branch}),
+    ) {
+        warn!(target: "taskfleet::supervise", error = %e, "failed to record leftover worktree");
     }
 }
 
@@ -2278,6 +2440,143 @@ mod tests {
         assert!(
             events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty(),
             "branch removal must succeed"
+        );
+    }
+
+    #[test]
+    fn merged_readonly_go_cache_left_after_git_unregistration_is_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        let cache = wt.join("target/ci-local/go-mod/pkg/mod");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("module.zip"), "download").unwrap();
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // A separate directory must not be followed or changed through a link.
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("keep"), "precious").unwrap();
+        std::os::unix::fs::symlink(&outside, wt.join("target/outside")).unwrap();
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({
+            "worktree_path":wt.to_str().unwrap(), "branch":"wt/foo" }),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({"success":true,"via":"explicit-merge"}),
+        );
+        let n = read_node_opt(&paths, &n.node_id).unwrap().unwrap();
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+        assert!(
+            !wt.exists(),
+            "0555 module cache must not strand merged checkout"
+        );
+        assert!(!branch_exists(&repo, "wt/foo"));
+        assert_eq!(
+            std::fs::read_to_string(outside.join("keep")).unwrap(),
+            "precious"
+        );
+        assert_eq!(events_of_kind(&paths, "cleanup.branch_preserved").len(), 0);
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.worktree_remove_failed").len(),
+            0
+        );
+    }
+
+    #[test]
+    fn orphan_retry_requires_git_identity_and_absent_registration() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let repo = repo.to_str().unwrap();
+        let wt_path = wt.to_str().unwrap();
+        let identity = orphan_checkout_identity(repo, wt_path, &git_bin()).unwrap();
+        assert!(remove_unregistered_checkout(repo, wt_path, &git_bin(), &identity).is_err());
+        assert!(wt.exists());
+        // Simulate Git unregistering before unlinking the directory.
+        let pointer = std::fs::read(wt.join(".git")).unwrap();
+        git(
+            std::path::Path::new(repo),
+            &["worktree", "remove", "--force", wt_path],
+        );
+        std::fs::create_dir(&wt).unwrap();
+        std::fs::write(wt.join(".git"), pointer).unwrap();
+        let identity = orphan_checkout_identity(repo, wt_path, &git_bin()).unwrap();
+        let nested = wt.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join(".git"), "unrelated").unwrap();
+        assert!(remove_unregistered_checkout(repo, wt_path, &git_bin(), &identity).is_err());
+        assert!(nested.exists());
+        std::fs::remove_dir_all(nested).unwrap();
+        // Git can unlink .git before it reaches the read-only directory.
+        std::fs::remove_file(wt.join(".git")).unwrap();
+        remove_unregistered_checkout(repo, wt_path, &git_bin(), &identity).unwrap();
+        assert!(!wt.exists());
+    }
+
+    #[test]
+    fn merged_removal_refusal_reports_leftover_without_deleting_branch() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({
+            "worktree_path":wt.to_str().unwrap(), "branch":"wt/foo" }),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({"success":true,"via":"explicit-merge"}),
+        );
+        let n = read_node_opt(&paths, &n.node_id).unwrap().unwrap();
+        // Stub only the remove command; real Git supplies registration/identity.
+        let real_git = git_bin();
+        let stub = scripted_git(tmp.path(), &format!(
+            "if [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then exit 1; fi\nexec {real_git} \"$@\""
+        ));
+        cleanup_node(&paths, &n, "/usr/bin/true", &stub);
+        assert!(wt.exists());
+        assert!(branch_exists(&repo, "wt/foo"));
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.worktree_remove_failed").len(),
+            1
+        );
+        assert_eq!(events_of_kind(&paths, "cleanup.branch_preserved").len(), 0);
+    }
+
+    #[test]
+    fn nonmerge_readonly_cache_with_retained_work_is_preserved() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        let cache = wt.join(".cache/go-mod");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("download"), "untracked").unwrap();
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({
+            "worktree_path":wt.to_str().unwrap(), "branch":"wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({"success":true}));
+        let n = read_node_opt(&paths, &n.node_id).unwrap().unwrap();
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+        assert!(wt.exists());
+        assert!(branch_exists(&repo, "wt/foo"));
+        assert_eq!(events_of_kind(&paths, "cleanup.branch_preserved").len(), 1);
+        assert_eq!(
+            events_of_kind(&paths, "cleanup.worktree_remove_failed").len(),
+            0
         );
     }
 

@@ -1973,7 +1973,7 @@ mod tests {
         append_and_apply_event(&paths, "run.status", None, None, json!({"status":"failed"}))
             .unwrap();
         assert!(!cleanup_terminal_nodes(&paths));
-        assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+        assert_eq!(events_of_kind(&paths, "cleanup.branch_preserved").len(), 0);
     }
 
     #[test]

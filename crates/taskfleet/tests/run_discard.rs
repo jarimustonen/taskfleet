@@ -867,3 +867,94 @@ fn orphan_replacement_and_moved_branch_are_not_discarded() {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn retry_accepts_only_stale_marker_pointing_into_original_git_common_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::failed();
+    let marker = std::fs::read_to_string(f.worktree.join(".git")).unwrap();
+    let readonly = f.worktree.join("readonly");
+    std::fs::create_dir(&readonly).unwrap();
+    std::fs::write(readonly.join("file"), "x").unwrap();
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let args = [
+        "run", "discard", &f.run_id, "--reason", "operator", "--force",
+    ];
+    assert_eq!(
+        envelope(&command(&f.home, &args), false)["error"]["code"],
+        "discard_partial_cleanup"
+    );
+    std::fs::write(
+        f.worktree.join(".git"),
+        "gitdir: /var/tmp/other/.git/worktrees/not-ours\n",
+    )
+    .unwrap();
+    assert_eq!(
+        envelope(&command(&f.home, &args), false)["error"]["code"],
+        "preserved_work_unverifiable"
+    );
+    std::fs::write(f.worktree.join(".git"), marker).unwrap();
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        envelope(&command(&f.home, &args), true)["data"]["discarded"],
+        true
+    );
+}
+
+#[test]
+fn branch_only_discard_pins_ref_even_when_checkout_is_already_absent() {
+    let f = Fixture::failed();
+    git(
+        f.source.path(),
+        &["worktree", "remove", f.worktree.to_str().unwrap()],
+    );
+    // Register the branch elsewhere to make the first deletion refuse, after
+    // recording a branch-only receipt. Then move its tip before retrying.
+    let other = f.source.path().join("other");
+    git(
+        f.source.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            other.to_str().unwrap(),
+            "wt/retained",
+        ],
+    );
+    let args = ["run", "discard", &f.run_id, "--reason", "operator"];
+    // Initial observation has no worktree and sees a branch checked out elsewhere;
+    // the guard refuses branch removal after persisting the authorization.
+    assert_eq!(
+        envelope(&command(&f.home, &args), false)["error"]["code"],
+        "discard_partial_cleanup"
+    );
+    git(
+        f.source.path(),
+        &["worktree", "remove", other.to_str().unwrap()],
+    );
+    let old = git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]);
+    let moved = git(
+        f.source.path(),
+        &[
+            "commit-tree",
+            &format!("{old}^{{tree}}"),
+            "-p",
+            &old,
+            "-m",
+            "moved",
+        ],
+    );
+    git(
+        f.source.path(),
+        &["update-ref", "refs/heads/wt/retained", &moved, &old],
+    );
+    assert_eq!(
+        envelope(&command(&f.home, &args), false)["error"]["code"],
+        "discard_partial_cleanup"
+    );
+    assert_eq!(
+        git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]),
+        moved
+    );
+}

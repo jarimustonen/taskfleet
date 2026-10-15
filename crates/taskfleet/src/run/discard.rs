@@ -2,6 +2,7 @@
 
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -42,6 +43,8 @@ struct Authorization {
     unmerged_commits: Option<u64>,
     #[serde(default)]
     identity: Option<TargetIdentity>,
+    #[serde(default)]
+    branch_oid: Option<String>,
 }
 
 // Captured while the checkout is still registered and Git-bound. Git may
@@ -51,6 +54,7 @@ struct Authorization {
 struct TargetIdentity {
     directory_dev: u64,
     directory_ino: u64,
+    directory_created_ns: u128,
     source_git_dev: u64,
     source_git_ino: u64,
     branch_oid: Option<String>,
@@ -478,7 +482,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if !path_absent(auth.worktree_path.as_deref())
             || git.worktree_registrations(repo).is_none_or(|rows| {
                 rows.iter().any(|r| {
-                    r.path == auth.worktree_path.as_deref().unwrap_or("")
+                    auth.worktree_path
+                        .as_deref()
+                        .is_some_and(|path| paths_equivalent(&r.path, path))
                         || r.branch.as_deref() == Some(branch)
                 })
             })
@@ -489,9 +495,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             ));
         }
         let detail = auth
-            .identity
+            .branch_oid
             .as_ref()
-            .and_then(|id| id.branch_oid.as_ref())
+            .or_else(|| auth.identity.as_ref().and_then(|id| id.branch_oid.as_ref()))
             .map_or_else(
                 || git.branch_delete(repo, branch, true),
                 |oid| git.branch_delete_oid(repo, &format!("refs/heads/{branch}"), oid),
@@ -537,6 +543,23 @@ fn authorization(
     manifest: &taskfleet_core::Manifest,
     git: &Git,
 ) -> Result<Authorization, CliError> {
+    let branch_oid = o
+        .view
+        .branch
+        .as_deref()
+        .filter(|_| o.view.branch_present)
+        .and_then(|branch| {
+            git.ref_oid(
+                manifest.source_repo.as_deref().expect("verified repo"),
+                branch,
+            )
+        });
+    if o.view.branch_present && branch_oid.is_none() {
+        return Err(CliError::system(
+            "preserved_work_unverifiable",
+            "branch tip unavailable",
+        ));
+    }
     let identity = if o.view.worktree_present {
         let path = o.view.worktree_path.as_deref().expect("verified path");
         let dir = std::fs::symlink_metadata(path)
@@ -558,29 +581,13 @@ fn authorization(
                 "checkout or source Git identity is not a directory",
             ));
         }
-        let branch_oid = o
-            .view
-            .branch
-            .as_deref()
-            .filter(|_| o.view.branch_present)
-            .and_then(|branch| {
-                git.ref_oid(
-                    manifest.source_repo.as_deref().expect("verified repo"),
-                    branch,
-                )
-            });
-        if o.view.branch_present && branch_oid.is_none() {
-            return Err(CliError::system(
-                "preserved_work_unverifiable",
-                "branch tip unavailable",
-            ));
-        }
         Some(TargetIdentity {
             directory_dev: dir.dev(),
             directory_ino: dir.ino(),
+            directory_created_ns: created_ns(&dir)?,
             source_git_dev: source.dev(),
             source_git_ino: source.ino(),
-            branch_oid,
+            branch_oid: branch_oid.clone(),
         })
     } else {
         None
@@ -594,6 +601,7 @@ fn authorization(
         cleanliness: o.view.cleanliness.to_string(),
         unmerged_commits: o.view.unmerged_commits,
         identity,
+        branch_oid,
     })
 }
 
@@ -601,6 +609,57 @@ fn path_absent(path: Option<&str>) -> bool {
     path.is_none_or(|p| {
         std::fs::symlink_metadata(p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
     })
+}
+
+fn created_ns(meta: &std::fs::Metadata) -> Result<u128, CliError> {
+    meta.created()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .ok_or_else(|| {
+            CliError::system(
+                "preserved_work_unverifiable",
+                "checkout creation time unavailable; cannot prove orphan identity",
+            )
+        })
+}
+
+fn paths_equivalent(left: &str, right: &str) -> bool {
+    left == right
+        || Path::new(left)
+            .canonicalize()
+            .ok()
+            .zip(Path::new(right).canonicalize().ok())
+            .is_some_and(|(a, b)| a == b)
+}
+
+fn stale_own_marker(path: &Path, common: &Path) -> bool {
+    let marker = path.join(".git");
+    let meta = match std::fs::symlink_metadata(&marker) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => meta,
+        _ => return false,
+    };
+    if meta.len() > 4096 {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(marker) else {
+        return false;
+    };
+    let Some(gitdir) = text.trim_end_matches('\n').strip_prefix("gitdir: ") else {
+        return false;
+    };
+    let gitdir = Path::new(gitdir);
+    gitdir.is_absolute()
+        && !gitdir.exists()
+        && gitdir.parent().is_some_and(|parent| {
+            parent.file_name().is_some_and(|name| name == "worktrees")
+                && parent
+                    .parent()
+                    .and_then(|p| p.canonicalize().ok())
+                    .as_deref()
+                    == Some(common)
+        })
 }
 
 fn verify_registered(
@@ -630,9 +689,10 @@ fn verify_registered(
         || !dir.is_dir()
         || dir.file_type().is_symlink()
         || (dir.dev(), dir.ino()) != (id.directory_dev, id.directory_ino)
+        || created_ns(&dir).ok() != Some(id.directory_created_ns)
         || (source.dev(), source.ino()) != (id.source_git_dev, id.source_git_ino)
         || !rows.iter().any(|r| {
-            r.path == path
+            paths_equivalent(&r.path, path)
                 && r.branch
                     .as_deref()
                     .is_none_or(|b| Some(b) == auth.branch.as_deref())
@@ -672,15 +732,16 @@ fn verify_orphan(
     if !dir.is_dir()
         || dir.file_type().is_symlink()
         || (dir.dev(), dir.ino()) != (id.directory_dev, id.directory_ino)
+        || created_ns(&dir).ok() != Some(id.directory_created_ns)
         || (source.dev(), source.ino()) != (id.source_git_dev, id.source_git_ino)
         || rows.iter().any(|r| {
-            r.path == path
+            paths_equivalent(&r.path, path)
                 || auth
                     .branch
                     .as_deref()
                     .is_some_and(|branch| r.branch.as_deref() == Some(branch))
         })
-        || Path::new(path).join(".git").exists()
+        || !stale_own_marker(Path::new(path), &common)
         || auth.branch.as_deref().is_some_and(|branch| {
             git.branch_exists(repo, branch) != Some(id.branch_oid.is_some())
                 || id

@@ -387,9 +387,11 @@ the backoff, the terminal set (`done | failed | cancelled`), and the rule to
 branch on `manifest.status` rather than `lifecycle` (which is a fixed category
 and never matches a terminal value) all live inside it. It exits `0` when the
 run settles, `2` on `--timeout`, and `3` under `--fail-on-error` when the settled
-run failed, was cancelled, stalled, or needs attention. Several ids block until
-all settle, `--any` until
-the first. Its envelope is multi-run, so read `data.runs[]` (for example
+run failed, was cancelled, stalled, or needs attention. If it has already
+returned for awaiting input and you need the eventual terminal result, call it
+again with `--terminal` instead of sleeping and retrying the default wait.
+Resolve the open decision separately; `--terminal` does not answer it.
+Several ids block until all settle, `--any` until the first. Its envelope is multi-run, so read `data.runs[]` (for example
 `jq '.data.runs[] | {run_id, status, summary}'`), not `data.status`.
 
 Two mechanisms deliver completion to this session without polling: `--notify`

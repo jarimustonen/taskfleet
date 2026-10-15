@@ -378,19 +378,20 @@ pub enum RunAction {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Block until one or more runs reach a terminal state
-    /// (`done | failed | cancelled`) and emit a structured summary, so
-    /// callers stop hand-rolling `run show` poll loops. Read-only: never
+    /// Wait for runs to settle (terminal, stalled, or needing attention).
+    /// Use `--terminal` to wait strictly for `done | failed | cancelled`.
+    /// Emits a structured summary so callers stop hand-rolling poll loops.
+    /// Read-only: never
     /// mutates run state. Exit codes: `0` condition met, `1` usage/unknown
     /// run, `2` timeout, `3` (`--fail-on-error`) a settled run failed.
     Wait {
         /// One or more run ids to wait on.
         #[arg(required = true, num_args = 1..)]
         run_id: Vec<String>,
-        /// Return once *every* listed run is terminal (default).
+        /// Return once *every* listed run settles (default).
         #[arg(long, conflicts_with = "any")]
         all: bool,
-        /// Return as soon as *one* listed run is terminal.
+        /// Return as soon as *one* listed run settles.
         #[arg(long)]
         any: bool,
         /// Give up after this duration (e.g. `30s`, `5m`, `1h`; a bare integer
@@ -400,6 +401,10 @@ pub enum RunAction {
         /// larger value for a long campaign.
         #[arg(long, value_parser = wait::parse_duration, default_value = "6h")]
         timeout: Option<Duration>,
+        /// Wait only for terminal status, ignoring non-terminal attention signals
+        /// (including awaiting input). Default wait still wakes once for attention.
+        #[arg(long)]
+        terminal: bool,
         /// Exit `3` if the condition is met but a settled run was
         /// `failed`/`cancelled` (default: exit `0` for any terminal state).
         #[arg(long)]
@@ -765,6 +770,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             all: _,
             any,
             timeout,
+            terminal,
             fail_on_error,
             progress,
             poll_interval,
@@ -772,6 +778,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             run_ids: run_id,
             any,
             timeout,
+            terminal,
             fail_on_error,
             progress,
             poll_interval,

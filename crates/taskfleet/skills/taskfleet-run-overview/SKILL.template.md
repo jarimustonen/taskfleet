@@ -206,6 +206,13 @@ short grace. A settled run can therefore still be `pending` or `running`; that
 is the wait telling you it needs a hand, not a defect. `--any` returns on the
 first settled run; `--all` (the default) waits for every one.
 
+If you have already received the attention signal and need the eventual
+terminal result, use `--terminal`: it ignores non-terminal attention (including
+an already-escalated open decision) for settling, but still shows current hints
+in `data.runs[]`. It does not resolve the decision for the worker. `--any --terminal` returns when the first
+run is terminal; `--fail-on-error` grades terminal outcomes, not an unfinished
+sibling's attention signal. Timeout still exits `2`.
+
 ```bash
 taskfleet run wait "$run_id" --output json |
   jq '.data | {outcome, runs: [.runs[] | {run_id, status, summary}]}'

@@ -1,4 +1,5 @@
-//! `run wait` — block until one or more runs reach a terminal state.
+//! `run wait` — block until one or more runs settle (or reach terminal status
+//! exclusively with `--terminal`).
 //!
 //! A blocking completion primitive so callers stop hand-rolling
 //! `while ... run show ... case` poll loops (and re-introducing the
@@ -45,13 +46,14 @@
 //!
 //! ## Exit codes
 //!
-//! A run counts as *settled* when it reaches a terminal status OR when it is
+//! By default, a run counts as *settled* when it reaches a terminal status OR when it is
 //! stalled (supervisor dead — stillborn before any node, or orphaned mid-run —
 //! so it can never become terminal on its own and settles the wait rather than
 //! blocking the whole timeout; see the "Stalled early-exit" section).
 //!
 //! - `0` — wait condition satisfied (`--all` → every run settled; `--any`
-//!   → ≥1 settled). With `--fail-on-error`, every settled run finished `done`.
+//!   → ≥1 settled). `--terminal` limits the condition to terminal status only.
+//!   With `--fail-on-error`, every settled run finished `done`.
 //! - `1` — usage / unknown run id / internal error (a `CliError`).
 //! - `2` — `--timeout` reached before the wait condition was met.
 //! - `3` — `--fail-on-error` and the wait condition was met but ≥1 settled
@@ -122,6 +124,8 @@ pub struct Args<'a> {
     /// `None` (only reachable by a library caller that omits it) keeps the
     /// original block-until-terminal behaviour.
     pub timeout: Option<Duration>,
+    /// Ignore non-terminal attention verdicts when deciding whether to return.
+    pub terminal: bool,
     pub fail_on_error: bool,
     pub progress: bool,
     /// `--poll-interval` override. When set, the fixed cadence replaces the
@@ -351,6 +355,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         args.timeout,
         args.poll_interval,
         args.progress,
+        args.terminal,
     )?;
     let waited_ms = start.elapsed().as_millis() as u64;
 
@@ -358,7 +363,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the latched stall / attention verdict.
     let mut outcomes = Vec::with_capacity(runs.len());
     for (i, (run_id, paths)) in runs.iter().enumerate() {
-        outcomes.push(read_outcome(run_id, paths, latched_settle[i].clone())?);
+        let mut latched = latched_settle[i].clone();
+        if args.terminal {
+            // Keep current hints visible in the outcome, but do not call an
+            // attention signal the reason this terminal-only wait settled.
+            latched.awaiting_input = None;
+            latched.caller = None;
+        }
+        outcomes.push(read_outcome(run_id, paths, latched)?);
     }
 
     // Decide the exit code from the assembled outcomes:
@@ -372,7 +384,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // without ever finishing `done`, so each grades as a failure too.
     let exit_code: u8 = match stop {
         Stop::TimedOut => 2,
-        Stop::ConditionMet if args.fail_on_error && any_settled_error(&outcomes) => 3,
+        Stop::ConditionMet if args.fail_on_error && any_settled_error(&outcomes, args.terminal) => {
+            3
+        }
         Stop::ConditionMet => 0,
     };
 
@@ -418,6 +432,7 @@ fn wait_loop(
     timeout: Option<Duration>,
     poll_interval: Option<Duration>,
     progress: bool,
+    terminal_only: bool,
 ) -> Result<(Stop, Vec<LatchedSettle>), CliError> {
     let start = Instant::now();
     let mut backoff = poll_interval.unwrap_or(BACKOFF_START);
@@ -459,13 +474,14 @@ fn wait_loop(
             // those cases (issues `run-wait-stillborn-run-not-detected`,
             // `run-wait-still`, `attention-required-run-surface`).
             if settle.status.is_terminal()
-                || settle.stall.is_some()
-                || settle.attention
-                || settle.awaiting_input.is_some()
-                || settle
-                    .caller
-                    .as_ref()
-                    .is_some_and(|c| c.state.needs_attention())
+                || (!terminal_only
+                    && (settle.stall.is_some()
+                        || settle.attention
+                        || settle.awaiting_input.is_some()
+                        || settle
+                            .caller
+                            .as_ref()
+                            .is_some_and(|c| c.state.needs_attention())))
             {
                 settled += 1;
             }
@@ -927,8 +943,13 @@ struct GitInputs {
 /// mid-run), or `attention_required` (a `pending`/`running` run whose worker
 /// exited cleanly but skipped `run merge`). Non-settled runs (a still-progressing
 /// run under `--any`) are not graded: they never settled.
-fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
+fn any_settled_error(outcomes: &[RunOutcome], terminal_only: bool) -> bool {
     outcomes.iter().any(|o| {
+        // With --terminal --any, a sibling can still be awaiting input (or
+        // stalled). It did not satisfy the condition and must not grade it.
+        if terminal_only && !matches!(o.status, "done" | "failed" | "cancelled") {
+            return false;
+        }
         matches!(o.status, "failed" | "cancelled")
             || o.stalled
             || o.attention_required
@@ -1211,26 +1232,31 @@ mod tests {
             settled_awaiting_input: true,
             ..mk("pending")
         };
-        assert!(!any_settled_error(&[mk("done"), mk("done")]));
-        assert!(any_settled_error(&[mk("done"), mk("failed")]));
-        assert!(any_settled_error(&[mk("cancelled")]));
+        assert!(!any_settled_error(&[mk("done"), mk("done")], false));
+        assert!(any_settled_error(&[mk("done"), mk("failed")], false));
+        assert!(any_settled_error(&[mk("cancelled")], false));
         // A still-running run under --any is not a settled error.
-        assert!(!any_settled_error(&[mk("done"), mk("running")]));
+        assert!(!any_settled_error(&[mk("done"), mk("running")], false));
         // A stillborn (stalled) run grades as a settled error even though its
         // status is still `pending`.
-        assert!(any_settled_error(&[mk_stalled()]));
-        assert!(any_settled_error(&[mk("done"), mk_stalled()]));
+        assert!(any_settled_error(&[mk_stalled()], false));
+        assert!(any_settled_error(&[mk("done"), mk_stalled()], false));
         // An attention-required run (clean exit, no `run merge`) also grades as a
         // settled error even though its status stays `pending`.
-        assert!(any_settled_error(&[mk_attention()]));
-        assert!(any_settled_error(&[mk("done"), mk_attention()]));
-        assert!(any_settled_error(&[mk_awaiting()]));
+        assert!(any_settled_error(&[mk_attention()], false));
+        assert!(any_settled_error(&[mk("done"), mk_attention()], false));
+        assert!(any_settled_error(&[mk_awaiting()], false));
+        assert!(!any_settled_error(&[mk("done"), mk_awaiting()], true));
+        assert!(any_settled_error(&[mk("failed"), mk_awaiting()], true));
         // Visible but pre-grace awaiting input on an unsettled `--any` sibling
         // does not grade the completed sibling as an error.
-        assert!(!any_settled_error(&[RunOutcome {
-            awaiting_input: true,
-            ..mk("running")
-        }]));
+        assert!(!any_settled_error(
+            &[RunOutcome {
+                awaiting_input: true,
+                ..mk("running")
+            }],
+            false
+        ));
     }
 
     #[test]

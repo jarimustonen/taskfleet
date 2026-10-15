@@ -198,7 +198,7 @@ expression: value
       },
       {
         "command": "taskfleet run wait",
-        "about": "Block until one or more runs reach a terminal state (`done | failed | cancelled`) and emit a structured summary, so callers stop hand-rolling `run show` poll loops. Read-only: never mutates run state. Exit codes: `0` condition met, `1` usage/unknown run, `2` timeout, `3` (`--fail-on-error`) a settled run failed",
+        "about": "Wait for runs to settle (terminal, stalled, or needing attention). Use `--terminal` to wait strictly for `done | failed | cancelled`. Emits a structured summary so callers stop hand-rolling poll loops. Read-only: never mutates run state. Exit codes: `0` condition met, `1` usage/unknown run, `2` timeout, `3` (`--fail-on-error`) a settled run failed",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

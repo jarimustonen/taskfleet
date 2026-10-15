@@ -8,7 +8,7 @@
 //! is spawned); the `TestHome` fixture still reaps any stray process on drop.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -872,6 +872,170 @@ fn awaiting_input_surfaces_and_settles_after_grace() {
     assert_eq!(waited["status"], "pending");
     assert_eq!(waited["awaiting_input"], true);
     assert_eq!(waited["awaiting_input_detail"]["open_discussion_count"], 1);
+    // Default wait retains the one-time attention wake contract even when
+    // called again on the same unresolved request.
+    let again = run_ok(
+        bin(&home)
+            .env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0")
+            .args(["--output", "json", "run", "wait", &run, "--timeout", "2s"]),
+    );
+    assert_eq!(again["data"]["outcome"], "condition-met");
+    assert_eq!(again["data"]["runs"][0]["status"], "pending");
+}
+
+/// An already-escalated decision must not repeatedly wake a terminal-only
+/// waiter. Resolution alone is not terminal; the waiter stays blocked.
+#[test]
+fn terminal_wait_survives_resolution_until_run_terminates() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "terminal-after-input");
+    add_node(&home, &run, "n-0001");
+    event_create(
+        &home,
+        &run,
+        "node.awaiting_input",
+        Some("n-0001"),
+        json!({
+            "discussion_items": [{"topic": "Choose scope", "options": ["small", "large"], "recommended_default": "small"}]
+        }),
+    );
+    let seq = run_ok(bin(&home).args(["--output", "json", "run", "show", &run]))["data"]
+        ["awaiting_input_detail"]["event_seq"]
+        .as_u64()
+        .unwrap();
+    let mut child = bin(&home)
+        .env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0")
+        .args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &run,
+            "--terminal",
+            "--poll-interval",
+            "20ms",
+            "--timeout",
+            "5s",
+            "--fail-on-error",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "awaiting input is not terminal"
+    );
+    event_create(
+        &home,
+        &run,
+        "node.input_resolved",
+        Some("n-0001"),
+        json!({"event_seq": seq}),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "resolving input is not terminal"
+    );
+    node_report(
+        &home,
+        &run,
+        "n-0001",
+        json!({"success": true, "summary": "finished"}),
+    );
+    event_create(&home, &run, "run.status", None, json!({"status": "done"}));
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["outcome"], "condition-met");
+    assert_eq!(v["data"]["runs"][0]["status"], "done");
+    assert_eq!(v["data"]["runs"][0]["awaiting_input"], false);
+    assert_eq!(v["data"]["runs"][0]["landed"], false);
+}
+
+#[test]
+fn terminal_wait_timeout_and_any_ignore_nonterminal_attention() {
+    let home = TestHome::new();
+    let waiting = pending_run(&home, "decision");
+    add_node(&home, &waiting, "n-0001");
+    event_create(
+        &home,
+        &waiting,
+        "node.awaiting_input",
+        Some("n-0001"),
+        json!({
+            "discussion_items": [{"topic": "Choose", "options": ["a", "b"], "recommended_default": "a"}]
+        }),
+    );
+    let mut cmd = bin(&home);
+    cmd.env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0");
+    let timed = run_exit(
+        cmd.args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &waiting,
+            "--terminal",
+            "--timeout",
+            "150ms",
+            "--fail-on-error",
+        ]),
+        2,
+    );
+    assert_eq!(timed["data"]["outcome"], "timed-out");
+    assert_eq!(timed["data"]["runs"][0]["status"], "pending");
+    assert_eq!(timed["data"]["runs"][0]["awaiting_input"], true);
+    assert_eq!(timed["data"]["runs"][0]["landed"], false);
+
+    let finished = settle_run(&home, "other", "done", json!({"success": true}));
+    let mut cmd = bin(&home);
+    cmd.env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0");
+    let any = run_ok(cmd.args([
+        "--output",
+        "json",
+        "run",
+        "wait",
+        &waiting,
+        &finished,
+        "--terminal",
+        "--any",
+        "--fail-on-error",
+        "--timeout",
+        "1s",
+    ]));
+    assert_eq!(any["data"]["outcome"], "condition-met");
+    assert_eq!(any["data"]["runs"][0]["status"], "pending");
+    assert_eq!(any["data"]["runs"][0]["awaiting_input"], true);
+    assert_eq!(any["data"]["runs"][1]["status"], "done");
+    // Report-only completion does not prove landing.
+    assert_eq!(any["data"]["runs"][1]["landed"], false);
+
+    let mut cmd = bin(&home);
+    cmd.env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0");
+    let all = run_exit(
+        cmd.args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &waiting,
+            &finished,
+            "--terminal",
+            "--all",
+            "--timeout",
+            "100ms",
+            "--fail-on-error",
+        ]),
+        2,
+    );
+    assert_eq!(all["data"]["outcome"], "timed-out");
 }
 
 /// Under `--fail-on-error`, an attention-required run grades as a failure

@@ -25,7 +25,11 @@ struct CurrentWorktree {
 /// fail closed: malformed node evidence cannot be skipped because doing so could
 /// hide a second owner and turn ambiguity into a wrong unique result.
 pub fn resolve_current(root: &Path, cwd: &Path) -> Result<RunId, CliError> {
-    let current = current_worktree(cwd)?;
+    resolve_current_with(root, cwd, false)
+}
+
+fn resolve_current_with(root: &Path, cwd: &Path, allow_detached: bool) -> Result<RunId, CliError> {
+    let current = current_worktree(cwd, allow_detached)?;
     let runs = runs_root(root);
     let entries = std::fs::read_dir(&runs).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -109,7 +113,9 @@ pub fn resolve_current(root: &Path, cwd: &Path) -> Result<RunId, CliError> {
 pub fn creator_in_cwd(root: &Path) -> Result<Option<RunId>, CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::system("io_error", format!("current directory: {e}")))?;
-    match resolve_current(root, &cwd) {
+    // A detached release checkout can create ordinary runs. Only a recorded
+    // claim for that exact path makes its missing branch stale evidence.
+    match resolve_current_with(root, &cwd, true) {
         Ok(id) => Ok(Some(id)),
         Err(error) if error.code == "run_owner_not_found" => Ok(None),
         Err(error) => Err(error),
@@ -199,13 +205,14 @@ fn scan_nodes(
         // cannot safely distinguish a reused worktree path, so it is stale
         // evidence rather than a match. Existing runs with a recorded branch keep
         // working unchanged.
-        let branch_match = node.branch.as_deref() == Some(current.branch.as_str());
+        let branch_match =
+            !current.branch.is_empty() && node.branch.as_deref() == Some(current.branch.as_str());
         matches.push((node_id, branch_match));
     }
     Ok(matches)
 }
 
-fn current_worktree(cwd: &Path) -> Result<CurrentWorktree, CliError> {
+fn current_worktree(cwd: &Path, allow_detached: bool) -> Result<CurrentWorktree, CliError> {
     let cwd = std::fs::canonicalize(cwd).map_err(|e| {
         CliError::system("io_error", format!("canonicalize current directory: {e}"))
     })?;
@@ -220,16 +227,20 @@ fn current_worktree(cwd: &Path) -> Result<CurrentWorktree, CliError> {
                     format!("cannot read {}: {e}", git_dir.join("HEAD").display()),
                 )
             })?;
-            let Some(branch) = head.strip_prefix("ref: refs/heads/").map(str::trim) else {
-                return Err(CliError::user(
-                    "run_owner_stale",
-                    format!(
-                        "current worktree {} has a detached or malformed HEAD; exact owning-run discovery requires its recorded branch",
-                        dir.display()
-                    ),
-                ));
+            let branch = match head.strip_prefix("ref: refs/heads/").map(str::trim) {
+                Some(branch) => branch,
+                None if allow_detached => "", // cannot corroborate a recorded owner
+                None => {
+                    return Err(CliError::user(
+                        "run_owner_stale",
+                        format!(
+                            "current worktree {} has a detached or malformed HEAD; exact owning-run discovery requires its recorded branch",
+                            dir.display()
+                        ),
+                    ));
+                }
             };
-            if branch.is_empty() {
+            if branch.is_empty() && head.starts_with("ref: refs/heads/") {
                 return Err(CliError::system(
                     "run_owner_malformed",
                     format!(

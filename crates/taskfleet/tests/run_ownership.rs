@@ -438,3 +438,18 @@ fn idempotent_replay_does_not_reassign_creator_from_retry_cwd() {
         RUN_A
     );
 }
+
+#[test]
+fn detached_unowned_release_checkout_can_create_but_detached_owner_cannot() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let cwd = worktree(repos.path(), "release", "release");
+    std::fs::write(cwd.join(".git/HEAD"), format!("{}\n", "a".repeat(40))).unwrap();
+    let id = created_run(&home, &create_skeleton(&home, &cwd, &[]));
+    assert!(show(&home, &cwd, &id)["data"]["created_by_run_id"].is_null());
+    seed_run(home.path(), RUN_A, &cwd, "release");
+    let output = create_skeleton(&home, &cwd, &[]);
+    assert!(!output.status.success());
+    assert_eq!(error_code(&output), "run_owner_stale");
+    assert_eq!(error_code(&show_current(&home, &cwd)), "run_owner_stale");
+}

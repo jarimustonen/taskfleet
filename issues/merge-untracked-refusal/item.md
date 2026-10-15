@@ -1,10 +1,12 @@
 ---
 created: 2026-10-13
-updated: 2026-10-13
+updated: 2026-10-15
 type: bug
 reporter: claude
 status: open
 priority: normal
+lane: merge
+lane_seq: 10
 ---
 
 # run merge refuses on unrelated untracked files in the target worktree

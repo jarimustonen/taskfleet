@@ -1,12 +1,15 @@
 ---
 created: 2026-10-04
-updated: 2026-10-05
+updated: 2026-10-15
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: chat
 source_ref: native-agent-host:decide-taskfleet-browser-integration
+lane: merge
+lane_seq: 20
+collision: [supervise-cleanup]
 ---
 
 # Support worktree runs with caller-owned agents

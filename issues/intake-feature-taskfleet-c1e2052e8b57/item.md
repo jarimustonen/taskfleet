@@ -1,12 +1,14 @@
 ---
 created: 2026-10-01
-updated: 2026-10-01
+updated: 2026-10-15
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-wrapup-2026-10-01-run-message
+lane: control
+lane_seq: 20
 ---
 
 # Send a message to a running worker

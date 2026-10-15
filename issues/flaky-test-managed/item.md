@@ -1,9 +1,12 @@
 ---
 created: 2026-10-13
-updated: 2026-10-13
+updated: 2026-10-15
 type: bug
 status: open
 priority: normal
+lane: lifecycle
+lane_seq: 20
+collision: [supervise-cleanup]
 ---
 
 # Flaky test: managed_session_retained_when_attached fails under the full suite

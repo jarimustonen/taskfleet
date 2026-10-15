@@ -1,12 +1,15 @@
 ---
 created: 2026-09-30
-updated: 2026-09-30
+updated: 2026-10-15
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-2026-09-30-discard-partial
+lane: lifecycle
+lane_seq: 40
+collision: [supervise-cleanup]
 ---
 
 # run discard leaves partial state after first call; retries refuse

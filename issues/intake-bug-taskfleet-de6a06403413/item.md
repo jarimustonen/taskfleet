@@ -1,12 +1,15 @@
 ---
 created: 2026-09-30
-updated: 2026-09-30
+updated: 2026-10-15
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-2026-09-30-teardown-gomod
+lane: lifecycle
+lane_seq: 30
+collision: [supervise-cleanup]
 ---
 
 # Teardown leaves worktree dirs when Go module cache is read-only

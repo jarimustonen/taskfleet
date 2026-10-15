@@ -1,9 +1,11 @@
 ---
 created: 2026-10-13
-updated: 2026-10-13
+updated: 2026-10-15
 type: bug
 status: open
 priority: normal
+lane: docs
+lane_seq: 10
 ---
 
 # run cancel --node help describes the retired multi-node fan-out model

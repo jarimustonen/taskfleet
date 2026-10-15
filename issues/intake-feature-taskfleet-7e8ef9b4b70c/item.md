@@ -1,12 +1,14 @@
 ---
 created: 2026-10-12
-updated: 2026-10-12
+updated: 2026-10-15
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:native-agent-host-wrapup
 source_ref: agent:native-agent-host-wrapup/reporter:jari/id:nah-wrapup-2026-10-12-parent
+lane: control
+lane_seq: 30
 ---
 
 # Record the parent run of runs a worker spawns

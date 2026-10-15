@@ -2001,19 +2001,33 @@ mod tests {
                 assert!(Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(20));
             }
-            mark_original_shell(
-                "tmux",
-                &other,
-                ids[1],
-                node.worktree_path.as_deref(),
-                &ownership_marker(&paths, &node),
-            );
-            let shell = original_rows("tmux", socket, ids[0])
-                .unwrap()
-                .into_iter()
-                .find(|r| r.pane != ids[1])
-                .unwrap();
-            assert_eq!(shell.marker, ownership_marker(&paths, &node));
+            // A pane can report `sh` before its first prompt has appeared.
+            // Binding intentionally requires that prompt, so wait for it rather
+            // than treating process-name readiness as display readiness.
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let shell = loop {
+                mark_original_shell(
+                    "tmux",
+                    &other,
+                    ids[1],
+                    node.worktree_path.as_deref(),
+                    &ownership_marker(&paths, &node),
+                );
+                let shell = original_rows("tmux", socket, ids[0])
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.pane != ids[1])
+                    .unwrap();
+                if shell.marker == ownership_marker(&paths, &node) {
+                    break shell;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "shell prompt/marker never appeared: {:?}",
+                    tmux_text(Some(socket), &["capture-pane", "-p", "-t", &shell.pane])
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            };
             match changed {
                 "input" => {
                     assert!(tmux_text(

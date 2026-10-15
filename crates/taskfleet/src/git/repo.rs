@@ -302,6 +302,27 @@ impl Git {
         }
     }
 
+    /// Exact branch tip for an audited discard; never resolves tag aliases.
+    pub fn ref_oid(&self, repo: &str, branch: &str) -> Option<String> {
+        let out = self
+            .at(repo)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("refs/heads/{branch}^{{commit}}"),
+            ])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let oid = std::str::from_utf8(&out.stdout).ok()?.trim();
+        (matches!(oid.len(), 40 | 64) && oid.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| oid.to_owned())
+    }
+
     /// The main worktree path for a linked worktree. Kept as the small legacy
     /// convenience over the exact registration observer above.
     pub fn main_worktree(&self, dir: &str) -> Option<String> {
@@ -411,7 +432,7 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
     match cmd.output() {
         Ok(out) if out.status.success() => {
             info!(target: "taskfleet::supervise", step = label, "cleanup step ok");
-            eprintln!("supervisor cleanup: {label}: ok");
+
             None
         }
         Ok(out) => {
@@ -423,7 +444,7 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
                 detail = %detail,
                 "cleanup step non-zero (treated as already-done/refused; continuing)"
             );
-            eprintln!("supervisor cleanup: {label}: non-zero exit (continuing): {detail}");
+
             Some(detail)
         }
         Err(e) => {
@@ -433,7 +454,7 @@ fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
                 error = %e,
                 "cleanup step could not spawn (continuing)"
             );
-            eprintln!("supervisor cleanup: {label}: spawn failed (continuing): {e}");
+
             Some(format!("spawn failed: {e}"))
         }
     }

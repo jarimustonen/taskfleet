@@ -1,5 +1,8 @@
 //! Explicit, audited disposal of retained terminal worker resources.
 
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use taskfleet_core::{
@@ -37,6 +40,20 @@ struct Authorization {
     branch: Option<String>,
     cleanliness: String,
     unmerged_commits: Option<u64>,
+    #[serde(default)]
+    identity: Option<TargetIdentity>,
+}
+
+// Captured while the checkout is still registered and Git-bound. Git may
+// deregister it and remove .git before failing to unlink read-only contents.
+// The directory inode then supplies the missing ownership proof on retry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TargetIdentity {
+    directory_dev: u64,
+    directory_ino: u64,
+    source_git_dev: u64,
+    source_git_ino: u64,
+    branch_oid: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -246,12 +263,25 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             })
         })
         .transpose()?;
-    if let (Some(prior), Some(recorded)) = (prior.as_ref(), prior_auth.as_ref()) {
+    let orphan = if let (Some(prior), Some(recorded)) = (prior.as_ref(), prior_auth.as_ref()) {
+        // Inputs remain pinned even if the recorded path no longer looks like a
+        // worktree. An old receipt without inode proof cannot authorize orphan
+        // deletion; keep that directory for manual recovery.
+        if recorded.reason != args.reason || recorded.force != args.force {
+            return Err(CliError::user(
+                "idempotency_conflict",
+                format!("node {node_id} has an incomplete discard authorization with different reason/force inputs"),
+            ));
+        }
+        let orphan = observation
+            .as_ref()
+            .is_some_and(|o| o.view.worktree_present && !o.verified_for_discard());
+        if orphan {
+            verify_orphan(recorded, &manifest, &node, &git)?;
+        }
         if let Some(observation) = observation.as_ref() {
             if observation.has_resources()
-                && (recorded.reason != args.reason
-                    || recorded.force != args.force
-                    || recorded.worktree_path != observation.view.worktree_path
+                && (recorded.worktree_path != observation.view.worktree_path
                     || recorded.branch != observation.view.branch)
             {
                 return Err(CliError::user(
@@ -284,7 +314,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 args.warnings,
             );
         }
-    }
+        orphan
+    } else {
+        false
+    };
 
     let observation = observation.ok_or_else(|| {
         CliError::user(
@@ -298,7 +331,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             format!("node {node_id}'s retained resource existence is unverifiable"),
         ));
     }
-    if !observation.verified_for_discard() {
+    if !orphan && !observation.verified_for_discard() {
         return Err(CliError::system(
             "preserved_work_unverifiable",
             format!(
@@ -372,8 +405,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .with_expected(json!({"force": true})));
     }
 
-    let auth =
-        prior_auth.unwrap_or_else(|| authorization(args.reason.clone(), args.force, &observation));
+    let auth = if let Some(auth) = prior_auth {
+        auth
+    } else {
+        authorization(
+            args.reason.clone(),
+            args.force,
+            &observation,
+            &manifest,
+            &git,
+        )?
+    };
+    if !orphan && auth.identity.is_some() {
+        verify_registered(&auth, &manifest, &node, &git)?;
+    }
     let key = authorization_key(&run_id, &node_id);
     let seq = if let Some(prior) = prior {
         prior.seq
@@ -400,7 +445,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .worktree_path
             .as_deref()
             .expect("present worktree has path");
-        if !git.worktree_remove(repo, path, force_required) {
+        let removed = if orphan {
+            // The inode and source Git identity were just checked; refuse any
+            // registered checkout and never follow a replacement/symlink.
+            remove_orphan(&auth, &manifest, &node, &git)
+        } else {
+            if auth.identity.is_some() {
+                verify_registered(&auth, &manifest, &node, &git)?;
+            }
+            git.worktree_remove(repo, path, force_required)
+        };
+        if !removed {
             return Err(CliError::system(
                 "discard_partial_cleanup",
                 format!(
@@ -418,7 +473,30 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .branch
             .as_deref()
             .expect("present branch recorded");
-        if let Some(detail) = git.branch_delete(repo, branch, true) {
+        // Never delete a ref while the recorded directory remains, even if
+        // Git already deregistered it. A moved ref is not the audited target.
+        if !path_absent(auth.worktree_path.as_deref())
+            || git.worktree_registrations(repo).is_none_or(|rows| {
+                rows.iter().any(|r| {
+                    r.path == auth.worktree_path.as_deref().unwrap_or("")
+                        || r.branch.as_deref() == Some(branch)
+                })
+            })
+        {
+            return Err(CliError::system(
+                "discard_partial_cleanup",
+                "checkout still present or registered; branch preserved",
+            ));
+        }
+        let detail = auth
+            .identity
+            .as_ref()
+            .and_then(|id| id.branch_oid.as_ref())
+            .map_or_else(
+                || git.branch_delete(repo, branch, true),
+                |oid| git.branch_delete_oid(repo, &format!("refs/heads/{branch}"), oid),
+            );
+        if let Some(detail) = detail {
             return Err(CliError::system(
                 "discard_partial_cleanup",
                 format!(
@@ -452,8 +530,62 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )
 }
 
-fn authorization(reason: String, force: bool, o: &RetainedObservation) -> Authorization {
-    Authorization {
+fn authorization(
+    reason: String,
+    force: bool,
+    o: &RetainedObservation,
+    manifest: &taskfleet_core::Manifest,
+    git: &Git,
+) -> Result<Authorization, CliError> {
+    let identity = if o.view.worktree_present {
+        let path = o.view.worktree_path.as_deref().expect("verified path");
+        let dir = std::fs::symlink_metadata(path)
+            .map_err(|e| CliError::system("preserved_work_unverifiable", e.to_string()))?;
+        let common = git
+            .common_dir(manifest.source_repo.as_deref().expect("verified repo"))
+            .ok_or_else(|| {
+                CliError::system(
+                    "preserved_work_unverifiable",
+                    "source Git directory unavailable",
+                )
+            })?;
+        let source = common
+            .metadata()
+            .map_err(|e| CliError::system("preserved_work_unverifiable", e.to_string()))?;
+        if !dir.is_dir() || !source.is_dir() {
+            return Err(CliError::system(
+                "preserved_work_unverifiable",
+                "checkout or source Git identity is not a directory",
+            ));
+        }
+        let branch_oid = o
+            .view
+            .branch
+            .as_deref()
+            .filter(|_| o.view.branch_present)
+            .and_then(|branch| {
+                git.ref_oid(
+                    manifest.source_repo.as_deref().expect("verified repo"),
+                    branch,
+                )
+            });
+        if o.view.branch_present && branch_oid.is_none() {
+            return Err(CliError::system(
+                "preserved_work_unverifiable",
+                "branch tip unavailable",
+            ));
+        }
+        Some(TargetIdentity {
+            directory_dev: dir.dev(),
+            directory_ino: dir.ino(),
+            source_git_dev: source.dev(),
+            source_git_ino: source.ino(),
+            branch_oid,
+        })
+    } else {
+        None
+    };
+    Ok(Authorization {
         actor: format!("uid:{}", unsafe { libc::geteuid() }),
         reason,
         force,
@@ -461,7 +593,98 @@ fn authorization(reason: String, force: bool, o: &RetainedObservation) -> Author
         branch: o.view.branch.clone(),
         cleanliness: o.view.cleanliness.to_string(),
         unmerged_commits: o.view.unmerged_commits,
+        identity,
+    })
+}
+
+fn path_absent(path: Option<&str>) -> bool {
+    path.is_none_or(|p| {
+        std::fs::symlink_metadata(p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+fn verify_registered(
+    auth: &Authorization,
+    manifest: &taskfleet_core::Manifest,
+    node: &taskfleet_core::Node,
+    git: &Git,
+) -> Result<(), CliError> {
+    let refuse = || CliError::system("preserved_work_unverifiable", "registered checkout or branch no longer matches discard authorization");
+    let id = auth.identity.as_ref().ok_or_else(refuse)?;
+    let path = auth.worktree_path.as_deref().ok_or_else(refuse)?;
+    let repo = manifest.source_repo.as_deref().ok_or_else(refuse)?;
+    let dir = std::fs::symlink_metadata(path).map_err(|_| refuse())?;
+    let source = git.common_dir(repo).ok_or_else(refuse)?.metadata().map_err(|_| refuse())?;
+    let rows = git.worktree_registrations(repo).ok_or_else(refuse)?;
+    if node.worktree_path.as_deref() != Some(path) || node.branch != auth.branch
+        || !dir.is_dir() || dir.file_type().is_symlink()
+        || (dir.dev(), dir.ino()) != (id.directory_dev, id.directory_ino)
+        || (source.dev(), source.ino()) != (id.source_git_dev, id.source_git_ino)
+        || !rows.iter().any(|r| r.path == path && r.branch.as_deref().is_none_or(|b| Some(b) == auth.branch.as_deref()))
+        || auth.branch.as_deref().is_some_and(|branch| {
+            git.branch_exists(repo, branch) != Some(id.branch_oid.is_some())
+                || id.branch_oid.as_ref().is_some_and(|oid| git.ref_oid(repo, branch).as_deref() != Some(oid))
+        })
+    { return Err(refuse()); }
+    Ok(())
+}
+
+fn verify_orphan(
+    auth: &Authorization,
+    manifest: &taskfleet_core::Manifest,
+    node: &taskfleet_core::Node,
+    git: &Git,
+) -> Result<(), CliError> {
+    let refuse = || {
+        CliError::system("preserved_work_unverifiable", "orphaned directory identity, source repository, or branch changed; preserve for manual recovery")
+    };
+    let id = auth.identity.as_ref().ok_or_else(refuse)?;
+    let path = auth.worktree_path.as_deref().ok_or_else(refuse)?;
+    let repo = manifest.source_repo.as_deref().ok_or_else(refuse)?;
+    if node.worktree_path.as_deref() != Some(path) || node.branch != auth.branch {
+        return Err(refuse());
     }
+    let dir = std::fs::symlink_metadata(path).map_err(|_| refuse())?;
+    let common = git.common_dir(repo).ok_or_else(refuse)?;
+    let source = common.metadata().map_err(|_| refuse())?;
+    let rows = git.worktree_registrations(repo).ok_or_else(refuse)?;
+    if !dir.is_dir()
+        || dir.file_type().is_symlink()
+        || (dir.dev(), dir.ino()) != (id.directory_dev, id.directory_ino)
+        || (source.dev(), source.ino()) != (id.source_git_dev, id.source_git_ino)
+        || rows.iter().any(|r| {
+            r.path == path
+                || auth
+                    .branch
+                    .as_deref()
+                    .is_some_and(|branch| r.branch.as_deref() == Some(branch))
+        })
+        || Path::new(path).join(".git").exists()
+        || auth.branch.as_deref().is_some_and(|branch| {
+            git.branch_exists(repo, branch) != Some(id.branch_oid.is_some())
+                || id
+                    .branch_oid
+                    .as_ref()
+                    .is_some_and(|oid| git.ref_oid(repo, branch).as_deref() != Some(oid))
+        })
+    {
+        return Err(refuse());
+    }
+    Ok(())
+}
+
+fn remove_orphan(
+    auth: &Authorization,
+    manifest: &taskfleet_core::Manifest,
+    node: &taskfleet_core::Node,
+    git: &Git,
+) -> bool {
+    if verify_orphan(auth, manifest, node, git).is_err() {
+        return false;
+    }
+    auth.worktree_path
+        .as_deref()
+        .is_some_and(|path| std::fs::remove_dir_all(path).is_ok())
 }
 
 fn authorization_key(run_id: &str, node_id: &str) -> String {

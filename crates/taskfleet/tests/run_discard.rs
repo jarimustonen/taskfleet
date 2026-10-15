@@ -728,3 +728,143 @@ fn incomplete_authorization_rejects_changed_inputs_and_reuses_recorded_actor() {
     let retry: Value = serde_json::from_slice(&retry.stdout).unwrap();
     assert_eq!(retry["data"]["audit_event"]["actor"], "uid:recorded");
 }
+
+fn envelope(out: &Output, success: bool) -> Value {
+    assert_eq!(
+        out.status.success(),
+        success,
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stream = if success { &out.stdout } else { &out.stderr };
+    assert!(
+        if success {
+            out.stderr.is_empty()
+        } else {
+            out.stdout.is_empty()
+        },
+        "unexpected output: {:?}",
+        out
+    );
+    let mut de = serde_json::Deserializer::from_slice(stream).into_iter::<Value>();
+    let value = de.next().unwrap().unwrap();
+    assert!(de.next().is_none(), "multiple envelopes: {:?}", out);
+    value
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_removal_deregisters_then_same_reason_resumes_without_erasing_unrelated_work() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::failed();
+    let readonly = f.worktree.join("readonly");
+    std::fs::create_dir(&readonly).unwrap();
+    std::fs::write(readonly.join("file"), "recover me").unwrap();
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let args = [
+        "run", "discard", &f.run_id, "--reason", "operator", "--force",
+    ];
+    let first = envelope(&command(&f.home, &args), false);
+    assert_eq!(first["error"]["code"], "discard_partial_cleanup");
+    assert!(readonly.join("file").exists());
+    assert!(!git(f.source.path(), &["worktree", "list", "--porcelain"])
+        .contains(&f.worktree.display().to_string()));
+    let auth = std::fs::read_to_string(f.paths.events()).unwrap();
+    assert_eq!(auth.matches("cleanup.discard_authorized").count(), 1);
+    let changed = envelope(
+        &command(
+            &f.home,
+            &["run", "discard", &f.run_id, "--reason", "other", "--force"],
+        ),
+        false,
+    );
+    assert_eq!(changed["error"]["code"], "idempotency_conflict");
+    let no_force = envelope(
+        &command(
+            &f.home,
+            &["run", "discard", &f.run_id, "--reason", "operator"],
+        ),
+        false,
+    );
+    assert_eq!(no_force["error"]["code"], "idempotency_conflict");
+    let retry = envelope(&command(&f.home, &args), false);
+    assert_eq!(retry["error"]["code"], "discard_partial_cleanup");
+    assert!(readonly.join("file").exists());
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let done = envelope(&command(&f.home, &args), true);
+    assert_eq!(
+        done["data"]["removed"],
+        json!({"worktree":true,"branch":true})
+    );
+    assert!(!f.worktree.exists());
+    assert_eq!(
+        envelope(&command(&f.home, &args), true)["data"]["already_discarded"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.paths.events())
+            .unwrap()
+            .matches("cleanup.discard_authorized")
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn orphan_replacement_and_moved_branch_are_not_discarded() {
+    use std::os::unix::fs::PermissionsExt;
+    for replace in [true, false] {
+        let f = Fixture::failed();
+        let readonly = f.worktree.join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        std::fs::write(readonly.join("file"), "valuable").unwrap();
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let args = [
+            "run", "discard", &f.run_id, "--reason", "operator", "--force",
+        ];
+        assert_eq!(
+            envelope(&command(&f.home, &args), false)["error"]["code"],
+            "discard_partial_cleanup"
+        );
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if replace {
+            std::fs::remove_dir_all(&f.worktree).unwrap();
+            std::fs::create_dir(&f.worktree).unwrap();
+            std::fs::write(f.worktree.join("new"), "not ours").unwrap();
+        } else {
+            let old = git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]);
+            let new = git(
+                f.source.path(),
+                &[
+                    "commit-tree",
+                    &format!("{old}^{{tree}}"),
+                    "-p",
+                    &old,
+                    "-m",
+                    "new",
+                ],
+            );
+            git(
+                f.source.path(),
+                &["update-ref", "refs/heads/wt/retained", &new, &old],
+            );
+        }
+        assert_eq!(
+            envelope(&command(&f.home, &args), false)["error"]["code"],
+            "preserved_work_unverifiable"
+        );
+        assert!(if replace {
+            f.worktree.join("new").exists()
+        } else {
+            readonly.join("file").exists()
+        });
+        assert_eq!(
+            std::fs::read_to_string(f.paths.events())
+                .unwrap()
+                .matches("cleanup.discard_authorized")
+                .count(),
+            1
+        );
+    }
+}

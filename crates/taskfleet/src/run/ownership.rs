@@ -104,6 +104,18 @@ pub fn resolve_current(root: &Path, cwd: &Path) -> Result<RunId, CliError> {
     }
 }
 
+/// Optional creator attribution for `run create`. An ordinary checkout has no
+/// owner; stale, duplicate or malformed evidence is not an ordinary checkout.
+pub fn creator_in_cwd(root: &Path) -> Result<Option<RunId>, CliError> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| CliError::system("io_error", format!("current directory: {e}")))?;
+    match resolve_current(root, &cwd) {
+        Ok(id) => Ok(Some(id)),
+        Err(error) if error.code == "run_owner_not_found" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn scan_nodes(
     paths: &RunPaths,
     current: &CurrentWorktree,

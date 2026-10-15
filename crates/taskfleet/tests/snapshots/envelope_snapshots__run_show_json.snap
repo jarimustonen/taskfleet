@@ -1,6 +1,5 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 234
 expression: value
 ---
 {
@@ -17,6 +16,7 @@ expression: value
     "worktree_path": "/tmp/seed-wt",
     "harness": "pi",
     "node_count": 1,
+    "created_by_run_id": null,
     "supervisor": {
       "pid": null,
       "state": "not-recorded",
@@ -67,6 +67,7 @@ expression: value
         "fallback": []
       },
       "node_count": 1,
+      "created_by_run_id": null,
       "parent_run_id": null,
       "parent_node_id": null
     },

@@ -208,6 +208,7 @@ pub struct ManifestView<'a> {
     /// for manifests that predate/profile-opt out of this metadata.
     pub selection: AgentSelectionView<'a>,
     pub node_count: u32,
+    pub created_by_run_id: Option<&'a RunId>,
     pub parent_run_id: Option<&'a RunId>,
     pub parent_node_id: Option<&'a NodeId>,
 }
@@ -234,6 +235,7 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
                 AgentSelectionView::Recorded,
             ),
             node_count: m.node_count,
+            created_by_run_id: m.created_by_run_id.as_ref(),
             parent_run_id: m.parent_run_id.as_ref(),
             parent_node_id: m.parent_node_id.as_ref(),
         }
@@ -282,6 +284,7 @@ pub struct RunSummary {
     /// selection existed.
     pub harness: Option<String>,
     pub node_count: u32,
+    pub created_by_run_id: Option<String>,
     /// Liveness of the run's per-run supervisor. Defaults to the "unknown"
     /// probe from `From`; the `list` handler overrides it with a real probe
     /// via [`RunSummary::with_supervisor`] (it already holds each run's paths).
@@ -454,6 +457,7 @@ impl From<&Manifest> for RunSummary {
             worktree_path: None,
             harness: m.harness.clone(),
             node_count: m.node_count,
+            created_by_run_id: m.created_by_run_id.as_ref().map(ToString::to_string),
             supervisor: SupervisorView::unknown(),
             stalled: false,
             stillborn: false,
@@ -500,6 +504,7 @@ mod tests {
             harness: None,
             agent_selection: None,
             node_count: 0,
+            created_by_run_id: None,
             parent_run_id: None,
             parent_node_id: None,
         }
@@ -526,6 +531,7 @@ mod tests {
                 "harness": null,
                 "selection": "legacy-unrecorded",
                 "node_count": 0,
+                "created_by_run_id": null,
                 "parent_run_id": null,
                 "parent_node_id": null,
             })
@@ -565,6 +571,7 @@ mod tests {
                 "worktree_path": null,
                 "harness": null,
                 "node_count": 0,
+                "created_by_run_id": null,
                 "supervisor": { "pid": null, "state": "unknown", "alive": false },
                 "stalled": false,
                 "stillborn": false,

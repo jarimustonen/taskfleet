@@ -394,6 +394,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .as_ref()
         .map(|n| n.as_str().to_string());
 
+    // Resolve before writing the new run. Replay above keeps its original
+    // attribution even if the caller has since changed worktrees.
+    let created_by_run_id = super::ownership::creator_in_cwd(&root)?;
+
     let run_id = new_run_id();
     // Validate the freshly generated id (infallible in practice) so run_dir
     // gets a typed RunId rather than a raw &str.
@@ -774,6 +778,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
     if let Some(v) = args.task.as_deref() {
         data.insert("task".into(), Value::String(v.into()));
+    }
+    if let Some(creator) = created_by_run_id.as_ref() {
+        data.insert(
+            "created_by_run_id".into(),
+            Value::String(creator.to_string()),
+        );
     }
     if is_child {
         data.insert(

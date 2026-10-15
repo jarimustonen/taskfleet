@@ -553,6 +553,7 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         harness: d.get("harness").and_then(Value::as_str).map(str::to_string),
         agent_selection,
         node_count: 0,
+        created_by_run_id: opt_run_id(&events_path, ev, d, "created_by_run_id")?,
         parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
     };

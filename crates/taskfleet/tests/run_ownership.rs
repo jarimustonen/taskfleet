@@ -261,3 +261,180 @@ fn relative_path_and_missing_branch_are_refused_as_unsafe_evidence() {
     assert!(!branchless.status.success());
     assert_eq!(error_code(&branchless), "run_owner_stale");
 }
+
+fn create_skeleton(home: &TempDir, cwd: &Path, extra: &[&str]) -> std::process::Output {
+    bin(home, cwd)
+        .env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1")
+        .args([
+            "run", "create", "--kind", "spinoff", "--title", "helper", "--output", "json",
+        ])
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+fn created_run(home: &TempDir, output: &std::process::Output) -> String {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = value["data"]["run_id"].as_str().unwrap().to_string();
+    assert!(home.path().join("runs").join(&id).exists());
+    id
+}
+
+fn show(home: &TempDir, cwd: &Path, id: &str) -> Value {
+    let output = bin(home, cwd)
+        .args(["run", "show", id, "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn helper_create_records_exact_creator_without_fan_out_parent_edge() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let branch = format!("wt/{OLD_PREFIX}-alpha");
+    let cwd = worktree(repos.path(), "alpha", &branch);
+    seed_run(home.path(), RUN_A, &cwd, &branch);
+    // No ambient git/tmux/harness executable is required for attribution.
+    let output = bin(&home, &cwd)
+        .env("PATH", "/nonexistent")
+        .env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1")
+        .args([
+            "run", "create", "--kind", "spinoff", "--title", "helper", "--output", "json",
+        ])
+        .output()
+        .unwrap();
+    let id = created_run(&home, &output);
+    let detail = show(&home, &cwd, &id);
+    assert_eq!(detail["data"]["created_by_run_id"], RUN_A);
+    assert_eq!(detail["data"]["manifest"]["created_by_run_id"], RUN_A);
+    assert!(detail["data"]["manifest"]["parent_run_id"].is_null());
+    assert!(detail["data"]["manifest"]["parent_node_id"].is_null());
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(RUN_A).join("events.jsonl")).unwrap();
+    assert!(!events.contains("child.spawned"));
+    let listing = bin(&home, &cwd)
+        .args(["run", "list", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(listing.status.success());
+    let list: Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let row = list["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == id)
+        .unwrap();
+    assert_eq!(row["created_by_run_id"], RUN_A);
+}
+
+#[test]
+fn outside_run_create_is_unattributed_even_on_a_worker_named_branch() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let cwd = worktree(
+        repos.path(),
+        "ordinary",
+        &format!("wt/{OLD_PREFIX}-ordinary"),
+    );
+    let id = created_run(&home, &create_skeleton(&home, &cwd, &[]));
+    assert!(show(&home, &cwd, &id)["data"]["created_by_run_id"].is_null());
+}
+
+#[test]
+fn create_refuses_stale_and_ambiguous_creator_claims_without_publishing() {
+    for duplicate in [false, true] {
+        let home = TempDir::new().unwrap();
+        let repos = TempDir::new().unwrap();
+        let branch = format!("wt/{OLD_PREFIX}-alpha");
+        let cwd = worktree(repos.path(), "alpha", &branch);
+        seed_run(
+            home.path(),
+            RUN_A,
+            &cwd,
+            if duplicate { &branch } else { "other" },
+        );
+        if duplicate {
+            seed_run(home.path(), RUN_B, &cwd, &branch);
+        }
+        let output = create_skeleton(&home, &cwd, &[]);
+        assert!(!output.status.success());
+        assert_eq!(
+            error_code(&output),
+            if duplicate {
+                "run_owner_ambiguous"
+            } else {
+                "run_owner_stale"
+            }
+        );
+        assert_eq!(
+            std::fs::read_dir(home.path().join("runs")).unwrap().count(),
+            if duplicate { 2 } else { 1 }
+        );
+    }
+}
+
+#[test]
+fn explicit_fan_out_parent_remains_separate_from_worktree_creator() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let branch = format!("wt/{OLD_PREFIX}-alpha");
+    let cwd = worktree(repos.path(), "alpha", &branch);
+    seed_run(home.path(), RUN_A, &cwd, &branch);
+    let id = created_run(
+        &home,
+        &create_skeleton(
+            &home,
+            &cwd,
+            &["--parent-run-id", RUN_A, "--parent-node-id", "n-0001"],
+        ),
+    );
+    let manifest = &show(&home, &cwd, &id)["data"]["manifest"];
+    assert_eq!(manifest["created_by_run_id"], RUN_A);
+    assert_eq!(manifest["parent_run_id"], RUN_A);
+    assert_eq!(manifest["parent_node_id"], "n-0001");
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(RUN_A).join("events.jsonl")).unwrap();
+    assert!(events.contains("child.spawned"));
+}
+
+#[test]
+fn idempotent_replay_does_not_reassign_creator_from_retry_cwd() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let branch = format!("wt/{OLD_PREFIX}-alpha");
+    let (cwd, outside) = linked_worktrees(repos.path(), &branch, "outside");
+    seed_run(home.path(), RUN_A, &cwd, &branch);
+    let source_repo = repos.path().join("main");
+    let flags = [
+        "--source-repo",
+        source_repo.to_str().unwrap(),
+        "--source-branch",
+        "master",
+        "--idempotency-key",
+        "once",
+    ];
+    let id = created_run(&home, &create_skeleton(&home, &cwd, &flags));
+    let replay = create_skeleton(&home, &outside, &flags);
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let result: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(result["data"]["run_id"], id);
+    assert_eq!(
+        show(&home, &outside, &id)["data"]["created_by_run_id"],
+        RUN_A
+    );
+}

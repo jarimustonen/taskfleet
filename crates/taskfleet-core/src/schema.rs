@@ -727,6 +727,11 @@ pub struct Manifest {
     pub agent_selection: Option<AgentSelection>,
     /// Number of nodes created in this run (denormalized counter).
     pub node_count: u32,
+    /// Exact owner of the worktree from which this run was created, if any.
+    /// Attribution only: unlike `parent_run_id`, this does not join the
+    /// fan-out DAG or delegate supervision. Absent on older manifests.
+    #[serde(default)]
+    pub created_by_run_id: Option<RunId>,
     /// Run that spawned this run, if it is itself a child.
     pub parent_run_id: Option<RunId>,
     /// Node in the parent run that spawned this run, if any.

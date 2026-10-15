@@ -6,6 +6,7 @@ expression: manifest_v
   "agent_selection": null,
   "applied_seq": 5,
   "created_at": "<ts>",
+  "created_by_run_id": null,
   "harness": null,
   "kind": "spinoff",
   "lifecycle": "autonomous",

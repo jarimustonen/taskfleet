@@ -3,13 +3,15 @@ created: 2026-09-30
 updated: 2026-10-15
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-2026-09-30-discard-partial
 lane: lifecycle
 lane_seq: 40
 collision: [supervise-cleanup]
+closed: 2026-10-15
+closed_by: agent
 ---
 
 # run discard leaves partial state after first call; retries refuse
@@ -36,3 +38,9 @@ Expected: `--output json` always emits one envelope; discard is atomic or resuma
 - **Repro status:** The report describes three observed runs. Source inspection confirms discard writes its authorization before removing the worktree and branch. A cleanup failure therefore leaves a durable authorization. On retry, a changed reason/force conflicts while resources remain; if the worktree registration is gone but its directory survives, the observation is unverifiable and discard refuses to proceed. `emit` does select an envelope for JSON output, so the reported mixed output likely arises on an error path or adjacent output handling rather than the successful payload path; the exact source of the malformed first response is not established by this inspection.
 - **Fix sketch:** Make retries resume safely from the recorded authorization and partial-removal facts without weakening repository/branch identity checks; distinguish an already-unregistered, previously authorized worktree from unrelated unverifiable retained data. Ensure JSON mode emits exactly one envelope on both success and errors, and add regression tests for worktree removal failure after registration removal, same/different-input retries, and JSON error output.
 <!-- intakectl:analysis:end job:3f8e799e-88d0-4a47-98af-76bf38f0fffe generation:0 -->
+
+## Comments
+
+### 2026-10-15T19:57:13Z · @agent
+
+Resolution: Discard retries now verify the original checkout inode, creation time, source Git identity and branch OID before removing an orphan left after Git deregistration. An original non-force decision must be explicitly upgraded with --force before deleting unverifiable leftover files. JSON errors emit a single envelope. Disposable-Git regressions cover read-only removal failures, changed reason/force, stale markers, branch moves and replacement paths; the clean release gate passed.

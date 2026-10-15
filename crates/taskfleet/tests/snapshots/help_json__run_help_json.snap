@@ -149,6 +149,14 @@ expression: value
         "has_subcommands": false
       },
       {
+        "command": "taskfleet run message",
+        "about": "Send a steering message to a live Taskfleet-launched Pi worker with an acknowledged extension adapter. Acceptance does not prove it was read or acted on",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
         "command": "taskfleet run reattach",
         "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `taskfleet supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
         "aliases": [],

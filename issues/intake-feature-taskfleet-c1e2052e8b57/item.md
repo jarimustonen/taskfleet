@@ -3,12 +3,14 @@ created: 2026-10-01
 updated: 2026-10-15
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-wrapup-2026-10-01-run-message
 lane: control
 lane_seq: 20
+closed: 2026-10-15
+closed_by: agent
 ---
 
 # Send a message to a running worker
@@ -31,3 +33,14 @@ Requested: `taskfleet run message <run-id> [--node n-0001] <text|--body-file>` t
 - **Assessment:** A useful `run message` command should not treat finding a tmux pane or sending keystrokes as proof of delivery. It needs a defined worker-input capability with an explicit result (accepted/unsupported/not deliverable), and an append-only event recording sender, time, target node, and message. Avoid recording sensitive message contents in ordinary event logs without an explicit policy; the request's audit requirement should settle this alongside retention and redaction. Delivery semantics should also distinguish harness acceptance from the worker having read or acted on the message.
 - **Fix sketch:** First define a narrow harness adapter contract for injecting text into a live worker, including capability detection and confirmation. Then expose it as `taskfleet run message <run-id> [--node ...] <text|--body-file>`, validate run/node state, and append a message event under the run lock. Return structured JSON with delivery status and event identity. Unsupported harnesses or inactive workers should fail clearly rather than falling back to tmux discovery or implying success.
 <!-- intakectl:analysis:end job:4463e284-8022-4497-8c8b-3b55391ca7e6 generation:0 -->
+
+## Acceptance Criteria
+
+- [x] A live Taskfleet-launched Pi worker can accept steering through a harness adapter, with acceptance distinguished from reading or acting.
+- [x] Message attempts and outcomes are audited without storing message contents in Taskfleet events; unsupported harnesses are refused.
+
+## Resolution
+
+### 2026-10-15T19:25:06Z · @agent
+
+Taskfleet-launched Pi workers accept steering through the bundled extension with an acknowledged, metadata-only audit. Acceptance is not a read/acted receipt; other harnesses and old runs refuse delivery. Deterministic adapter tests and the full release gate passed.

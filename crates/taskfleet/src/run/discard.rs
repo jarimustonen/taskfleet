@@ -609,23 +609,44 @@ fn verify_registered(
     node: &taskfleet_core::Node,
     git: &Git,
 ) -> Result<(), CliError> {
-    let refuse = || CliError::system("preserved_work_unverifiable", "registered checkout or branch no longer matches discard authorization");
+    let refuse = || {
+        CliError::system(
+            "preserved_work_unverifiable",
+            "registered checkout or branch no longer matches discard authorization",
+        )
+    };
     let id = auth.identity.as_ref().ok_or_else(refuse)?;
     let path = auth.worktree_path.as_deref().ok_or_else(refuse)?;
     let repo = manifest.source_repo.as_deref().ok_or_else(refuse)?;
     let dir = std::fs::symlink_metadata(path).map_err(|_| refuse())?;
-    let source = git.common_dir(repo).ok_or_else(refuse)?.metadata().map_err(|_| refuse())?;
+    let source = git
+        .common_dir(repo)
+        .ok_or_else(refuse)?
+        .metadata()
+        .map_err(|_| refuse())?;
     let rows = git.worktree_registrations(repo).ok_or_else(refuse)?;
-    if node.worktree_path.as_deref() != Some(path) || node.branch != auth.branch
-        || !dir.is_dir() || dir.file_type().is_symlink()
+    if node.worktree_path.as_deref() != Some(path)
+        || node.branch != auth.branch
+        || !dir.is_dir()
+        || dir.file_type().is_symlink()
         || (dir.dev(), dir.ino()) != (id.directory_dev, id.directory_ino)
         || (source.dev(), source.ino()) != (id.source_git_dev, id.source_git_ino)
-        || !rows.iter().any(|r| r.path == path && r.branch.as_deref().is_none_or(|b| Some(b) == auth.branch.as_deref()))
+        || !rows.iter().any(|r| {
+            r.path == path
+                && r.branch
+                    .as_deref()
+                    .is_none_or(|b| Some(b) == auth.branch.as_deref())
+        })
         || auth.branch.as_deref().is_some_and(|branch| {
             git.branch_exists(repo, branch) != Some(id.branch_oid.is_some())
-                || id.branch_oid.as_ref().is_some_and(|oid| git.ref_oid(repo, branch).as_deref() != Some(oid))
+                || id
+                    .branch_oid
+                    .as_ref()
+                    .is_some_and(|oid| git.ref_oid(repo, branch).as_deref() != Some(oid))
         })
-    { return Err(refuse()); }
+    {
+        return Err(refuse());
+    }
     Ok(())
 }
 

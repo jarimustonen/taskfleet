@@ -1957,7 +1957,7 @@ mod tests {
             "run.created",
             None,
             None,
-            json!({"kind":"spinoff", "agent_owner":"caller", "title":"t"}),
+            json!({"kind":"spinoff", "lifecycle":"autonomous", "agent_owner":"caller", "title":"t"}),
         )
         .unwrap();
         forge_node(

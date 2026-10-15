@@ -212,21 +212,30 @@ impl Git {
         self.worktree_status_clean_impl(dir, false)
     }
 
-    /// The same complete cleanliness observation as [`Self::worktree_status_clean`],
-    /// with Git's optional locks disabled. This is the dry-run-safe form: `git
-    /// status` may otherwise refresh and rewrite the index as an optimization even
-    /// though the caller requested a read-only preview.
-    pub fn worktree_status_clean_read_only(&self, dir: &str) -> Option<bool> {
-        self.worktree_status_clean_impl(dir, true)
+    /// Merge eligibility on the target: tracked/staged edits must be absent,
+    /// but unrelated untracked files are left to Git's overwrite protection at
+    /// the final fast-forward. Do not use this for teardown: there, untracked
+    /// work must count as dirty even if no merge would touch it. With
+    /// `read_only`, disable Git's optional index locks for dry-run previews.
+    pub fn worktree_tracked_clean(&self, dir: &str, read_only: bool) -> Option<bool> {
+        self.worktree_status_impl(dir, read_only, "no")
     }
 
     fn worktree_status_clean_impl(&self, dir: &str, read_only: bool) -> Option<bool> {
+        self.worktree_status_impl(dir, read_only, "all")
+    }
+
+    fn worktree_status_impl(&self, dir: &str, read_only: bool, untracked: &str) -> Option<bool> {
         let mut cmd = self.at(dir);
         if read_only {
             cmd.env("GIT_OPTIONAL_LOCKS", "0");
         }
         match cmd
-            .args(["status", "--porcelain", "--untracked-files=all"])
+            .args([
+                "status",
+                "--porcelain",
+                &format!("--untracked-files={untracked}"),
+            ])
             .stderr(Stdio::null())
             .output()
         {

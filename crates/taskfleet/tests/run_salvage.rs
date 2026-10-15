@@ -254,7 +254,7 @@ fn dry_run_refuses_dirty_auto_detected_target_without_mutating() {
     let paths = seed_run(home.path(), &run_id);
     add_worker_node(&paths, Some(&worktree), Some("wt/dry"), json!({}));
     record_clean_exit(&paths);
-    std::fs::write(repo.join("UNRELATED.txt"), "do not merge over me\n").unwrap();
+    std::fs::write(repo.join("tracked.txt"), "uncommitted tracked edit\n").unwrap();
 
     let events_before = std::fs::read(paths.events()).unwrap();
     let refs_before = git(&repo, &["show-ref"]);
@@ -265,8 +265,8 @@ fn dry_run_refuses_dirty_auto_detected_target_without_mutating() {
     assert_eq!(v["error"]["code"], "merge_failed");
     assert_eq!(v["error"]["invalid_value"], "wt/dry");
     let message = v["error"]["message"].as_str().unwrap_or_default();
-    assert!(message.contains("Uncommitted changes in target worktree"));
-    assert!(message.contains("Please commit or stash changes in the target before merging"));
+    assert!(message.contains("Uncommitted tracked changes in target worktree"));
+    assert!(message.contains("Please commit or stash tracked changes in the target before merging"));
     assert_eq!(std::fs::read(paths.events()).unwrap(), events_before);
     assert_eq!(git(&repo, &["show-ref"]), refs_before);
     assert_eq!(

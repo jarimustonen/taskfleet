@@ -1142,13 +1142,16 @@ fn validate_dry_run_target(
             .ok_or_else(|| merge_failed(branch, "Error: Could not find main worktree"))?
     };
 
-    match git.worktree_status_clean_read_only(&target.path) {
+    // Untracked target files do not make a fast-forward unsafe by themselves.
+    // Git checks for collisions at the actual merge; the preview cannot reserve
+    // that result, so it only refuses tracked/staged edits here.
+    match git.worktree_tracked_clean(&target.path, true) {
         Some(true) => Ok(()),
         Some(false) => Err(merge_failed(
             branch,
             format!(
-                "Error: Uncommitted changes in target worktree ({})\n\
-                 Please commit or stash changes in the target before merging",
+                "Error: Uncommitted tracked changes in target worktree ({})\n\
+                 Please commit or stash tracked changes in the target before merging",
                 target.path
             ),
         )),
@@ -1717,11 +1720,13 @@ fn run_git_merge(
     if g.head_branch(&target.path).as_deref() != Some(source) {
         return Err(merge_failed(branch, "target worktree changed branch"));
     }
-    if g.worktree_status_clean(&target.path) != Some(true) {
+    // Preserve the tracked-dirty guard after acquiring the merge lock. Untracked
+    // paths may belong to another session; Git's final FF refuses collisions.
+    if g.worktree_tracked_clean(&target.path, false) != Some(true) {
         return Err(merge_failed(
             branch,
             format!(
-                "Uncommitted changes in target worktree ({}) (or status unavailable)",
+                "Uncommitted tracked changes in target worktree ({}) (or status unavailable)",
                 target.path
             ),
         ));
@@ -1757,13 +1762,15 @@ fn run_git_merge(
         .ok_or_else(|| merge_failed(branch, "could not resolve rebased worker tip"))?;
     before_ref_move(&integrated_oid)?;
     before_mutation()?;
+    // --no-overwrite-ignore extends Git's collision protection to ignored
+    // untracked files too; by default merge silently overwrites those paths.
     // No separate shell driver survives us. A git child may survive a SIGKILL
     // between this point and wait(), as in the old script's final merge call;
     // the recorded OIDs allow recovery to decide whether the ref moved.
     git_output(
         &git,
         target_path,
-        &["merge", "--ff-only", "--", branch],
+        &["merge", "--ff-only", "--no-overwrite-ignore", "--", branch],
         branch,
     )?;
     Ok(())

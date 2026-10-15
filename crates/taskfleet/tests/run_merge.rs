@@ -1128,6 +1128,129 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
     );
 }
 
+/// Another session's prototype files must not block a disjoint worker merge.
+/// The target's untracked files survive the fast-forward byte-for-byte.
+#[test]
+fn disjoint_untracked_target_files_survive_merge_and_preview() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    std::fs::write(wt.join("WORKER.txt"), "worker\n").unwrap();
+    git(&wt, &["add", "WORKER.txt"]);
+    git(&wt, &["commit", "-qm", "worker change"]);
+    let prototype = repo.join("design-system/prototypes/rounds/draft.txt");
+    std::fs::create_dir_all(prototype.parent().unwrap()).unwrap();
+    std::fs::write(&prototype, "another session's draft\n").unwrap();
+    let run_id = create_run(&home, "spinoff", "prototype-coexistence");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    let preview =
+        run_ok(bin(&home).args(["--output", "json", "run", "merge", &run_id, "--dry-run"]));
+    assert_eq!(preview["data"]["merged"], false);
+    let merged = run_ok(bin(&home).args(["--output", "json", "run", "merge", &run_id]));
+    assert_eq!(merged["data"]["merged"], true);
+    assert_eq!(
+        std::fs::read_to_string(&prototype).unwrap(),
+        "another session's draft\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("WORKER.txt")).unwrap(),
+        "worker\n"
+    );
+    assert_eq!(
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        1
+    );
+}
+
+/// Git's final fast-forward must refuse an untracked target file that would be
+/// overwritten; the source ref, file bytes, and run report remain unchanged.
+#[test]
+fn overlapping_untracked_target_file_refuses_without_losing_work() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    std::fs::write(wt.join("prototype.txt"), "worker version\n").unwrap();
+    git(&wt, &["add", "prototype.txt"]);
+    git(&wt, &["commit", "-qm", "worker prototype"]);
+    let source_before = Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "main"])
+        .output()
+        .unwrap()
+        .stdout;
+    std::fs::write(repo.join("prototype.txt"), "local version\n").unwrap();
+    let run_id = create_run(&home, "spinoff", "prototype-collision");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    let out = bin(&home)
+        .args(["--output", "json", "run", "merge", &run_id])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "merge_failed");
+    let message = err["error"]["message"].as_str().unwrap();
+    assert!(message.contains("prototype.txt"), "{message}");
+    assert!(
+        message.contains("untracked") && message.contains("overwritten"),
+        "{message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("prototype.txt")).unwrap(),
+        "local version\n"
+    );
+    assert_eq!(
+        Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "main"])
+            .output()
+            .unwrap()
+            .stdout,
+        source_before
+    );
+    assert_eq!(
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        0
+    );
+}
+
+/// Git normally overwrites ignored untracked paths on fast-forward. Explicitly
+/// disable that behavior so a user's ignored prototype is protected as well.
+#[test]
+fn ignored_untracked_collision_is_not_overwritten() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    std::fs::write(wt.join("scratch.txt"), "worker\n").unwrap();
+    git(&wt, &["add", "scratch.txt"]);
+    git(&wt, &["commit", "-qm", "worker scratch"]);
+    std::fs::write(repo.join(".git/info/exclude"), "scratch.txt\n").unwrap();
+    std::fs::write(repo.join("scratch.txt"), "local ignored scratch\n").unwrap();
+    let run_id = create_run(&home, "spinoff", "ignored-collision");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    let out = bin(&home)
+        .args(["--output", "json", "run", "merge", &run_id])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "merge_failed");
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("scratch.txt"));
+    assert_eq!(
+        std::fs::read_to_string(repo.join("scratch.txt")).unwrap(),
+        "local ignored scratch\n"
+    );
+    assert_eq!(
+        node_reports(&run_dir(&home, &run_id).join("events.jsonl")).len(),
+        0
+    );
+}
+
 /// The genuine dirty-target safety check is preserved: with NO concurrent merge
 /// (the lock is free) but the target worktree carrying real uncommitted user
 /// work, Rust merge driver acquires the lock, finds the target dirty, and blocks with its
@@ -1144,7 +1267,7 @@ fn genuine_dirty_target_still_blocks() {
 
     // Real uncommitted user work in the target, and NO lock holder — the merge
     // will acquire the lock and must still refuse a dirty target.
-    std::fs::write(repo.join("USER-WORK.txt"), "human's uncommitted edit").unwrap();
+    std::fs::write(repo.join("README"), "human's uncommitted edit").unwrap();
 
     let out = bin(&home)
         .args([
@@ -1164,7 +1287,8 @@ fn genuine_dirty_target_still_blocks() {
     );
     let msg = err["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.to_lowercase().contains("uncommitted changes in target"),
+        msg.to_lowercase()
+            .contains("uncommitted tracked changes in target"),
         "the genuine dirty-target message must survive: {msg}"
     );
     let events = run_dir(&home, &run_id).join("events.jsonl");

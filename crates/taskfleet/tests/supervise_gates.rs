@@ -497,6 +497,45 @@ fn blocked_report_rolls_run_to_failed_but_preserves_branch() {
     );
 }
 
+/// A failed native worker with no pending evidence must not keep its supervisor
+/// alive after recording the branch-preserved handoff. In contrast, incomplete
+/// evidence remains pending and is retried before cleanup can settle.
+#[test]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
+fn failed_worker_supervisor_exits_after_preserving_work() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "failed-worker-exit");
+    forge_terminal_worker_node(
+        &home,
+        &run_id,
+        "spinoff",
+        r#"{"success":false,"summary":"writer failed"}"#,
+    );
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--max-iter", "12"]),
+    );
+    let events = read_events(&run_dir(&home, &run_id).join("events.jsonl"));
+    assert!(events
+        .iter()
+        .any(|e| e["kind"] == "run.status" && e["data"]["status"] == "failed"));
+    assert!(events
+        .iter()
+        .any(|e| e["kind"] == "cleanup.branch_preserved"));
+    assert!(events
+        .iter()
+        .any(|e| e["kind"] == "supervisor.exited" && e["data"]["reason"] == "work-complete"));
+    let git = log_contents(dir.path(), "git.log");
+    assert!(
+        !git.contains("worktree remove")
+            && !git.contains("branch -d")
+            && !git.contains("branch -D")
+    );
+}
+
 /// Terminal-via-cancel: a `run cancel` already drove the run to `cancelled`
 /// (the existing path). The supervisor must still perform the autonomous
 /// teardown when it next ticks over the now-terminal run.

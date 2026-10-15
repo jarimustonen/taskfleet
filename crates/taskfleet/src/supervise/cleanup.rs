@@ -254,10 +254,9 @@ fn preserve_reason(outcome: Option<crate::supervise::outcome::TerminalOutcome>) 
 /// cleanup mechanism, not the gate). Every step is best-effort and never
 /// panics, so a partially-torn-down run still makes forward progress.
 pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
-    // Caller-owned teardown is not implemented yet. In particular, returning
-    // true here merely because cleanup_node skipped it lets the supervisor
-    // exit and permanently loses the retry after a terminal report. Do not
-    // touch tmux/workmux, or report cleanup complete, for these runs.
+    // Caller-owned teardown is separate from native worker cleanup. Only a
+    // settled preservation or verified removal may release the supervisor;
+    // an unsuccessful audit/verification must remain pending for retry.
     match taskfleet_core::RunLock::with_shared_lock(&paths.lock(), || read_manifest_opt(paths)) {
         Ok(Some(m)) if m.agent_owner == taskfleet_core::AgentOwner::Caller => {
             return cleanup_caller_nodes(paths, &m);
@@ -296,8 +295,10 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) -> bool {
     })
 }
 
-/// No caller-owned path enters the tmux, workmux or evidence pipeline. Return
-/// pending until the actual checkout and branch have both been removed.
+/// No caller-owned path enters the tmux, workmux or evidence pipeline. A
+/// failed run settles by durably recording preservation (the checkout and
+/// branch remain for operator discard/salvage); a merged run settles only
+/// after verified removal. Verification or audit failures stay pending.
 fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -> bool {
     use crate::run::{merge::CallerMergeAuthority, merge_recovery};
     let Ok(nodes) = list_nodes(paths) else {
@@ -373,8 +374,31 @@ fn cleanup_caller_nodes(paths: &RunPaths, manifest: &taskfleet_core::Manifest) -
         )
         .is_ok();
     }
-    // Failure has no destructive settlement endpoint. A forged merge marker
-    // alone cannot grant one.
+    // A failed caller run cannot be torn down by the supervisor. Once its
+    // preservation handoff is durable, there is no work left to supervise:
+    // leaving this false keeps the PID alive indefinitely and prevents the
+    // operator from using `run discard`. A failed audit append stays pending
+    // and is retried on the next tick. Salvage later reattaches a supervisor
+    // for its own verified merge transaction.
+    if manifest.status == Status::Failed {
+        // A failed manifest can still recover to Done after an already-recorded
+        // explicit merge. Do not exit while the roll-up above may be retrying
+        // its Failed -> Done transition after a transient log/lock error.
+        if node.status == Status::Done
+            && crate::supervise::outcome::TerminalOutcome::classify(node)
+                == Some(crate::supervise::outcome::TerminalOutcome::Merged)
+        {
+            return false;
+        }
+        return record_branch_preserved(
+            paths,
+            node,
+            node.branch.as_deref(),
+            checkout,
+            "caller failed (branch preserved)",
+        );
+    }
+    // A forged merge marker alone cannot grant destructive settlement.
     if manifest.status != Status::Done || !node_merged_explicitly(node) {
         return preserve("caller run without verified explicit merge");
     }
@@ -1632,14 +1656,15 @@ fn record_branch_remove_failed(paths: &RunPaths, n: &Node, branch: &str, detail:
 /// `branch` is `Option` so a preserved worktree with no recorded branch (a
 /// malformed / detached-HEAD node) is still surfaced — the worktree persists on
 /// disk regardless, so the human must be told where to look. Idempotent by
-/// `(run, node)`.
+/// `(run, node)`. Returns whether the audit is durable; the failed caller
+/// path uses this as its completion gate while other paths preserve regardless.
 fn record_branch_preserved(
     paths: &RunPaths,
     n: &Node,
     branch: Option<&str>,
     worktree_path: &str,
     reason: &str,
-) {
+) -> bool {
     let branch_display = branch.unwrap_or("<none>");
     info!(
         target: "taskfleet::supervise",
@@ -1663,19 +1688,23 @@ fn record_branch_preserved(
         paths.run_id.as_str(),
         n.node_id.as_str()
     );
-    if let Err(e) = append_and_apply_event(
+    match append_and_apply_event(
         paths,
         "cleanup.branch_preserved",
         Some(&n.node_id),
         Some(&key),
         data,
     ) {
-        warn!(
-            target: "taskfleet::supervise",
-            node = %n.node_id,
-            error = %e,
-            "failed to append cleanup.branch_preserved (continuing)"
-        );
+        Ok(_) => true,
+        Err(e) => {
+            warn!(
+                target: "taskfleet::supervise",
+                node = %n.node_id,
+                error = %e,
+                "failed to append cleanup.branch_preserved (will retry)"
+            );
+            false
+        }
     }
 }
 
@@ -1916,6 +1945,78 @@ mod tests {
             !cleanup_terminal_nodes(&paths),
             "caller teardown must remain pending"
         );
+        assert!(tmp.path().exists());
+    }
+
+    #[test]
+    fn failed_caller_with_merged_node_waits_for_recovery_rollup() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({"kind":"spinoff", "agent_owner":"caller", "title":"t"}),
+        )
+        .unwrap();
+        forge_node(
+            &paths,
+            "n-0001",
+            json!({"worktree_path":tmp.path().to_str().unwrap(), "branch":"wt/test"}),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({"success":true,"summary":"merged","via":"explicit-merge"}),
+        );
+        append_and_apply_event(&paths, "run.status", None, None, json!({"status":"failed"}))
+            .unwrap();
+        assert!(!cleanup_terminal_nodes(&paths));
+        assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+    }
+
+    #[test]
+    fn failed_caller_preservation_remains_pending_until_audit_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({"kind":"spinoff", "lifecycle":"autonomous", "agent_owner":"caller", "title":"t"}),
+        )
+        .unwrap();
+        forge_node(
+            &paths,
+            "n-0001",
+            json!({"worktree_path":tmp.path().to_str().unwrap(), "branch":"wt/test"}),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({"success":false,"summary":"writer failed"}),
+        );
+        append_and_apply_event(&paths, "run.status", None, None, json!({"status":"failed"}))
+            .unwrap();
+
+        // An unreadable log makes the preservation audit fail. It must not
+        // advertise completed cleanup, and a later tick must retry it.
+        let log = paths.events();
+        let valid = std::fs::read(&log).unwrap();
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all(b"not json\n")
+            .unwrap();
+        assert!(!cleanup_terminal_nodes(&paths));
+        std::fs::write(&log, valid).unwrap();
+        assert!(cleanup_terminal_nodes(&paths));
+        assert!(cleanup_terminal_nodes(&paths));
+        assert_eq!(events_of_kind(&paths, "cleanup.branch_preserved").len(), 1);
         assert!(tmp.path().exists());
     }
 

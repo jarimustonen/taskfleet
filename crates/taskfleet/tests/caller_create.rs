@@ -1457,6 +1457,50 @@ fn caller_cancel_refuses_replaced_lock_and_unrelated_terminal_report() {
 }
 
 #[test]
+fn failed_caller_supervisor_exits_after_durable_preservation() {
+    use taskfleet_core::{append_and_apply_event, NodeId, RunPaths};
+    let (home, workspace, tools) = fixture();
+    let created = create(&home, &workspace, &tools, "failed-exit", None);
+    assert!(created.status.success(), "{created:?}");
+    let data: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let run = data["data"]["run_id"].as_str().unwrap();
+    let checkout = data["data"]["worktree_path"].as_str().unwrap();
+    let branch = data["data"]["branch"].as_str().unwrap();
+    let paths = RunPaths::new(home.path().join("runs").join(run), run).unwrap();
+    let node = NodeId::parse_str("n-0001").unwrap();
+    append_and_apply_event(
+        &paths,
+        "node.report",
+        Some(&node),
+        None,
+        serde_json::json!({"success":false,"summary":"writer failed"}),
+    )
+    .unwrap();
+    // Exercise the real supervisor roll-up and exit, rather than an --once
+    // invocation that cannot catch a permanently false cleanup gate.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let events = std::fs::read_to_string(paths.events()).unwrap();
+        if events.contains("\"kind\":\"supervisor.exited\"") && !paths.supervisor_pid().exists() {
+            assert!(events.contains("caller failed (branch preserved)"));
+            assert!(events.contains("\"reason\":\"work-complete\""));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "failed supervisor stayed alive: {events}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(Path::new(checkout).is_dir());
+    git(
+        &workspace.path().join("repo"),
+        &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+    );
+    assert!(!workspace.path().join("forbidden").exists());
+}
+
+#[test]
 fn failed_caller_salvage_adopts_merge_and_cleans_without_host_tools() {
     use std::os::fd::AsRawFd;
     use taskfleet_core::{append_and_apply_event, NodeId, RunPaths};

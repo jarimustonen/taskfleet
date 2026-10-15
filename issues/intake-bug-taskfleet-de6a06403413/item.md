@@ -3,13 +3,15 @@ created: 2026-09-30
 updated: 2026-10-15
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:nah-2026-09-30-teardown-gomod
 lane: lifecycle
 lane_seq: 30
 collision: [supervise-cleanup]
+closed: 2026-10-15
+closed_by: agent
 ---
 
 # Teardown leaves worktree dirs when Go module cache is read-only
@@ -25,3 +27,9 @@ Cause: the repo's gate sets `GOMODCACHE=<worktree>/.cache/ci-local/go-mod`; Go w
 Expected: teardown removes the worktree directory completely (e.g. `chmod -R u+w` before removal, or retry after making the tree writable) and reports failure instead of leaving an unverifiable retained-work row.
 
 Repro: in a worktree, `GOMODCACHE=$PWD/.cache/gomod go mod download`, then let the run merge and tear down.
+
+## Acceptance Criteria
+
+- [x] Explicit-merge teardown removes a worktree containing 0555 Go-cache directories, even when Git unregisters before filesystem removal completes.
+- [x] An unverifiable or still-registered checkout is reported and retained rather than manually deleted; non-merge teardown still preserves retained work.
+- [x] Disposable Git fixtures and the complete local release gate pass.

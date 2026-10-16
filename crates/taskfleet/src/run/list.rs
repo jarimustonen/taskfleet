@@ -152,6 +152,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let Some(m) = read_manifest_opt(&paths)? else {
                 return Ok(None);
             };
+            let nodes = crate::run::retained::read_nodes(
+                &paths,
+                crate::run::retained::MissingNodesDir::Empty,
+            )
+            .unwrap_or_else(|error| {
+                // Preserve the canonical history row when advisory transcript
+                // discovery fails, rather than losing the entire listing.
+                output_warnings.push(format!(
+                    "transcript discovery unavailable for run {}: {error}",
+                    m.run_id
+                ));
+                Vec::new()
+            });
+            let transcripts = crate::run::transcripts::views(&root, &paths, &m, &nodes);
             let supervisor = SupervisorView::probe(&paths);
             // Stillborn: created but never started — pending, a dead/absent
             // supervisor, zero nodes, and no forward progress since creation
@@ -188,11 +202,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             // Read the default node unconditionally for materialization
             // coordinates. Its projection, not the derived manifest counter, is
             // the source of truth for whether the worktree exists. Best-effort:
-            // one corrupt node degrades this diagnostic row rather than aborting
+            // unreadable nodes degrade this diagnostic row rather than aborting
             // the entire listing.
             let node_id =
                 NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-            let default_node = read_node_opt(&paths, &node_id).ok().flatten();
+            let default_node = nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .cloned()
+                // Preserve existing default-node diagnostics even if an unrelated
+                // sibling projection prevented the full transcript inventory.
+                .or_else(|| read_node_opt(&paths, &node_id).ok().flatten());
             // Keep attention/awaiting-input single-worker scoped. n-0001 is not
             // representative of a multi-node run; widening this gate would be an
             // unrelated behavior change to those diagnostics.
@@ -226,13 +246,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 attention,
                 awaiting_input,
                 worktree_path,
+                transcripts,
             )))
         })
         .map_err(from_core)?;
-        let (m, supervisor, stillborn, attention, awaiting_input, worktree_path) = match scanned {
-            Some(v) => v,
-            None => continue, // half-initialized run dir; skip silently
-        };
+        let (m, supervisor, stillborn, attention, awaiting_input, worktree_path, transcripts) =
+            match scanned {
+                Some(v) => v,
+                None => continue, // half-initialized run dir; skip silently
+            };
         // `stalled` is the "pending but visibly not progressing" hint; since the
         // 0.2 cut removed the orchestrate driver (the only other stall shape),
         // it is now exactly the never-started `stillborn` variant.
@@ -242,6 +264,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `kind` / `status` through the `run/mod.rs` helpers rather than
         // round-tripping the enums through `serde_json::to_value`.
         let summary = RunSummary::from(&m)
+            .with_node_transcripts(transcripts)
             .with_worktree_path(worktree_path)
             .with_supervisor(supervisor)
             .with_stalled(stalled)

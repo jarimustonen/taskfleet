@@ -706,9 +706,40 @@ mod tests {
         let (paths, node_id, original) = setup(&tmp);
         let tmux = tmux_script(&tmp, "printf 'FINAL PANE\\n'");
         let node = read_node(&paths, &node_id).unwrap();
+        let manifest = read_manifest_opt(&paths).unwrap().unwrap();
+        let before = crate::run::transcripts::views(
+            tmp.path(),
+            &paths,
+            &manifest,
+            std::slice::from_ref(&node),
+        );
+        assert_eq!(before[0].live.availability, "available");
+        assert_eq!(before[0].original.availability, "not-recorded");
+        let live_bytes =
+            std::fs::read(tmp.path().join(before[0].live.path.as_ref().unwrap())).unwrap();
+        assert_eq!(live_bytes, original);
         assert!(archive_before_cleanup(&paths, &node, &tmux));
 
         let projected = read_node(&paths, &node_id).unwrap();
+        // Teardown removes the checkout, but the original header/identity and
+        // byte-identical transcript remain discoverable without it.
+        std::fs::remove_dir_all(node.worktree_path.as_ref().unwrap()).unwrap();
+        let after = crate::run::transcripts::views(
+            tmp.path(),
+            &paths,
+            &manifest,
+            std::slice::from_ref(&projected),
+        );
+        assert_eq!(after[0].node_id, before[0].node_id);
+        assert_eq!(after[0].session_id, before[0].session_id);
+        assert_eq!(after[0].attempt, before[0].attempt);
+        assert_eq!(after[0].original_cwd, before[0].original_cwd);
+        assert_eq!(after[0].live.availability, "missing");
+        assert_eq!(after[0].original.availability, "available");
+        assert_eq!(
+            std::fs::read(paths.root.join(after[0].original.path.as_ref().unwrap())).unwrap(),
+            live_bytes
+        );
         // A restarted supervisor trusts the durable complete projection and
         // neither needs the unlinked live source nor recaptures the pane.
         let broken_tmux = tmux_script(&tmp, "exit 71");

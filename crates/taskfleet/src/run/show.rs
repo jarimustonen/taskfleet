@@ -118,6 +118,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         };
         let nodes =
             crate::run::retained::read_nodes(&paths, crate::run::retained::MissingNodesDir::Empty)?;
+        let transcripts = crate::run::transcripts::views(&root, &paths, &manifest, &nodes);
         let counts = Counts {
             nodes: nodes.len() as u64,
         };
@@ -247,6 +248,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             awaiting_input,
             landing,
             nodes,
+            transcripts,
         )))
     })
     .map_err(from_core)?;
@@ -262,6 +264,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         awaiting_input,
         landing,
         nodes,
+        transcripts,
     ) = match scanned {
         Some(v) => v,
         None => {
@@ -325,6 +328,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     // both verbs (issue `run-show-json-null-fields`). `manifest` keeps the full
     // nested detail alongside it.
     let summary = crate::run::dto::RunSummary::from(&manifest)
+        .with_node_transcripts(transcripts)
         .with_worktree_path(landing.worktree_path.clone())
         .with_supervisor(supervisor)
         .with_stalled(stalled)

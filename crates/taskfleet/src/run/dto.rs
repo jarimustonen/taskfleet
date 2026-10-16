@@ -285,6 +285,8 @@ pub struct RunSummary {
     /// recorded at `run create`. `null` for a legacy run created before harness
     /// selection existed.
     pub harness: Option<String>,
+    /// Read-only transcript discovery for every recorded node, sorted by node id.
+    pub node_transcripts: Vec<crate::run::transcripts::NodeTranscript>,
     pub node_count: u32,
     pub created_by_run_id: Option<String>,
     pub created_by_session: Option<taskfleet_core::schema::CreatorSession>,
@@ -360,6 +362,15 @@ impl RunSummary {
     #[must_use]
     pub fn with_supervisor(mut self, supervisor: SupervisorView) -> Self {
         self.supervisor = supervisor;
+        self
+    }
+
+    #[must_use]
+    pub fn with_node_transcripts(
+        mut self,
+        views: Vec<crate::run::transcripts::NodeTranscript>,
+    ) -> Self {
+        self.node_transcripts = views;
         self
     }
 
@@ -459,6 +470,7 @@ impl From<&Manifest> for RunSummary {
             source_branch: m.source_branch.clone(),
             worktree_path: None,
             harness: m.harness.clone(),
+            node_transcripts: Vec::new(),
             node_count: m.node_count,
             created_by_run_id: m.created_by_run_id.as_ref().map(ToString::to_string),
             created_by_session: m.created_by_session.clone(),
@@ -577,6 +589,7 @@ mod tests {
                 "worktree_path": null,
                 "harness": null,
                 "node_count": 0,
+                "node_transcripts": [],
                 "created_by_run_id": null,
                 "created_by_session": null,
                 "supervisor": { "pid": null, "state": "unknown", "alive": false },

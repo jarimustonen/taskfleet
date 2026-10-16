@@ -30,6 +30,7 @@ pub mod stalled;
 pub mod supervisor_readiness;
 pub mod supervisor_spawn;
 pub mod telemetry;
+pub mod transcripts;
 pub mod wait;
 pub mod worker;
 mod writer_fence;

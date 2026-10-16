@@ -16,6 +16,28 @@ expression: value
     "source_branch": null,
     "worktree_path": "/tmp/seed-wt",
     "harness": "pi",
+    "node_transcripts": [
+      {
+        "node_id": "n-0001",
+        "harness": "pi",
+        "attempt": null,
+        "session_id": null,
+        "original_cwd": null,
+        "worktree_path": "/tmp/seed-wt",
+        "support": "supported",
+        "capture_status": null,
+        "live": {
+          "anchor": "state-root",
+          "path": null,
+          "availability": "not-recorded"
+        },
+        "original": {
+          "anchor": "run-root",
+          "path": null,
+          "availability": "not-recorded"
+        }
+      }
+    ],
     "node_count": 1,
     "created_by_run_id": null,
     "created_by_session": null,

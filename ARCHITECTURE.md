@@ -47,6 +47,11 @@ Creator run and optional native-session attribution are immutable display facts,
 not ownership or fan-out edges. See [Creator attribution](docs/CREATOR-ATTRIBUTION.md)
 for the environment input, replay and worker-environment contract.
 
+Read-only per-node worker transcript discovery is shared by `run show` and
+`run list` in `run/transcripts.rs`; it projects existing native evidence, never
+resume/control authority. See [Run transcripts](docs/RUN-TRANSCRIPTS.md) for
+path anchors, availability, identity and live-to-archive semantics.
+
 State lives under `~/.taskfleet` by default. `TASKFLEET_HOME` can select a
 different root and `TASKFLEET_PROFILE` can select a configured profile. The
 resolver never probes or moves any other product's state.

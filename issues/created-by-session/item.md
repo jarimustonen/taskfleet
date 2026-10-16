@@ -3,7 +3,7 @@ created: 2026-10-16
 updated: 2026-10-16
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m51nrfvbqwsybz0gdggz6q4b/request:created-by-session
@@ -13,6 +13,8 @@ related: ['@intake-feature-taskfleet-7e8ef9b4b70c']
 lane: open-habitat
 lane_seq: 20
 collision: [supervise-cleanup, run-public-contract]
+closed: 2026-10-16
+closed_by: pi
 ---
 
 # Record the native session that creates a run
@@ -35,9 +37,9 @@ This is same-user display attribution, never authorization or fan-out ownership.
 
 ## Acceptance Criteria
 
-- [ ] Main-checkout creation records and exposes the session association; absent or malformed input has a documented, tested outcome.
-- [ ] Replay preserves original attribution and nested workers cannot inherit the parent's stale session claim.
-- [ ] Existing creator-run and fan-out semantics remain unchanged.
+- [x] Main-checkout creation records and exposes the session association; absent or malformed input has a documented, tested outcome.
+- [x] Replay preserves original attribution and nested workers cannot inherit the parent's stale session claim.
+- [x] Existing creator-run and fan-out semantics remain unchanged.
 
 ## Context
 

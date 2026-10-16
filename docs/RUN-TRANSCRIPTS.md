@@ -10,7 +10,9 @@ empty, **not proof of no workers**. Show fails on unreadable node projections.
 
 This is an additive read projection of existing node evidence. The older
 single-worker `show` fields (`evidence`, `caller_pi_session`, etc.) are unchanged.
-There is no new registry, archive, event, or retention policy.
+There is no new registry, archive, event, or retention policy. See
+[Terminal run history](TERMINAL-RUN-HISTORY.md) for retained reports and the
+boundary between display expiration and durable history.
 
 ## Row contract
 

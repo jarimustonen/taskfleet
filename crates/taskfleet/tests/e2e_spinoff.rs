@@ -53,6 +53,25 @@ fn wait_event_count(path: &Path, kind: &str, wanted: usize) {
 
 #[test]
 fn native_spinoff_round_trip_reaches_done_and_tears_down() {
+    terminal_history_round_trip(false, "done");
+}
+
+#[test]
+fn interactive_merge_retains_history_after_teardown_and_restart() {
+    terminal_history_round_trip(true, "done");
+}
+
+#[test]
+fn cancelled_work_retains_history_after_teardown_and_restart() {
+    terminal_history_round_trip(false, "cancelled");
+}
+
+#[test]
+fn failed_work_retains_history_after_teardown_and_restart() {
+    terminal_history_round_trip(false, "failed");
+}
+
+fn terminal_history_round_trip(interactive: bool, status: &str) {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
@@ -80,11 +99,24 @@ default="e2e"
         .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
     tools.configure(&mut create, &worktree, "headless");
-    let created = run_ok(create.args([
+    create.env(
+        "TASKFLEET_CREATOR_SESSION",
+        "pi:018f5f64-b137-7d44-b2b4-4f02c3f646e8",
+    );
+    create.args([
         "--output",
         "json",
         "run",
         "create",
+        "--source-branch",
+        "main",
+        "--source-repo",
+        tools.repo_path().to_str().unwrap(),
+    ]);
+    if interactive {
+        create.arg("--interactive");
+    }
+    let created = run_ok(create.args([
         "--kind",
         "spinoff",
         "--headless",
@@ -130,23 +162,62 @@ default="e2e"
         String::from_utf8_lossy(&commit.stderr)
     );
 
-    let merged = run_ok(
-        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
-            .env("TASKFLEET_HOME", home.path())
-            .env("HOME", home.path())
-            .args([
-                "--output", "json", "run", "merge", run_id, "--source", "main",
-            ]),
-    );
-    assert_eq!(merged["data"]["merged"], true);
+    if status == "done" {
+        let merged = run_ok(
+            Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+                .env("TASKFLEET_HOME", home.path())
+                .env("HOME", home.path())
+                .args([
+                    "--output", "json", "run", "merge", run_id, "--source", "main",
+                ]),
+        );
+        assert_eq!(merged["data"]["merged"], true);
+    } else if status == "cancelled" {
+        run_ok(
+            Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+                .env("TASKFLEET_HOME", home.path())
+                .env("HOME", home.path())
+                .args(["run", "cancel", run_id, "--json"]),
+        );
+    } else {
+        let report = scratch.path().join("report.json");
+        std::fs::write(
+            &report,
+            r#"{"success":false,"summary":"history fixture failure"}"#,
+        )
+        .unwrap();
+        run_ok(
+            Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+                .env("TASKFLEET_HOME", home.path())
+                .env("HOME", home.path())
+                .args([
+                    "node",
+                    "report",
+                    run_id,
+                    "n-0001",
+                    "--from-file",
+                    report.to_str().unwrap(),
+                    "--json",
+                ]),
+        );
+    }
     wait_event(&events, "supervisor.exited");
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(run_dir.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["status"], "done");
-    assert!(
-        !worktree.exists(),
-        "supervisor teardown removed the worktree"
-    );
+    assert_eq!(manifest["status"], status);
+    assert_eq!(worktree.exists(), status != "done");
+    let before = assert_terminal_history(home.path(), run_id, status, interactive);
+    // Re-enter the actual supervisor against durable terminal state. No worker
+    // is launched and no ambient manager/server is consulted.
+    let mut restart = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+    restart
+        .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
+    tools.configure(&mut restart, &worktree, "headless");
+    run_ok(restart.args(["supervise", run_id, "--once", "--json"]));
+    let after = assert_terminal_history(home.path(), run_id, status, interactive);
+    assert_eq!(before["report"], after["report"]);
+    assert_eq!(before["node_transcripts"], after["node_transcripts"]);
     let kinds: Vec<String> = std::fs::read_to_string(events)
         .unwrap()
         .lines()
@@ -166,6 +237,69 @@ default="e2e"
             "missing {required}: {kinds:?}"
         );
     }
+}
+
+fn assert_terminal_history(home: &Path, id: &str, status: &str, interactive: bool) -> Value {
+    let read = |verb: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+        cmd.env("TASKFLEET_HOME", home)
+            .env("HOME", home)
+            .args(["run", verb, "--json"]);
+        if verb == "show" {
+            cmd.arg(id);
+        }
+        run_ok(&mut cmd)
+    };
+    let shown = read("show")["data"].clone();
+    let listed = read("list");
+    let row = listed["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["run_id"] == id)
+        .unwrap();
+    for view in [&shown, row] {
+        assert_eq!(view["status"], status);
+        assert_eq!(
+            view["lifecycle"],
+            if interactive {
+                "interactive"
+            } else {
+                "autonomous"
+            }
+        );
+        assert_eq!(view["attention_required"], false);
+        assert_eq!(view["source_branch"], "main");
+        assert!(view["source_repo"].is_string());
+        assert!(view["created_at"].is_string());
+        assert_eq!(
+            view["created_by_session"]["session_id"],
+            "018f5f64-b137-7d44-b2b4-4f02c3f646e8"
+        );
+        assert_eq!(
+            view["node_transcripts"][0]["original"]["availability"],
+            "available"
+        );
+    }
+    assert_eq!(shown["landed"], status == "done");
+    assert_eq!(shown["report"]["success"], status == "done");
+    assert!(shown["manifest"]["updated_at"].is_string());
+    if status == "done" {
+        assert!(shown["report"]["origin"]["worker_oid"].is_string());
+        assert_eq!(shown["preserved_work"], serde_json::json!([]));
+    } else {
+        assert_eq!(shown["preserved_work"][0]["worktree_present"], true);
+        assert_eq!(shown["preserved_work"][0]["branch_present"], true);
+        assert_eq!(shown["preserved_work"][0]["unmerged_commits"], 1);
+        assert!(shown["report"]["summary"].is_string());
+    }
+    let archive = home
+        .join("runs")
+        .join(id)
+        .join("evidence/n-0001/terminal-report.json");
+    let report: Value = serde_json::from_slice(&std::fs::read(archive).unwrap()).unwrap();
+    assert_eq!(report, shown["report"]);
+    shown
 }
 
 #[test]

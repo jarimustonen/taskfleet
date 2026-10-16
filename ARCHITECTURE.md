@@ -52,6 +52,10 @@ Read-only per-node worker transcript discovery is shared by `run show` and
 resume/control authority. See [Run transcripts](docs/RUN-TRANSCRIPTS.md) for
 path anchors, availability, identity and live-to-archive semantics.
 
+Terminal records and reports outlive worker, display and Git-resource teardown;
+see [Terminal run history](docs/TERMINAL-RUN-HISTORY.md) for the consumer read
+contract, display-only expiration boundary and regression evidence.
+
 State lives under `~/.taskfleet` by default. `TASKFLEET_HOME` can select a
 different root and `TASKFLEET_PROFILE` can select a configured profile. The
 resolver never probes or moves any other product's state.

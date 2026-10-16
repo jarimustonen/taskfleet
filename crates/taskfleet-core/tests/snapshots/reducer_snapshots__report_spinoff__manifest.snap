@@ -1,5 +1,6 @@
 ---
 source: crates/taskfleet-core/tests/reducer_snapshots.rs
+assertion_line: 78
 expression: manifest_v
 ---
 {
@@ -7,6 +8,7 @@ expression: manifest_v
   "applied_seq": 5,
   "created_at": "<ts>",
   "created_by_run_id": null,
+  "created_by_session": null,
   "harness": null,
   "kind": "spinoff",
   "lifecycle": "autonomous",

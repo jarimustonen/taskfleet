@@ -148,6 +148,7 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
 
     cmd.env_remove("TASKFLEET_INTERNAL_WORKER_AWAIT_PUBLICATION")
         .env_remove("TASKFLEET_INTERNAL_WORKER_STATE_ROOT")
+        .env_remove("TASKFLEET_CREATOR_SESSION")
         .env_remove("TASKFLEET_TEST_WORKER_PUBLICATION_WAIT_MS");
     let mut child = match cmd.spawn() {
         Ok(child) => child,

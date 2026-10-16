@@ -332,3 +332,120 @@ fn missing_task_is_rejected_before_native_dependencies() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn workers_clear_browser_attribution_even_from_stale_tmux_and_minimal_path() {
+    for (harness, interactive) in [
+        ("pi", false),
+        ("pi", true),
+        ("claude", false),
+        ("claude", true),
+    ] {
+        let home = TestHome::new();
+        let scratch = TempDir::new().unwrap();
+        let tools = NativeSpawnTools::new();
+        let worktree = tools.worktree("nested-session");
+        let worker = scratch.path().join("worker");
+        let nested = scratch.path().join("nested.json");
+        let marker = scratch.path().join("environment");
+        // Wait on the precise parent's publication, not a timing assumption.
+        // Interactive workers do not pass through the publication-wait shim.
+        std::fs::write(
+            &worker,
+            format!(
+                r#"#!/bin/sh
+printf '%s' "${{TASKFLEET_CREATOR_SESSION-unset}}" > '{}'
+cd '{}' || exit 1
+count=0
+while [ ! -f "$TASKFLEET_HOME/runs/"*/nodes/n-0001.json ]; do
+  count=$((count+1)); [ "$count" -lt 500 ] || exit 90
+  /bin/sleep 0.02
+done
+'{}' run create --kind spinoff --title nested --skip-materialize --json > '{}'
+exec /bin/sleep 30
+"#,
+                marker.display(),
+                worktree.display(),
+                env!("CARGO_BIN_EXE_taskfleet"),
+                nested.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(home.path().join("config.toml"), format!(
+            "[profiles.test]\ndescription='test'\ncapability='fast'\nresidency='local'\nagents=[{{harness='{harness}',command=['{}']{}}}]\n[profile]\ndefault='test'\n",
+            worker.display(), if harness == "pi" {",telemetry='worker-v1'"} else {""})).unwrap();
+        let path = scratch.path().join("bin");
+        std::fs::create_dir(&path).unwrap();
+        std::os::unix::fs::symlink(common::fixture_git_binary(), path.join("git")).unwrap();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+        cmd.env_clear()
+            .env("HOME", home.path())
+            .env("USER", "fixture")
+            .env("TASKFLEET_HOME", home.path())
+            .env("TMPDIR", scratch.path());
+        tools.configure(&mut cmd, &worktree, "headless");
+        cmd.env("PATH", &path)
+            .env(
+                "TASKFLEET_CREATOR_SESSION",
+                "pi:12345678-1234-4234-8234-123456789abc",
+            )
+            .env(
+                "NATIVE_TEST_SERVER_CREATOR_SESSION",
+                "pi:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            )
+            .args([
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--title",
+                "session worker",
+                "--task",
+                "noop",
+                "--headless",
+                "--json",
+            ]);
+        if interactive {
+            cmd.arg("--interactive");
+        }
+        let parent = run_ok(&mut cmd);
+        let id = parent["data"]["run_id"].as_str().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let child: Value = loop {
+            if let Ok(bytes) = std::fs::read(&nested) {
+                if let Ok(value) = serde_json::from_slice(&bytes) {
+                    break value;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "nested create did not finish: {harness} interactive={interactive}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "unset");
+        let nested_id = child["data"]["run_id"].as_str().unwrap();
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(
+                home.path()
+                    .join("runs")
+                    .join(nested_id)
+                    .join("manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["created_by_run_id"], id);
+        assert!(manifest["created_by_session"].is_null());
+        assert!(manifest["parent_run_id"].is_null());
+        let parent_manifest: Value = serde_json::from_slice(
+            &std::fs::read(home.path().join("runs").join(id).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parent_manifest["created_by_session"]["session_id"],
+            "12345678-1234-4234-8234-123456789abc"
+        );
+    }
+}

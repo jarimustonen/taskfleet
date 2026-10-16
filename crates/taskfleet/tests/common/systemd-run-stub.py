@@ -9,7 +9,12 @@ import time
 
 args = sys.argv[1:]
 assert "--user" in args and "--collect" in args, "must use a collected USER service"
+assert "--property=UnsetEnvironment=TASKFLEET_CREATOR_SESSION" in args
+assert not any(a.startswith("--setenv=TASKFLEET_CREATOR_SESSION=") for a in args)
 env = os.environ.copy()
+# A user manager can retain values unrelated to the current caller.
+env["TASKFLEET_CREATOR_SESSION"] = "pi:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+unset = []
 log = os.devnull
 assert "notify" not in args or "--property=ExitType=cgroup" in args, "notify hooks must survive main PID exit"
 kind = None
@@ -27,8 +32,12 @@ while args:
     elif arg.startswith("--setenv="):
         key, value = arg[len("--setenv="):].split("=", 1)
         env[key] = value
+    elif arg.startswith("--property=UnsetEnvironment="):
+        unset.extend(arg.split("=", 2)[2].split())
     elif arg.startswith("--property=StandardError=append:"):
         log = arg.split("append:", 1)[1].replace("%%", "%")
+for key in unset:
+    env.pop(key, None)
 if kind != "notify":
     sys.exit(subprocess.run(args, env=env, cwd=cwd, check=False).returncode)  # fixture foreground server
 with tempfile.TemporaryDirectory(prefix="notify-", dir=env["XDG_RUNTIME_DIR"]) as tmp:

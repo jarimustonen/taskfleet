@@ -298,3 +298,21 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, CliError> {
         )
     })
 }
+
+/// Read create-only display attribution. Called after keyed replay resolution so
+/// a retry cannot replace the recorded association (or fail on a changed claim).
+pub(crate) fn creator_session() -> Result<Option<taskfleet_core::schema::CreatorSession>, CliError>
+{
+    match std::env::var("TASKFLEET_CREATOR_SESSION") {
+        Ok(value) => taskfleet_core::schema::CreatorSession::parse_str(&value)
+            .map(Some)
+            .map_err(|reason| CliError::user("invalid_creator_session", format!(
+                "invalid TASKFLEET_CREATOR_SESSION {value:?}: {reason}; unset it for unattributed creation"
+            ))),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CliError::user(
+            "invalid_creator_session",
+            "TASKFLEET_CREATOR_SESSION must be UTF-8 pi:<lowercase hyphenated session UUID>; unset it for unattributed creation",
+        )),
+    }
+}

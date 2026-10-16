@@ -237,7 +237,7 @@ pub fn write_agent_launcher(
         "agent-launch-{}-attempt-{attempt}.sh",
         node.as_str()
     ));
-    let mut inner_body = b"#!/bin/sh\nset -eu\n".to_vec();
+    let mut inner_body = b"#!/bin/sh\nset -eu\nunset TASKFLEET_CREATOR_SESSION\n".to_vec();
     inner_body.extend_from_slice(b"export ");
     inner_body.extend_from_slice(TOKEN_ENV.as_bytes());
     inner_body.push(b'=');
@@ -317,7 +317,7 @@ pub fn write_agent_launcher(
     write_executable(&inner, &inner_body)?;
 
     let mut body =
-        b"#!/bin/sh\nset -eu\nunset TASKFLEET_RUN_ID TASKFLEET_NODE_ID TASKFLEET_ATTEMPT\n"
+        b"#!/bin/sh\nset -eu\nunset TASKFLEET_RUN_ID TASKFLEET_NODE_ID TASKFLEET_ATTEMPT TASKFLEET_CREATOR_SESSION\n"
             .to_vec();
     if selected.supports_worker_telemetry_v1() {
         writeln!(body, "export TASKFLEET_RUN_ID={}", shell_literal(run_id)).unwrap();
@@ -1302,6 +1302,9 @@ pub(crate) mod tests {
         let inner =
             std::fs::read_to_string(run_dir.join("candidate-launch-n-0001-attempt-0.sh")).unwrap();
         assert!(inner.contains("worker-handshake"));
+        assert!(inner.starts_with("#!/bin/sh\nset -eu\nunset TASKFLEET_CREATOR_SESSION\n"));
+        let outer = std::fs::read_to_string(launcher.path()).unwrap();
+        assert!(outer.contains("TASKFLEET_ATTEMPT TASKFLEET_CREATOR_SESSION\n"));
         assert!(inner.contains("--pi-session-id"));
         assert!(inner.contains("--pi-session-path"));
         assert!(inner.contains("exec 'pi' --extension \"$TASKFLEET_MESSAGE_EXTENSION\" --session"));
@@ -1340,6 +1343,8 @@ pub(crate) mod tests {
             std::fs::read_to_string(run_dir.join("agent-launch-n-0001-attempt-0.sh")).unwrap();
         assert!(inner.contains("exec 'claude' --print \"$@\""));
         assert!(!inner.contains("--pi-session"));
+        assert!(inner.starts_with("#!/bin/sh\nset -eu\nunset TASKFLEET_CREATOR_SESSION\n"));
+        assert!(outer.contains("TASKFLEET_ATTEMPT TASKFLEET_CREATOR_SESSION\n"));
         assert!(!outer.contains("export TASKFLEET_RUN_ID="));
         assert!(outer.contains("run-worker"));
     }

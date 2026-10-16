@@ -732,10 +732,68 @@ pub struct Manifest {
     /// fan-out DAG or delegate supervision. Absent on older manifests.
     #[serde(default)]
     pub created_by_run_id: Option<RunId>,
+    /// Optional immutable native-session display association. Absent on old runs.
+    #[serde(default)]
+    pub created_by_session: Option<CreatorSession>,
     /// Run that spawned this run, if it is itself a child.
     pub parent_run_id: Option<RunId>,
     /// Node in the parent run that spawned this run, if any.
     pub parent_node_id: Option<NodeId>,
+}
+
+/// Immutable same-user display attribution, never ownership or authorization.
+/// Currently only Pi sessions with canonical lowercase hyphenated UUIDs are accepted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "CreatorSessionInput")]
+pub struct CreatorSession {
+    /// Native harness name (`pi`).
+    pub harness: String,
+    /// Canonical lowercase hyphenated UUID, preserved without normalization.
+    pub session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatorSessionInput {
+    harness: String,
+    session_id: String,
+}
+
+impl CreatorSession {
+    /// Parse the public `pi:<session-uuid>` attribution input strictly.
+    /// No whitespace trimming, case folding, or alternate UUID spellings.
+    pub fn parse_str(value: &str) -> Result<Self, String> {
+        let (harness, session_id) = value
+            .split_once(':')
+            .ok_or_else(|| "expected pi:<lowercase hyphenated session UUID>".to_string())?;
+        Self::try_from(CreatorSessionInput {
+            harness: harness.into(),
+            session_id: session_id.into(),
+        })
+    }
+}
+
+impl TryFrom<CreatorSessionInput> for CreatorSession {
+    type Error = String;
+
+    fn try_from(input: CreatorSessionInput) -> Result<Self, Self::Error> {
+        let id = &input.session_id;
+        let uuid_shape = id.len() == 36
+            && id.bytes().enumerate().all(|(i, b)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_digit() || matches!(b, b'a'..=b'f')
+                }
+            });
+        if input.harness != "pi" || !uuid_shape {
+            return Err("expected pi:<lowercase hyphenated session UUID>".into());
+        }
+        Ok(Self {
+            harness: input.harness,
+            session_id: input.session_id,
+        })
+    }
 }
 
 /// `(child_run_id, child_node_id)` pointer recorded in `Node::children`.

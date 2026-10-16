@@ -554,6 +554,13 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         agent_selection,
         node_count: 0,
         created_by_run_id: opt_run_id(&events_path, ev, d, "created_by_run_id")?,
+        created_by_session: serde_json::from_value(
+            d.get("created_by_session").cloned().unwrap_or(Value::Null),
+        )
+        .map_err(|e| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!("run.created invalid `created_by_session`: {e}"),
+        })?,
         parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
     };

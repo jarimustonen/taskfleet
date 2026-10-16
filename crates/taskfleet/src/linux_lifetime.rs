@@ -81,6 +81,9 @@ pub(crate) fn service(unit: &str, kind: &str) -> Result<Command, CliError> {
         unit,
         "--property=TimeoutStartSec=120",
         "--property=TimeoutStopSec=10",
+        // Also remove a stale value from the shared manager's environment, not
+        // merely the creating process. Workers have their own launcher guard.
+        "--property=UnsetEnvironment=TASKFLEET_CREATOR_SESSION",
     ]);
     for (key, value) in std::env::vars_os() {
         // The new service has its own identity and readiness endpoint.
@@ -93,6 +96,7 @@ pub(crate) fn service(unit: &str, kind: &str) -> Result<Command, CliError> {
                     | "SYSTEMD_EXEC_PID"
                     | "TASKFLEET_READINESS_FD"
                     | "TASKFLEET_READINESS_FILE"
+                    | "TASKFLEET_CREATOR_SESSION"
             )
         ) {
             continue;

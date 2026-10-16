@@ -209,6 +209,7 @@ pub struct ManifestView<'a> {
     pub selection: AgentSelectionView<'a>,
     pub node_count: u32,
     pub created_by_run_id: Option<&'a RunId>,
+    pub created_by_session: Option<&'a taskfleet_core::schema::CreatorSession>,
     pub parent_run_id: Option<&'a RunId>,
     pub parent_node_id: Option<&'a NodeId>,
 }
@@ -236,6 +237,7 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             ),
             node_count: m.node_count,
             created_by_run_id: m.created_by_run_id.as_ref(),
+            created_by_session: m.created_by_session.as_ref(),
             parent_run_id: m.parent_run_id.as_ref(),
             parent_node_id: m.parent_node_id.as_ref(),
         }
@@ -285,6 +287,7 @@ pub struct RunSummary {
     pub harness: Option<String>,
     pub node_count: u32,
     pub created_by_run_id: Option<String>,
+    pub created_by_session: Option<taskfleet_core::schema::CreatorSession>,
     /// Liveness of the run's per-run supervisor. Defaults to the "unknown"
     /// probe from `From`; the `list` handler overrides it with a real probe
     /// via [`RunSummary::with_supervisor`] (it already holds each run's paths).
@@ -458,6 +461,7 @@ impl From<&Manifest> for RunSummary {
             harness: m.harness.clone(),
             node_count: m.node_count,
             created_by_run_id: m.created_by_run_id.as_ref().map(ToString::to_string),
+            created_by_session: m.created_by_session.clone(),
             supervisor: SupervisorView::unknown(),
             stalled: false,
             stillborn: false,
@@ -505,6 +509,7 @@ mod tests {
             agent_selection: None,
             node_count: 0,
             created_by_run_id: None,
+            created_by_session: None,
             parent_run_id: None,
             parent_node_id: None,
         }
@@ -532,6 +537,7 @@ mod tests {
                 "selection": "legacy-unrecorded",
                 "node_count": 0,
                 "created_by_run_id": null,
+                "created_by_session": null,
                 "parent_run_id": null,
                 "parent_node_id": null,
             })
@@ -572,6 +578,7 @@ mod tests {
                 "harness": null,
                 "node_count": 0,
                 "created_by_run_id": null,
+                "created_by_session": null,
                 "supervisor": { "pid": null, "state": "unknown", "alive": false },
                 "stalled": false,
                 "stillborn": false,

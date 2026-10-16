@@ -43,6 +43,10 @@ remain reachable across PrivateTmp namespaces; the manager boundary also works
 from PATH/USER/HOME-only callers. Non-Linux launch remains native. See
 [Linux lifetime](docs/LINUX-LIFETIME.md) for prerequisites, discovery and tests.
 
+Creator run and optional native-session attribution are immutable display facts,
+not ownership or fan-out edges. See [Creator attribution](docs/CREATOR-ATTRIBUTION.md)
+for the environment input, replay and worker-environment contract.
+
 State lives under `~/.taskfleet` by default. `TASKFLEET_HOME` can select a
 different root and `TASKFLEET_PROFILE` can select a configured profile. The
 resolver never probes or moves any other product's state.

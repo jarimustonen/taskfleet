@@ -116,6 +116,10 @@ case "$1" in
     done
     "$GIT_BIN" -C "$NATIVE_TEST_REPO" worktree add -q -b "$branch" "$NATIVE_TEST_WORKTREE" "$base" || exit 1
     text=$(/bin/cat "$prompt")
+    # Model a persistent tmux server with an independently stale environment.
+    if [ -n "${NATIVE_TEST_SERVER_CREATOR_SESSION:-}" ]; then
+      export TASKFLEET_CREATOR_SESSION="$NATIVE_TEST_SERVER_CREATOR_SESSION"
+    fi
     TMUX_PANE=%77 "$agent" -- "$text" </dev/null >"$NATIVE_TEST_AGENT_STDOUT" 2>"$NATIVE_TEST_AGENT_STDERR" &
     pid=$!
     echo "$pid" > "$NATIVE_TEST_AGENT_PID"

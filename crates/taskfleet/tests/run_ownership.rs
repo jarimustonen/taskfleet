@@ -16,6 +16,7 @@ fn bin(home: &TempDir, cwd: &Path) -> Command {
     command
         .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path())
+        .env_remove("TASKFLEET_CREATOR_SESSION")
         .current_dir(cwd);
     command
 }
@@ -393,14 +394,16 @@ fn explicit_fan_out_parent_remains_separate_from_worktree_creator() {
     seed_run(home.path(), RUN_A, &cwd, &branch);
     let id = created_run(
         &home,
-        &create_skeleton(
+        &create_session(
             &home,
             &cwd,
+            Some(SESSION),
             &["--parent-run-id", RUN_A, "--parent-node-id", "n-0001"],
         ),
     );
     let manifest = &show(&home, &cwd, &id)["data"]["manifest"];
     assert_eq!(manifest["created_by_run_id"], RUN_A);
+    assert_eq!(manifest["created_by_session"]["session_id"], &SESSION[3..]);
     assert_eq!(manifest["parent_run_id"], RUN_A);
     assert_eq!(manifest["parent_node_id"], "n-0001");
     let events =
@@ -452,4 +455,117 @@ fn detached_unowned_release_checkout_can_create_but_detached_owner_cannot() {
     assert!(!output.status.success());
     assert_eq!(error_code(&output), "run_owner_stale");
     assert_eq!(error_code(&show_current(&home, &cwd)), "run_owner_stale");
+}
+
+const SESSION: &str = "pi:12345678-1234-4234-8234-123456789abc";
+
+fn create_session(
+    home: &TempDir,
+    cwd: &Path,
+    session: Option<&str>,
+    extra: &[&str],
+) -> std::process::Output {
+    let mut cmd = bin(home, cwd);
+    if let Some(session) = session {
+        cmd.env("TASKFLEET_CREATOR_SESSION", session);
+    }
+    cmd.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1")
+        .args([
+            "run", "create", "--kind", "spinoff", "--title", "session", "--json",
+        ])
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn main_checkout_session_is_visible_beside_null_run_creator() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let cwd = worktree(repos.path(), "main", "main");
+    let output = create_session(&home, &cwd, Some(SESSION), &[]);
+    let id = created_run(&home, &output);
+    let expected = json!({"harness": "pi", "session_id": &SESSION[3..]});
+    let detail = show(&home, &cwd, &id);
+    assert_eq!(detail["data"]["created_by_session"], expected);
+    assert_eq!(detail["data"]["manifest"]["created_by_session"], expected);
+    assert!(detail["data"]["created_by_run_id"].is_null());
+    assert!(detail["data"]["manifest"]["parent_run_id"].is_null());
+    let out = bin(&home, &cwd)
+        .args(["run", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list["data"]["runs"][0]["created_by_session"], expected);
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(&id).join("events.jsonl")).unwrap();
+    let event: Value = serde_json::from_str(events.lines().next().unwrap()).unwrap();
+    assert_eq!(event["data"]["created_by_session"], expected);
+}
+
+#[test]
+fn new_create_rejects_malformed_or_nonunicode_session_without_publication() {
+    for value in [
+        "",
+        " ",
+        "pi:",
+        "claude:12345678-1234-4234-8234-123456789abc",
+        "pi:12345678123442348234123456789abc",
+        "pi:12345678-1234-4234-8234-123456789ABC",
+        "pi:12345678-1234-4234-8234-123456789abc ",
+        "pi:../session",
+    ] {
+        let home = TempDir::new().unwrap();
+        let cwd = TempDir::new().unwrap();
+        let output = create_session(&home, cwd.path(), Some(value), &[]);
+        assert!(!output.status.success(), "accepted {value:?}");
+        assert_eq!(error_code(&output), "invalid_creator_session");
+        let runs = home.path().join("runs");
+        assert!(!runs.exists() || std::fs::read_dir(runs).unwrap().count() == 0);
+    }
+    use std::os::unix::ffi::OsStringExt;
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let out = bin(&home, cwd.path())
+        .env(
+            "TASKFLEET_CREATOR_SESSION",
+            std::ffi::OsString::from_vec(vec![0xff]),
+        )
+        .env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1")
+        .args([
+            "run", "create", "--kind", "spinoff", "--title", "bad", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(error_code(&out), "invalid_creator_session");
+}
+
+#[test]
+fn keyed_replay_preserves_session_including_original_absence() {
+    for original in [None, Some(SESSION)] {
+        let home = TempDir::new().unwrap();
+        let repos = TempDir::new().unwrap();
+        let (cwd, _) = linked_worktrees(repos.path(), "worker", "outside");
+        let source = repos.path().join("main");
+        let flags = [
+            "--source-repo",
+            source.to_str().unwrap(),
+            "--source-branch",
+            "master",
+            "--idempotency-key",
+            "session-once",
+        ];
+        let id = created_run(&home, &create_session(&home, &cwd, original, &flags));
+        let before = show(&home, &cwd, &id)["data"]["created_by_session"].clone();
+        for retry in [
+            None,
+            Some("pi:abcdefab-1234-4234-8234-123456789abc"),
+            Some("malformed"),
+        ] {
+            let out = create_session(&home, &cwd, retry, &flags);
+            assert_eq!(created_run(&home, &out), id);
+            assert_eq!(show(&home, &cwd, &id)["data"]["created_by_session"], before);
+        }
+    }
 }

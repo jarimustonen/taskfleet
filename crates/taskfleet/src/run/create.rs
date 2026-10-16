@@ -407,6 +407,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // Resolve before writing the new run. Replay above keeps its original
     // attribution even if the caller has since changed worktrees.
     let created_by_run_id = super::ownership::creator_in_cwd(&root)?;
+    let created_by_session = crate::home::creator_session()?;
 
     let run_id = new_run_id();
     // Validate the freshly generated id (infallible in practice) so run_dir
@@ -793,6 +794,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         data.insert(
             "created_by_run_id".into(),
             Value::String(creator.to_string()),
+        );
+    }
+    if let Some(session) = created_by_session {
+        data.insert(
+            "created_by_session".into(),
+            serde_json::to_value(session).expect("creator session serializes"),
         );
     }
     if is_child {

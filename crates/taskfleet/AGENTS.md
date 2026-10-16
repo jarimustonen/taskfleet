@@ -99,9 +99,11 @@ version, so a version bump stales them like any other surface change;
 on `main` after a tag. The release gate also refuses to run with any
 `.snap.new` left in the tree.
 
-Tests that exercise the real `run create` path spawn a real supervisor, which
-double-forks and `setsid`s away from the test process, so neither `waitpid`
-nor a group kill reaches it. The `TestHome` fixture in `tests/common/mod.rs`
+Tests that exercise the real `run create` path spawn a real supervisor. On
+Linux, `common::configure_linux_units` provides an explicit user-manager stub
+and disposable runtime directory (automatically used by `NativeSpawnTools`);
+other platforms retain the native double-fork/setsid path. Neither path makes
+the supervisor a waitable child of the test process. The `TestHome` fixture in `tests/common/mod.rs`
 reaps by the pid files under its own home on drop; a production-path test
 that uses a bare `TempDir` instead leaks a supervisor. `NativeSpawnTools`
 uses real Git in a disposable repository with a fake `tmux` and `workmux`
@@ -112,6 +114,12 @@ PID handshake, publication, supervisor) is production code. After a test run,
 a surviving `taskfleet supervise` process from `target/debug` is a
 missing-fixture bug; scope any `pgrep` to that path, since the same pattern
 matches supervisors from every repository on the machine.
+
+Linux production lifetime requires a user manager, not detachment. The real
+bounded service-parent restart smoke is `scripts/linux-lifetime-smoke.py`;
+`docs/LINUX-LIFETIME.md` distinguishes that evidence from the bare-CI stub.
+The Taskfleet tmux client uses `-N` so a disappearing manager-owned server can
+never be silently recreated in the caller's cgroup.
 
 `tests/e2e_spinoff.rs` drives complete headless spinoffs (create, live stub
 worker, `run merge` in real disposable Git worktrees, roll-up, teardown, and

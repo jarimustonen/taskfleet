@@ -611,7 +611,35 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         ));
     }
     let cwd = req.cwd.unwrap_or_else(|| Path::new("."));
-    let session = ensure_session(req.parent_session, cwd)?;
+    #[cfg(target_os = "linux")]
+    let foreground_session = if req.parent_session.is_none() {
+        if std::env::var_os("TMUX").is_none() {
+            return Err(CliError::user(
+                "no_tmux_session",
+                "run create must be inside tmux or use --headless/--tmux-session",
+            ));
+        }
+        let bin = std::env::var_os("TMUX_BIN").unwrap_or_else(|| "tmux".into());
+        let out = Command::new(bin)
+            .args(["display-message", "-p", "#{session_name}"])
+            .output()
+            .map_err(|e| CliError::system("no_tmux_session", e.to_string()))?;
+        let name = text_stdout(&out, "no_tmux_session")?.trim().to_string();
+        if !out.status.success() || name.is_empty() {
+            return Err(CliError::user(
+                "no_tmux_session",
+                "cannot resolve the current tmux session; use --headless/--tmux-session",
+            ));
+        }
+        Some(name)
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    let parent_session = req.parent_session.or(foreground_session.as_deref());
+    #[cfg(not(target_os = "linux"))]
+    let parent_session = req.parent_session;
+    let session = ensure_session(parent_session, cwd)?;
     let mut rollback = Rollback::new(req, cwd);
 
     let mut args = vec![
@@ -623,7 +651,7 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         "-a".into(),
         agent.into(),
     ];
-    if let Some(s) = req.parent_session {
+    if let Some(s) = parent_session {
         args.extend(["--parent-session".into(), s.into()]);
     }
     if let Some(base) = req.source_branch {
@@ -782,6 +810,51 @@ fn validate_request(req: &SpawnRequest<'_>) -> Result<(), CliError> {
 }
 
 fn ensure_session(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> {
+    #[cfg(target_os = "linux")]
+    let _server_lock = crate::linux_lifetime::tmux_lock()?;
+    #[cfg(target_os = "linux")]
+    let mut bootstrap = None;
+    #[cfg(target_os = "linux")]
+    {
+        // Only this explicit creator path may start a server. Maintenance and
+        // cleanup continue to use recorded exact sockets and never start one.
+        let probe = command_output(
+            "tmux",
+            &["show-options".into(), "-s".into(), "exit-empty".into()],
+            cwd,
+            "tmux_probe_failed",
+        )?;
+        if !probe.status.success() {
+            bootstrap = Some(crate::linux_lifetime::start_tmux(cwd)?);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let probe = command_output(
+                    "tmux",
+                    &["show-options".into(), "-s".into(), "exit-empty".into()],
+                    cwd,
+                    "tmux_probe_failed",
+                )?;
+                if probe.status.success() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(CliError::system("linux_tmux_service_failed", "Taskfleet tmux user service did not publish its runtime socket; inspect journalctl --user -u 'taskfleet-tmux-*'"));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    let result = ensure_session_existing(parent, cwd);
+    #[cfg(target_os = "linux")]
+    if result.is_ok() {
+        if let Some(bootstrap) = &mut bootstrap {
+            bootstrap.commit();
+        }
+    }
+    result
+}
+
+fn ensure_session_existing(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> {
     if let Some(session) = parent {
         let probe = command_output(
             "tmux",
@@ -816,6 +889,18 @@ fn ensure_session(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> 
             &["has-session".into(), "-t".into(), session.into()],
             cwd,
             "parent_session_uncreatable",
+        )?;
+        #[cfg(target_os = "linux")]
+        command_ok(
+            "tmux",
+            &[
+                "set-option".into(),
+                "-s".into(),
+                "exit-empty".into(),
+                "on".into(),
+            ],
+            cwd,
+            "tmux_setup_failed",
         )?;
         Ok(session.into())
     } else {
@@ -1023,7 +1108,29 @@ fn command_output(
         "workmux" => std::env::var("WORKMUX_BIN").unwrap_or_else(|_| bin.into()),
         _ => bin.into(),
     };
-    Command::new(&actual)
+    let mut command = Command::new(&actual);
+    #[cfg(target_os = "linux")]
+    let mut _tmux_client = None;
+    #[cfg(target_os = "linux")]
+    if matches!(bin, "tmux" | "workmux") {
+        let socket = crate::linux_lifetime::tmux_socket()?;
+        if bin == "tmux" {
+            command.arg("-N").arg("-S").arg(&socket);
+        }
+        command.env("TMUX", format!("{},0,0", socket.display()));
+        if bin == "workmux" {
+            let wrapper = crate::linux_lifetime::tmux_client_dir()?;
+            let mut paths = vec![wrapper.path().to_path_buf()];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            let path = std::env::join_paths(paths)
+                .map_err(|e| CliError::system("invalid_path", e.to_string()))?;
+            command.env("PATH", path);
+            _tmux_client = Some(wrapper);
+        }
+    }
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

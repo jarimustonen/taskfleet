@@ -12,6 +12,8 @@ mod harness;
 mod help;
 mod home;
 mod idempotency;
+#[cfg(target_os = "linux")]
+mod linux_lifetime;
 mod multiplexer;
 mod node;
 mod output;

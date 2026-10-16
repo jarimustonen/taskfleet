@@ -19,6 +19,8 @@ fn bin(home: &TempDir) -> Command {
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
     c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
+    #[cfg(target_os = "linux")]
+    common::configure_linux_units(&mut c, home.path());
     c
 }
 

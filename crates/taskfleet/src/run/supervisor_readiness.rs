@@ -63,6 +63,10 @@
 //!   - ready:  `R<pid>\n`               (`pid` decimal, the supervisor's own pid)
 //!   - error:  `E<code>\t<message>\n`   (a structured boot-failure reason)
 
+// Native pipe transport remains exercised on Linux in unit tests; production
+// Linux readiness crosses the manager boundary via sd_notify instead.
+#![cfg_attr(target_os = "linux", allow(dead_code))]
+
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
@@ -337,6 +341,8 @@ impl ReadinessReporter {
     /// write end so the parent's `read()` returns. Idempotent-ish: only the
     /// first `ready`/`error` writes; later calls are no-ops.
     pub fn ready(&mut self, pid: u32) {
+        #[cfg(target_os = "linux")]
+        crate::linux_lifetime::notify_ready(pid);
         self.emit(format!("{}{pid}\n", TAG_READY as char));
     }
 

@@ -1,3 +1,8 @@
+//! On Linux, the user manager owns a Type=notify service and boot is
+//! confirmed at the same readiness point via `sd_notify`. File descriptors
+//! cannot cross the manager boundary. The native pipe/double-fork path below
+//! is retained on other platforms only; it cannot escape a Linux cgroup.
+//!
 //! Spawn a detached `taskfleet supervise <run-id>` process and
 //! wait briefly for its PID file to appear.
 //!
@@ -65,6 +70,7 @@ use std::time::{Duration, Instant};
 use taskfleet_core::RunPaths;
 
 use crate::error::CliError;
+#[cfg(not(target_os = "linux"))]
 use crate::run::supervisor_readiness::{Readiness, ReadinessPipe, ENV_READINESS_FD};
 use crate::supervise::pid_file;
 
@@ -72,11 +78,13 @@ use crate::supervise::pid_file;
 /// old confirmation deadline. Default 120s (≈8× the retired 15s pid-file poll)
 /// so a merely slow-but-healthy boot is never false-failed; it only bounds a
 /// supervisor genuinely stuck during init (e.g. blocked on the run flock).
+#[cfg(not(target_os = "linux"))]
 const READY_WAIT: Duration = Duration::from_secs(120);
 
 /// [`READY_WAIT`] in production; tests point `TASKFLEET_READY_WAIT_MS` at a short
 /// value so the wedge-backstop path is exercisable in milliseconds. An
 /// unparseable value falls back to the production default.
+#[cfg(not(target_os = "linux"))]
 fn ready_wait() -> Duration {
     std::env::var("TASKFLEET_READY_WAIT_MS")
         .ok()
@@ -147,6 +155,7 @@ pub enum SupervisorSpawn {
 /// the forked child — right before `exec` — so exactly the intended grandchild
 /// inherits it. `fcntl` is async-signal-safe, and the captured `Option<RawFd>`
 /// is `Copy` (no allocation, no `Drop` between fork and exec).
+#[cfg(not(target_os = "linux"))]
 fn apply_detach(cmd: &mut Command, readiness_write_fd: Option<RawFd>) {
     use std::os::unix::process::CommandExt;
     // SAFETY: the closure is async-signal-safe — it calls only `fcntl`,
@@ -186,40 +195,78 @@ fn apply_detach(cmd: &mut Command, readiness_write_fd: Option<RawFd>) {
 /// before handing it to [`spawn_and_reap`].
 ///
 /// `readiness_write_fd` is `Some` only for `run create`'s confirmation path
-/// ([`spawn_for_run`]), which also sets [`ENV_READINESS_FD`] to that fd number;
+/// ([`spawn_for_run`]), which also sets `TASKFLEET_READINESS_FD` to that fd number;
 /// the lenient callers pass `None`.
 pub fn detached_supervise_command(
     run_id: &str,
     log_path: &Path,
     readiness_write_fd: Option<RawFd>,
 ) -> Result<Command, CliError> {
-    let stderr_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|e| CliError::system("io_error", format!("open {}: {}", log_path.display(), e)))?;
-    let stderr_clone = stderr_file
-        .try_clone()
-        .map_err(|e| CliError::system("io_error", format!("dup fd: {e}")))?;
-    let mut cmd = supervise_command()?;
-    cmd.arg("supervise")
-        .arg(run_id)
-        // A detached daemon must not keep the launching terminal's stdin: an
-        // inherited TTY fd 0 can deliver SIGTTIN or let a stray read consume
-        // terminal input. setsid drops the controlling-terminal relationship
-        // but not the fd itself.
-        .stdin(std::process::Stdio::null())
-        .stdout(stderr_file)
-        .stderr(stderr_clone)
-        // Clear any inherited readiness-fd hint. Only `run create`'s
-        // confirmation path ([`spawn_for_run`]) sets `TASKFLEET_READINESS_FD`, and it
-        // does so on its OWN command AFTER this builder. Without this clear, a
-        // running supervisor (which itself inherited the variable from its
-        // parent `run create`) would leak it to every child supervisor it forks,
-        // and each child would write a readiness signal to an fd it never
-        // inherited.
-        .env_remove(ENV_READINESS_FD);
-    apply_detach(&mut cmd, readiness_write_fd);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = readiness_write_fd;
+        linux_supervise_command(run_id, log_path, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let stderr_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .map_err(|e| {
+                CliError::system("io_error", format!("open {}: {}", log_path.display(), e))
+            })?;
+        let stderr_clone = stderr_file
+            .try_clone()
+            .map_err(|e| CliError::system("io_error", format!("dup fd: {e}")))?;
+        let mut cmd = supervise_command()?;
+        cmd.arg("supervise")
+            .arg(run_id)
+            // A detached daemon must not keep the launching terminal's stdin: an
+            // inherited TTY fd 0 can deliver SIGTTIN or let a stray read consume
+            // terminal input. setsid drops the controlling-terminal relationship
+            // but not the fd itself.
+            .stdin(std::process::Stdio::null())
+            .stdout(stderr_file)
+            .stderr(stderr_clone)
+            // Clear any inherited readiness-fd hint. Only `run create`'s
+            // confirmation path ([`spawn_for_run`]) sets `TASKFLEET_READINESS_FD`, and it
+            // does so on its OWN command AFTER this builder. Without this clear, a
+            // running supervisor (which itself inherited the variable from its
+            // parent `run create`) would leak it to every child supervisor it forks,
+            // and each child would write a readiness signal to an fd it never
+            // inherited.
+            .env_remove(ENV_READINESS_FD);
+        apply_detach(&mut cmd, readiness_write_fd);
+        Ok(cmd)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_supervise_command(
+    run_id: &str,
+    log_path: &Path,
+    ready_path: Option<&Path>,
+) -> Result<Command, CliError> {
+    let log_path =
+        std::path::absolute(log_path).map_err(|e| CliError::system("io_error", e.to_string()))?;
+    // append: properties use systemd specifiers, so escape literal percent.
+    let log = log_path.to_string_lossy().replace('%', "%%");
+    let mut cmd = crate::linux_lifetime::service(
+        &format!("taskfleet-supervise-{run_id}-{}", ulid::Ulid::new()),
+        "notify",
+    )?;
+    if let Some(path) = ready_path {
+        cmd.arg(format!(
+            "--setenv=TASKFLEET_READINESS_FILE={}",
+            path.display()
+        ));
+    }
+    cmd.arg(format!("--property=StandardOutput=append:{log}"))
+        .arg(format!("--property=StandardError=append:{log}"))
+        .arg("--");
+    let inner = supervise_command()?;
+    cmd.arg(inner.get_program()).arg("supervise").arg(run_id);
     Ok(cmd)
 }
 
@@ -228,22 +275,30 @@ pub fn detached_supervise_command(
 /// supervisor (the grandchild) is already reparented to init by the time
 /// this returns.
 pub fn spawn_and_reap(cmd: &mut Command, run_id: &str) -> Result<(), CliError> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| CliError::system("spawn_failed", format!("spawn supervise {run_id}: {e}")))?;
-    // The intermediate `_exit`s immediately after forking the grandchild, so
-    // this wait reaps it without blocking on the actual supervisor. A wait
-    // error (e.g. ECHILD if it was already reaped) is non-fatal — the
-    // grandchild is independent — but surface it rather than swallow it.
-    if let Err(e) = child.wait() {
-        tracing::warn!(
-            target: "taskfleet::supervise",
-            run = %run_id,
-            error = %e,
-            "failed to reap double-fork intermediate (grandchild unaffected)"
-        );
+    #[cfg(target_os = "linux")]
+    {
+        let _ = run_id;
+        crate::linux_lifetime::run_service(cmd)
     }
-    Ok(())
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut child = cmd.spawn().map_err(|e| {
+            CliError::system("spawn_failed", format!("spawn supervise {run_id}: {e}"))
+        })?;
+        // The intermediate `_exit`s immediately after forking the grandchild, so
+        // this wait reaps it without blocking on the actual supervisor. A wait
+        // error (e.g. ECHILD if it was already reaped) is non-fatal — the
+        // grandchild is independent — but surface it rather than swallow it.
+        if let Err(e) = child.wait() {
+            tracing::warn!(
+                target: "taskfleet::supervise",
+                run = %run_id,
+                error = %e,
+                "failed to reap double-fork intermediate (grandchild unaffected)"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Read `<run-dir>/supervisor.pid` ONCE and return the recorded pid iff it is
@@ -315,7 +370,7 @@ fn append_spawn_diag(log_path: &Path, msg: &str) {
 /// `exec`. The grandchild writes a readiness signal carrying its pid AFTER it
 /// has claimed `supervisor.pid` and finished init, then closes the write end.
 /// The parent closes its own write-end copy and reads the read end, bounded by
-/// a generous wedge backstop ([`ready_wait`]):
+/// a generous wedge backstop (`ready_wait`):
 ///   - a `ready` signal → [`SupervisorSpawn::Confirmed`] with the supervisor pid;
 ///   - EOF with no signal → the supervisor died during init (fate-sharing) →
 ///     [`SupervisorSpawn::Unconfirmed`];
@@ -334,72 +389,92 @@ fn append_spawn_diag(log_path: &Path, msg: &str) {
 pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, CliError> {
     let log_path = paths.root.join("supervisor.stderr.log");
 
-    // Readiness pipe first, so its write-end fd can be uncloaked in `pre_exec`
-    // (CLOEXEC cleared only for the intended grandchild — see `apply_detach`).
-    let mut pipe = match ReadinessPipe::new() {
-        Ok(p) => p,
-        Err(e) => {
-            // Falling back to a pid-file poll here would reintroduce the very
-            // timeout ambiguity this fix removes; a pipe() failure is a real,
-            // rare resource exhaustion worth surfacing loudly instead.
-            let reason = format!("failed to create supervisor readiness pipe: {e}");
-            append_spawn_diag(&log_path, &reason);
-            return Ok(SupervisorSpawn::Unconfirmed { reason });
+    #[cfg(target_os = "linux")]
+    {
+        let receipt = tempfile::NamedTempFile::new_in(crate::linux_lifetime::private_dir()?)
+            .map_err(|e| CliError::system("io_error", e.to_string()))?;
+        let mut cmd = linux_supervise_command(run_id, &log_path, Some(receipt.path()))?;
+        if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
+            append_spawn_diag(&log_path, &e.message);
+            return Ok(SupervisorSpawn::Unconfirmed { reason: e.message });
         }
-    };
-    let write_fd = pipe.write_fd();
-    let mut cmd = detached_supervise_command(run_id, &log_path, Some(write_fd))?;
-    cmd.env(ENV_READINESS_FD, write_fd.to_string());
-
-    if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
-        append_spawn_diag(
-            &log_path,
-            &format!("fork/exec of supervisor failed: {}", e.message),
-        );
-        return Err(e);
+        let frame = std::fs::read(receipt.path()).unwrap_or_default();
+        Ok(match crate::run::supervisor_readiness::parse_readiness(&frame) {
+            crate::run::supervisor_readiness::Readiness::Ready { pid } => SupervisorSpawn::Confirmed { pid },
+            _ => SupervisorSpawn::Unconfirmed {
+                reason: "user service confirmed boot without a valid private PID receipt; inspect supervisor.stderr.log".into(),
+            },
+        })
     }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Readiness pipe first, so its write-end fd can be uncloaked in `pre_exec`
+        // (CLOEXEC cleared only for the intended grandchild — see `apply_detach`).
+        let mut pipe = match ReadinessPipe::new() {
+            Ok(p) => p,
+            Err(e) => {
+                // Falling back to a pid-file poll here would reintroduce the very
+                // timeout ambiguity this fix removes; a pipe() failure is a real,
+                // rare resource exhaustion worth surfacing loudly instead.
+                let reason = format!("failed to create supervisor readiness pipe: {e}");
+                append_spawn_diag(&log_path, &reason);
+                return Ok(SupervisorSpawn::Unconfirmed { reason });
+            }
+        };
+        let write_fd = pipe.write_fd();
+        let mut cmd = detached_supervise_command(run_id, &log_path, Some(write_fd))?;
+        cmd.env(ENV_READINESS_FD, write_fd.to_string());
 
-    // The parent must stop being a writer, or `await_ready` never observes EOF
-    // on the grandchild's death. After this, the only remaining write-end copy
-    // is the grandchild's (the double-fork intermediate already `_exit`ed and
-    // was reaped by `spawn_and_reap`).
-    pipe.close_write();
-
-    match pipe.await_ready(ready_wait()) {
-        Readiness::Ready { pid } => Ok(SupervisorSpawn::Confirmed { pid }),
-        Readiness::Died => {
-            let reason = "supervisor died during init: the readiness pipe closed \
-                          without a ready signal (see supervisor.stderr.log)"
-                .to_string();
-            append_spawn_diag(&log_path, &reason);
-            Ok(SupervisorSpawn::Unconfirmed { reason })
+        if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
+            append_spawn_diag(
+                &log_path,
+                &format!("fork/exec of supervisor failed: {}", e.message),
+            );
+            return Err(e);
         }
-        Readiness::Timeout => {
-            let reason = format!(
-                "supervisor did not confirm boot within {:?}: it is wedged during init \
+
+        // The parent must stop being a writer, or `await_ready` never observes EOF
+        // on the grandchild's death. After this, the only remaining write-end copy
+        // is the grandchild's (the double-fork intermediate already `_exit`ed and
+        // was reaped by `spawn_and_reap`).
+        pipe.close_write();
+
+        match pipe.await_ready(ready_wait()) {
+            Readiness::Ready { pid } => Ok(SupervisorSpawn::Confirmed { pid }),
+            Readiness::Died => {
+                let reason = "supervisor died during init: the readiness pipe closed \
+                          without a ready signal (see supervisor.stderr.log)"
+                    .to_string();
+                append_spawn_diag(&log_path, &reason);
+                Ok(SupervisorSpawn::Unconfirmed { reason })
+            }
+            Readiness::Timeout => {
+                let reason = format!(
+                    "supervisor did not confirm boot within {:?}: it is wedged during init \
                  (e.g. blocked acquiring the run lock) — check for a stuck supervisor holding \
                  the run flock, then inspect supervisor.stderr.log",
-                ready_wait()
-            );
-            append_spawn_diag(&log_path, &reason);
-            Ok(SupervisorSpawn::Unconfirmed { reason })
-        }
-        Readiness::Error { code, message } => {
-            let reason = if message.is_empty() {
-                format!("supervisor reported a boot error: {code}")
-            } else {
-                format!("supervisor reported a boot error: {code}: {message}")
-            };
-            append_spawn_diag(&log_path, &reason);
-            Ok(SupervisorSpawn::Unconfirmed { reason })
-        }
-        Readiness::Malformed(raw) => {
-            let reason = format!(
-                "supervisor sent a malformed/truncated readiness signal ({raw:?}); \
+                    ready_wait()
+                );
+                append_spawn_diag(&log_path, &reason);
+                Ok(SupervisorSpawn::Unconfirmed { reason })
+            }
+            Readiness::Error { code, message } => {
+                let reason = if message.is_empty() {
+                    format!("supervisor reported a boot error: {code}")
+                } else {
+                    format!("supervisor reported a boot error: {code}: {message}")
+                };
+                append_spawn_diag(&log_path, &reason);
+                Ok(SupervisorSpawn::Unconfirmed { reason })
+            }
+            Readiness::Malformed(raw) => {
+                let reason = format!(
+                    "supervisor sent a malformed/truncated readiness signal ({raw:?}); \
                  treating boot as failed (see supervisor.stderr.log)"
-            );
-            append_spawn_diag(&log_path, &reason);
-            Ok(SupervisorSpawn::Unconfirmed { reason })
+                );
+                append_spawn_diag(&log_path, &reason);
+                Ok(SupervisorSpawn::Unconfirmed { reason })
+            }
         }
     }
 }

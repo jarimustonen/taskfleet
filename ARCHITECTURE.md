@@ -36,6 +36,13 @@ publication. No Homebase script or executable-name/process-tree inference is a
 production dependency. `git`, `tmux`, and `workmux` remain explicit external CLI
 dependencies.
 
+On Linux the user manager owns supervisor services and a state-home-specific,
+foreground tmux server service. Workers belong to that server's cgroup, not the
+creating daemon's. Validated private sockets under the user's runtime directory
+remain reachable across PrivateTmp namespaces; the manager boundary also works
+from PATH/USER/HOME-only callers. Non-Linux launch remains native. See
+[Linux lifetime](docs/LINUX-LIFETIME.md) for prerequisites, discovery and tests.
+
 State lives under `~/.taskfleet` by default. `TASKFLEET_HOME` can select a
 different root and `TASKFLEET_PROFILE` can select a configured profile. The
 resolver never probes or moves any other product's state.

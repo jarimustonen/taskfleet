@@ -76,8 +76,10 @@ impl NativeSpawnTools {
             r#"#!/bin/sh
 # This is a complete private fake server: its socket and inventory live only
 # under NativeSpawnTools' cryptographically unique TempDir.
+if [ "$1" = "-N" ]; then shift; fi
 if [ "$1" = "-S" ]; then shift 2; fi
 case "$1" in
+  show-options|set-option) exit 0 ;;
   new-session|has-session) : > "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
   rename-window) exit 97 ;; # workmux, not Taskfleet, owns display naming
   kill-window|kill-session) /bin/rm -f "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
@@ -154,6 +156,8 @@ exit 1
     }
 
     pub fn configure(&self, command: &mut std::process::Command, worktree: &Path, session: &str) {
+        #[cfg(target_os = "linux")]
+        configure_linux_units(command, self.dir.path());
         let owned_root = self.dir.path().join("worktrees");
         assert!(
             worktree.starts_with(&owned_root),
@@ -412,4 +416,21 @@ fn scan_supervisor_pids(home: &Path) -> Vec<libc::pid_t> {
 fn read_first_token_pid(path: &Path) -> Option<libc::pid_t> {
     let s = std::fs::read_to_string(path).ok()?;
     s.split_whitespace().next()?.parse::<libc::pid_t>().ok()
+}
+
+/// Explicit fake user-manager boundary for bare CI. This tests service argv,
+/// `sd_notify` readiness and error propagation, NOT cgroup independence. The
+/// real disposable-service test is scripts/linux-lifetime-smoke.py.
+#[cfg(target_os = "linux")]
+pub fn configure_linux_units(command: &mut std::process::Command, home: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let runtime = home.join("unit-runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stub = runtime.join("systemd-run");
+    std::fs::write(&stub, include_str!("systemd-run-stub.py")).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    command
+        .env("XDG_RUNTIME_DIR", runtime)
+        .env("SYSTEMD_RUN_BIN", stub);
 }

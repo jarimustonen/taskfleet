@@ -3,7 +3,7 @@ created: 2026-10-16
 updated: 2026-10-16
 type: task
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m51nrfvbqwsybz0gdggz6q4b/request:terminal-run-retention

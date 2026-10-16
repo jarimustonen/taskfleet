@@ -1,6 +1,6 @@
 ---
 created: 2026-10-04
-updated: 2026-10-15
+updated: 2026-10-16
 type: feature
 reporter: jari
 status: in-progress
@@ -53,3 +53,7 @@ invariants in `AGENTS.md` remain the basis for this lifecycle.
 ### 2026-10-05T12:29:56Z · @jari
 
 Caller-owned runs must not invoke workmux at all, including create, retry, merge and teardown. Taskfleet owns Git worktree provisioning and Git-only settlement. Move merge orchestration from the embedded merge.sh into Rust while preserving the existing transaction, CAS, locking and cleanup invariants; ordinary terminal-worker creation may continue to use workmux. See design.md for the updated proposal.
+
+### 2026-10-16T06:20:27Z · @jari
+
+Open Habitat decision, 2026-10-16: its current feature observes ordinary Taskfleet-owned spinoffs read-only; browser-controlled caller-owned worktree agents are deferred in that consumer (ADR 0017). This does not cancel Taskfleet work already underway. The supervisor/worker lifetime requirement for ordinary spinoffs is now tracked separately in @linux-independent-user-unit, with attribution in @created-by-session, transcript discovery in @run-transcript-paths and retained history in @terminal-run-history-contract. caller-owned-agent-runs is no longer a prerequisite for Open Habitat spinoff observation.

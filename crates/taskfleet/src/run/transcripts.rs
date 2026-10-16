@@ -55,9 +55,8 @@ fn observe(
             view.path = Some(path.to_owned());
             view.availability = "available";
         }
-        Ok(_) => view.availability = "unavailable",
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => view.availability = "missing",
-        Err(_) => view.availability = "unavailable",
+        Ok(_) | Err(_) => view.availability = "unavailable",
     }
     view
 }

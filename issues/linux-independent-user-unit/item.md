@@ -3,7 +3,7 @@ created: 2026-10-16
 updated: 2026-10-16
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m51nrfvbqwsybz0gdggz6q4b/request:user-unit
@@ -13,6 +13,8 @@ related: ['@caller-owned-agent-runs']
 lane: open-habitat
 lane_seq: 10
 collision: [supervise-cleanup, run-public-contract]
+closed: 2026-10-16
+closed_by: pi
 ---
 
 # Launch Linux supervisors and workers in independent user units
@@ -40,10 +42,10 @@ or invalid runtime-directory ownership needs an actionable failure.
 
 ## Acceptance Criteria
 
-- [ ] From the daemon's minimal environment, supervisor and worker survive daemon service restart under their own user unit.
-- [ ] The same user's SSH session can reach the recorded Taskfleet tmux socket; other Unix users gain no access.
-- [ ] Missing user manager, unset/invalid runtime directory, restart and teardown are tested without disturbing unrelated sessions.
-- [ ] Non-Linux launch behavior remains native and documented.
+- [x] From the daemon's minimal environment, supervisor and worker survive daemon service restart under their own user unit.
+- [x] The same user's SSH session can reach the recorded Taskfleet tmux socket; other Unix users gain no access.
+- [x] Missing user manager, unset/invalid runtime directory, restart and teardown are tested without disturbing unrelated sessions.
+- [x] Non-Linux launch behavior remains native and documented.
 
 ## Context
 
@@ -52,3 +54,9 @@ its Taskfleet-owned-worker application here, without waiting for caller-owned
 creation/binding. Open Habitat defers caller-owned browser agents and observes
 ordinary Taskfleet spinoffs instead. Consumer architecture:
 native-agent-host `issues/manage-agent-worktrees/architecture.md`.
+
+## Comments
+
+### 2026-10-16T08:17:55Z · @pi
+
+Validation complete: TMPDIR=/var/tmp/taskfleet-linux-build scripts/validate-local-release.sh passed on clean 661885a582e6fcacd8aa083bfc4757e8921655cc (1220 release nextest tests passed, 1 skipped; doctests, rustdoc, packaging/distribution and all release fixtures passed). Real systemd 259/tmux 3.6 headless and foreground smokes both passed: two parent-service restarts each, minimal environment, socket discovery, idempotent create, reattach, delayed notification delivery and explicit-merge worktree/session/server/service teardown. One claude-fable-5-1 independent review; all 3 confirmed findings fixed, none deferred. Runtime ownership/missing manager use isolated unit/stub evidence, not disruption of the live manager. Non-Linux runtime was not executed here. Full reproducible evidence, corrections and limitations: validation.md. No installed binary/skills or unrelated services changed; no release/tag/publication.

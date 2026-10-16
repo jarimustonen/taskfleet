@@ -84,6 +84,8 @@ fn create_cmd(
     )
     .env("PATH", tools.path())
     .env_remove("TMUX");
+    #[cfg(target_os = "linux")]
+    common::configure_linux_units(&mut cmd, home.path());
     if let Some(boundary) = crash {
         cmd.env("TASKFLEET_TEST_CALLER_CRASH_AT", boundary);
     }

@@ -14,6 +14,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.15.0] - 2026-10-16
+
+### Added
+
+- Expose live and evidence transcript paths for run readers (`run-transcript-paths`).
+- Launch Linux supervisors and workers in independent user units (`linux-independent-user-unit`).
+- Record the native session that creates a run (`created-by-session`).
+- Support worktree runs with caller-owned agents (`caller-owned-agent-runs`).
+
+### Changed
+
+- Guarantee terminal run history survives teardown (`terminal-run-history-contract`).
+
 ## [0.14.0] - 2026-10-15
 
 ### Added

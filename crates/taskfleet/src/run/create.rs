@@ -368,6 +368,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         )?)
     };
 
+    // Linux foreground placement creates a session on our private server,
+    // not in the caller's server. Record it as managed so both cleanup and
+    // retries retain the exact placement even if the caller's server exits.
+    #[cfg(target_os = "linux")]
+    let parent_session = if !skip_materialize && !args.dry_run && parent_session.is_none() {
+        Some(spawn::current_tmux_session_name()?)
+    } else {
+        parent_session
+    };
+
     if is_child && args.dry_run {
         return Err(CliError::user(
             "dry_run_unsupported",
@@ -742,8 +752,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
     // Record the headless session Taskfleet is about to create via
     // the native materializer's `--parent-session` so the supervisor can tear it down once
-    // its last managed window is gone. `None` for a foreground spawn — that
-    // window lives in the user's own session, which is never a teardown target
+    // its last managed window is gone. On non-Linux a foreground spawn stays
+    // in the user's own session and is never a teardown target
     // (issue `headless-tmux-session-not-torn-down`).
     if let Some(v) = parent_session.as_deref() {
         data.insert("managed_tmux_session".into(), Value::String(v.into()));

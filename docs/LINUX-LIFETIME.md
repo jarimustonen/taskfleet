@@ -1,6 +1,7 @@
 # Linux worker lifetime
 
-On Linux, Taskfleet-owned workers require a running **systemd user manager**.
+On Linux, Taskfleet-owned workers require a running **systemd user manager**
+(systemd 250 or newer).
 Homebase provisions lingering for browser users; Taskfleet does not enable it,
 restart the manager, or fall back to `setsid`, `nohup` or double-forking. Those
 techniques leave descendants in the calling daemon's cgroup and cannot survive
@@ -13,9 +14,13 @@ its restart.
   confirms the existing PID-claim/initialization readiness point; a private
   per-launch receipt carries its PID back across the manager boundary. Startup
   failures remain actionable failures, not successful unconfirmed launches.
-- A shared `taskfleet-tmux-<state-home-digest>.service` runs `tmux -D` in the
+  `ExitType=cgroup` lets asynchronous notification hooks finish after the main
+  supervisor exits; the unit is collected when its final child exits. A slow
+  hook never blocks the supervisor tick.
+- A shared `taskfleet-tmux-<state-home-digest>-<generation>.service` runs `tmux -D` in the
   foreground. Workers are children of this server, **not** of the creating
-  daemon or supervisor. Reattaching a supervisor does not stop the workers.
+  daemon or supervisor. New tmux versions give panes their own manager-owned
+  `tmux-spawn-*.scope` units. Reattaching a supervisor does not stop the workers.
   Different state homes get different servers and bootstrap locks.
 - The server starts only from materialization. Its first session is created
   before enabling `exit-empty`. Closing the last managed session through normal
@@ -24,7 +29,9 @@ its restart.
   existing retention and preservation rules. Neither cancellation nor reattach
   stops a shared server unit directly.
 - Ordinary foreground placement uses a session with the current session's name
-  on this dedicated server. Explicit `--headless` and `--tmux-session` still
+  on this dedicated server. This new session is recorded as managed, so normal
+  cleanup removes its unused bootstrap shell too, and retries do not need the
+  original caller's server to remain alive. Explicit `--headless` and `--tmux-session` still
   choose the session name. Outside tmux, one of those flags remains required.
 
 The socket is `$XDG_RUNTIME_DIR/taskfleet/tmux-<state-home-digest>.sock`.
@@ -74,8 +81,10 @@ fallback. These tests are **not evidence of cgroup survival**.
 For real lifetime evidence on a Linux host with a running user manager:
 
 ```sh
+mkdir -p /var/tmp/taskfleet-build
 TMPDIR=/var/tmp/taskfleet-build cargo build --release -p taskfleet
 python3 scripts/linux-lifetime-smoke.py ./target/release/taskfleet /absolute/path/to/native/workmux
+python3 scripts/linux-lifetime-smoke.py ./target/release/taskfleet /absolute/path/to/native/workmux foreground
 ```
 
 The bounded smoke uses a disposable home/repository, an inert sleep worker,
@@ -83,7 +92,12 @@ and uniquely named user services. Its parent service has `PrivateTmp=yes` and
 `KillMode=mixed`. It creates with the three-variable environment, restarts the
 parent twice, checks worker **and tmux server** cgroups/liveness and external
 socket discovery, retries keyed creation, reattaches the supervisor, then
-explicitly merges and verifies worktree/session/server/service teardown. It
+explicitly merges and verifies worktree/session/server/service teardown. It also
+checks delayed notification delivery and supervisor service collection.
+The foreground variant creates a private originating server, records the derived
+managed session, then removes the originating server before retry/reattach and
+cleanup. That variant additionally needs `TMUX`; the headless variant exercises
+the three-variable caller environment. The smoke
 cleans only services derived from its own disposable home and full run id.
 It requires real Git, tmux, workmux, Python and a manager capable of user-service
 `PrivateTmp`; absence is a missing prerequisite, never a stub success.

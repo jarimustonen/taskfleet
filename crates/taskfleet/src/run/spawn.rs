@@ -611,33 +611,6 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         ));
     }
     let cwd = req.cwd.unwrap_or_else(|| Path::new("."));
-    #[cfg(target_os = "linux")]
-    let foreground_session = if req.parent_session.is_none() {
-        if std::env::var_os("TMUX").is_none() {
-            return Err(CliError::user(
-                "no_tmux_session",
-                "run create must be inside tmux or use --headless/--tmux-session",
-            ));
-        }
-        let bin = std::env::var_os("TMUX_BIN").unwrap_or_else(|| "tmux".into());
-        let out = Command::new(bin)
-            .args(["display-message", "-p", "#{session_name}"])
-            .output()
-            .map_err(|e| CliError::system("no_tmux_session", e.to_string()))?;
-        let name = text_stdout(&out, "no_tmux_session")?.trim().to_string();
-        if !out.status.success() || name.is_empty() {
-            return Err(CliError::user(
-                "no_tmux_session",
-                "cannot resolve the current tmux session; use --headless/--tmux-session",
-            ));
-        }
-        Some(name)
-    } else {
-        None
-    };
-    #[cfg(target_os = "linux")]
-    let parent_session = req.parent_session.or(foreground_session.as_deref());
-    #[cfg(not(target_os = "linux"))]
     let parent_session = req.parent_session;
     let session = ensure_session(parent_session, cwd)?;
     let mut rollback = Rollback::new(req, cwd);
@@ -809,49 +782,83 @@ fn validate_request(req: &SpawnRequest<'_>) -> Result<(), CliError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn current_tmux_session_name() -> Result<String, CliError> {
+    if std::env::var_os("TMUX").is_none() {
+        return Err(CliError::user(
+            "no_tmux_session",
+            "run create must be inside tmux or use --headless/--tmux-session",
+        ));
+    }
+    let bin = std::env::var_os("TMUX_BIN").unwrap_or_else(|| "tmux".into());
+    let out = Command::new(bin)
+        .args(["display-message", "-p", "#{session_name}"])
+        .output()
+        .map_err(|e| CliError::system("no_tmux_session", e.to_string()))?;
+    let name = text_stdout(&out, "no_tmux_session")?.trim().to_string();
+    if !out.status.success() || name.is_empty() {
+        return Err(CliError::user(
+            "no_tmux_session",
+            "cannot resolve the current tmux session; use --headless/--tmux-session",
+        ));
+    }
+    Ok(name)
+}
+
 fn ensure_session(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> {
     #[cfg(target_os = "linux")]
-    let _server_lock = crate::linux_lifetime::tmux_lock()?;
-    #[cfg(target_os = "linux")]
-    let mut bootstrap = None;
-    #[cfg(target_os = "linux")]
     {
-        // Only this explicit creator path may start a server. Maintenance and
-        // cleanup continue to use recorded exact sockets and never start one.
-        let probe = command_output(
-            "tmux",
-            &["show-options".into(), "-s".into(), "exit-empty".into()],
-            cwd,
-            "tmux_probe_failed",
-        )?;
-        if !probe.status.success() {
+        let _server_lock = crate::linux_lifetime::tmux_lock()?;
+        let mut bootstrap = None;
+        if !linux_server_alive(cwd)? {
             bootstrap = Some(crate::linux_lifetime::start_tmux(cwd)?);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                let probe = command_output(
-                    "tmux",
-                    &["show-options".into(), "-s".into(), "exit-empty".into()],
-                    cwd,
-                    "tmux_probe_failed",
-                )?;
-                if probe.status.success() {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err(CliError::system("linux_tmux_service_failed", "Taskfleet tmux user service did not publish its runtime socket; inspect journalctl --user -u 'taskfleet-tmux-*'"));
-                }
-                std::thread::sleep(Duration::from_millis(20));
+            wait_linux_server(cwd)?;
+        }
+        let mut result = ensure_session_existing(parent, cwd);
+        // A sibling's last-session teardown can end the server after our
+        // initial probe. Recreate only through the manager, once, while still
+        // holding the creator lock. -N forbids a caller-cgroup replacement.
+        if result.is_err() && !linux_server_alive(cwd)? {
+            // Do not stop the vanished first generation after starting another.
+            if let Some(first) = &mut bootstrap {
+                first.commit();
+            }
+            bootstrap = Some(crate::linux_lifetime::start_tmux(cwd)?);
+            wait_linux_server(cwd)?;
+            result = ensure_session_existing(parent, cwd);
+        }
+        if result.is_ok() {
+            if let Some(bootstrap) = &mut bootstrap {
+                bootstrap.commit();
             }
         }
+        result
     }
-    let result = ensure_session_existing(parent, cwd);
-    #[cfg(target_os = "linux")]
-    if result.is_ok() {
-        if let Some(bootstrap) = &mut bootstrap {
-            bootstrap.commit();
+    #[cfg(not(target_os = "linux"))]
+    ensure_session_existing(parent, cwd)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_server_alive(cwd: &Path) -> Result<bool, CliError> {
+    command_output(
+        "tmux",
+        &["show-options".into(), "-s".into(), "exit-empty".into()],
+        cwd,
+        "tmux_probe_failed",
+    )
+    .map(|out| out.status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn wait_linux_server(cwd: &Path) -> Result<(), CliError> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !linux_server_alive(cwd)? {
+        if Instant::now() >= deadline {
+            return Err(CliError::system("linux_tmux_service_failed", "Taskfleet tmux user service did not publish its runtime socket; inspect journalctl --user -u 'taskfleet-tmux-*'"));
         }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    result
+    Ok(())
 }
 
 fn ensure_session_existing(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> {

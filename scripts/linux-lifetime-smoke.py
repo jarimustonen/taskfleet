@@ -39,6 +39,7 @@ def main():
     manager_env = dict(os.environ, XDG_RUNTIME_DIR=str(runtime),
                        DBUS_SESSION_BUS_ADDRESS=f"unix:path={runtime}/bus")
     run("systemctl", "--user", "show-environment", env=manager_env)
+    foreground = len(sys.argv) > 3 and sys.argv[3] == "foreground"
     root = Path(tempfile.mkdtemp(prefix="taskfleet-lifetime-", dir="/var/tmp"))
     user = root / "user"
     user.mkdir()
@@ -64,6 +65,11 @@ def main():
     run("git", "-C", str(repo), "config", "user.name", "Lifetime fixture")
     run("git", "-C", str(repo), "config", "user.email", "fixture@example.invalid")
     run("git", "-C", str(repo), "commit", "--allow-empty", "-qm", "base")
+    creator_socket = root / "creator.sock"
+    if foreground:
+        run(str(tools / "tmux"), "-f", "/dev/null", "-S", str(creator_socket), "new-session", "-d", "-s", "creator", env=minimal)
+        pid = run(str(tools / "tmux"), "-S", str(creator_socket), "display-message", "-p", "#{pid}", env=minimal).stdout.strip()
+        minimal["TMUX"] = f"{creator_socket},{pid},0"
     token = uuid.uuid4().hex[:12]
     parent_unit = "taskfleet-test-parent-" + token
     tmux_unit = "taskfleet-tmux-" + hashlib.sha256(os.fsencode(state)).hexdigest()[:20]
@@ -74,8 +80,9 @@ def main():
     caller.write_text(
         "import json, subprocess, time, os\n"
         + "out = subprocess.run(" + repr([str(binary), "run", "create", "--kind", "spinoff",
-          "--headless", "--title", "lifetime fixture", "--task", "sleep fixture",
-          "--no-hooks", "--idempotency-key", token, "--json"]) + ", env=" + repr(minimal)
+          "--title", "lifetime fixture", "--task", "sleep fixture",
+          "--no-hooks", "--idempotency-key", token, "--notify",
+          "sleep 1; printf delivered > " + str(root / "hook-done"), "--json"] + ([] if foreground else ["--headless"])) + ", env=" + repr(minimal)
         + ", cwd=" + repr(str(repo)) + ", capture_output=True, text=True)\n"
         + "open(" + repr(str(root / "caller.stderr")) + ", 'w').write(out.stderr)\n"
         + "assert out.returncode == 0, out.stderr\n"
@@ -94,6 +101,10 @@ def main():
         run_dir = state / "runs" / run_id
         node = json.loads((run_dir / "nodes" / "n-0001.json").read_text())
         socket = Path(node["tmux_identity"]["socket"])
+        session = node["tmux_identity"]["session"]
+        assert json.loads((run_dir / "manifest.json").read_text())["managed_tmux_session"] == session
+        if foreground:
+            run(str(tools / "tmux"), "-S", str(creator_socket), "kill-server", env=minimal)
         server_pid = node["tmux_identity"]["server_pid"]
         worker_pid = node["agent_pid"]
         supervisor_pid = int((run_dir / "supervisor.pid").read_text().split()[0])
@@ -110,7 +121,7 @@ def main():
         # Reach the recorded socket from outside PrivateTmp (SSH-equivalent).
         assert socket.is_relative_to(runtime / "taskfleet"), socket
         assert socket.parent.stat().st_mode & 0o077 == 0
-        run("tmux", "-S", str(socket), "has-session", "-t", "headless", env=minimal)
+        run("tmux", "-S", str(socket), "has-session", "-t", session, env=minimal)
         for _ in range(2):
             result.unlink()
             run("systemctl", "--user", "restart", parent_unit, env=manager_env)
@@ -119,7 +130,7 @@ def main():
             for pid in pids:
                 os.kill(pid, 0)
             assert [Path(f"/proc/{pid}/cgroup").read_text() for pid in pids] == cgroups
-            run("tmux", "-S", str(socket), "has-session", "-t", "headless", env=minimal)
+            run("tmux", "-S", str(socket), "has-session", "-t", session, env=minimal)
         # Reattach only this supervisor; its independently owned server/worker
         # must not die with the old supervisor unit.
         own_units = run("systemctl", "--user", "list-units", "--all", "--plain", "--no-legend",
@@ -139,12 +150,15 @@ def main():
         wait(lambda: not checkout.exists(), "worktree cleanup")
         wait(lambda: run("tmux", "-S", str(socket), "has-session", check=False).returncode != 0,
              "last session/server cleanup")
-        wait(lambda: run("systemctl", "--user", "is-active", tmux_unit, env=manager_env,
-                         check=False).returncode != 0, "tmux service collection")
+        wait(lambda: not run("systemctl", "--user", "list-units", "--plain", "--no-legend",
+                             "--state=active,activating,deactivating", tmux_unit + "-*", env=manager_env).stdout.strip(), "tmux service collection")
+        wait(lambda: (root / "hook-done").exists(), "delayed notification completes after supervisor exit", seconds=5)
+        wait(lambda: not run("systemctl", "--user", "list-units", "--plain", "--no-legend",
+                             "--state=active,activating,deactivating", f"taskfleet-supervise-{run_id}-*", env=manager_env).stdout.strip(), "supervisor service collection")
         print(json.dumps({"real_user_manager": True, "private_tmp": True,
                           "minimal_environment": sorted(minimal), "parent_restarts": 2,
                           "idempotent_create": True, "worker_and_server_survived": True,
-                          "reattach": True, "explicit_merge_cleanup": True}))
+                          "reattach": True, "explicit_merge_cleanup": True, "foreground": foreground, "delayed_notify": True}))
     except Exception as error:
         if isinstance(error, subprocess.CalledProcessError):
             print(error.stderr, file=sys.stderr)
@@ -154,7 +168,12 @@ def main():
         raise
     finally:
         # Only services whose unique names derive from this disposable home/run.
-        run("systemctl", "--user", "stop", parent_unit, tmux_unit, env=manager_env, check=False)
+        run("systemctl", "--user", "stop", parent_unit, env=manager_env, check=False)
+        units = run("systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", tmux_unit + "-*", env=manager_env).stdout.splitlines()
+        for line in units:
+            run("systemctl", "--user", "stop", line.split()[0], env=manager_env, check=False)
+        if foreground:
+            run(str(tools / "tmux"), "-S", str(creator_socket), "kill-server", env=minimal, check=False)
         if run_id:
             units = run("systemctl", "--user", "list-units", "--all", "--plain", "--no-legend",
                         f"taskfleet-supervise-{run_id}-*", env=manager_env).stdout.splitlines()

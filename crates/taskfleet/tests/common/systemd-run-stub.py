@@ -11,6 +11,7 @@ args = sys.argv[1:]
 assert "--user" in args and "--collect" in args, "must use a collected USER service"
 env = os.environ.copy()
 log = os.devnull
+assert "notify" not in args or "--property=ExitType=cgroup" in args, "notify hooks must survive main PID exit"
 kind = None
 cwd = None
 while args:
@@ -29,7 +30,7 @@ while args:
     elif arg.startswith("--property=StandardError=append:"):
         log = arg.split("append:", 1)[1].replace("%%", "%")
 if kind != "notify":
-    sys.exit(0)  # fake tmux owns no server process
+    sys.exit(subprocess.run(args, env=env, cwd=cwd, check=False).returncode)  # fixture foreground server
 with tempfile.TemporaryDirectory(prefix="notify-", dir=env["XDG_RUNTIME_DIR"]) as tmp:
     address = tmp + "/n"
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

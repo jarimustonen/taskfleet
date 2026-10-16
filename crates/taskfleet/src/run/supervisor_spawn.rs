@@ -262,7 +262,11 @@ fn linux_supervise_command(
             path.display()
         ));
     }
-    cmd.arg(format!("--property=StandardOutput=append:{log}"))
+    // Keep asynchronous notify hooks alive after the supervisor's main PID
+    // exits; the unit is collected when its last child finishes, without
+    // blocking the supervisor tick or adding another teardown actor.
+    cmd.arg("--property=ExitType=cgroup")
+        .arg(format!("--property=StandardOutput=append:{log}"))
         .arg(format!("--property=StandardError=append:{log}"))
         .arg("--");
     let inner = supervise_command()?;
@@ -394,17 +398,23 @@ pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, 
         let receipt = tempfile::NamedTempFile::new_in(crate::linux_lifetime::private_dir()?)
             .map_err(|e| CliError::system("io_error", e.to_string()))?;
         let mut cmd = linux_supervise_command(run_id, &log_path, Some(receipt.path()))?;
-        if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
-            append_spawn_diag(&log_path, &e.message);
-            return Ok(SupervisorSpawn::Unconfirmed { reason: e.message });
-        }
+        let launch = spawn_and_reap(&mut cmd, run_id);
         let frame = std::fs::read(receipt.path()).unwrap_or_default();
-        Ok(match crate::run::supervisor_readiness::parse_readiness(&frame) {
-            crate::run::supervisor_readiness::Readiness::Ready { pid } => SupervisorSpawn::Confirmed { pid },
-            _ => SupervisorSpawn::Unconfirmed {
+        use crate::run::supervisor_readiness::{parse_readiness, Readiness};
+        let outcome = match (launch, parse_readiness(&frame)) {
+            (Ok(()), Readiness::Ready { pid }) => SupervisorSpawn::Confirmed { pid },
+            (_, Readiness::Error { code, message }) => SupervisorSpawn::Unconfirmed {
+                reason: format!("supervisor reported a boot error: {code}: {message}"),
+            },
+            (Err(e), _) => SupervisorSpawn::Unconfirmed { reason: e.message },
+            (Ok(()), _) => SupervisorSpawn::Unconfirmed {
                 reason: "user service confirmed boot without a valid private PID receipt; inspect supervisor.stderr.log".into(),
             },
-        })
+        };
+        if let SupervisorSpawn::Unconfirmed { reason } = &outcome {
+            append_spawn_diag(&log_path, reason);
+        }
+        Ok(outcome)
     }
     #[cfg(not(target_os = "linux"))]
     {

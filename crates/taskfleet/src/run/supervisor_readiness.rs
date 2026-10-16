@@ -351,7 +351,10 @@ impl ReadinessReporter {
     /// flattened so the single-line wire format holds.
     pub fn error(&mut self, code: &str, message: &str) {
         let flat = message.replace(['\n', '\t'], " ");
-        self.emit(format!("{}{code}\t{flat}\n", TAG_ERROR as char));
+        let frame = format!("{}{code}\t{flat}\n", TAG_ERROR as char);
+        #[cfg(target_os = "linux")]
+        crate::linux_lifetime::write_receipt(&frame);
+        self.emit(frame);
     }
 
     fn emit(&mut self, msg: String) {

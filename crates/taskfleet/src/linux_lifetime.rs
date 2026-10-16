@@ -140,19 +140,10 @@ fn manager_error(reason: String) -> CliError {
 /// receipt keeps the told PID even if a fast supervisor exits before `StartUnit`
 /// returns and removes its normal PID file. No pid liveness guess is needed.
 pub(crate) fn notify_ready(pid: u32) {
-    use std::io::Write;
     use std::os::linux::net::SocketAddrExt;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::net::{SocketAddr, UnixDatagram};
-    if let Some(path) = std::env::var_os("TASKFLEET_READINESS_FILE") {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-        {
-            let _ = writeln!(file, "R{pid}");
-        }
-    }
+    write_receipt(&format!("R{pid}\n"));
     let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
         return;
     };
@@ -164,6 +155,20 @@ pub(crate) fn notify_ready(pid: u32) {
     };
     if let (Ok(socket), Ok(address)) = (UnixDatagram::unbound(), address) {
         let _ = socket.send_to_addr(b"READY=1", &address);
+    }
+}
+
+/// Preserve typed boot failures as well as readiness across the manager boundary.
+pub(crate) fn write_receipt(frame: &str) {
+    use std::io::Write;
+    if let Some(path) = std::env::var_os("TASKFLEET_READINESS_FILE") {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            let _ = file.write_all(frame.as_bytes());
+        }
     }
 }
 
@@ -217,7 +222,7 @@ impl Drop for TmuxBootstrap {
 pub(crate) fn start_tmux(cwd: &Path) -> Result<TmuxBootstrap, CliError> {
     let socket = tmux_socket()?;
     let bin = resolve_tmux()?;
-    let unit = format!("taskfleet-tmux-{}", home_key()?);
+    let unit = format!("taskfleet-tmux-{}-{}", home_key()?, ulid::Ulid::new());
     let mut cmd = service(&unit, "exec")?;
     let cwd = cwd
         .canonicalize()

@@ -3,10 +3,12 @@ created: 2026-10-16
 updated: 2026-10-16
 type: bug
 reporter: jari
-status: untriaged
+status: fixed
 priority: normal
 provenance: agent:open-habitat-wrapup
 source_ref: agent:open-habitat-wrapup/reporter:jari/id:oh-taskfleet-terminal-supervisors-01m509jz-01m50a7
+closed: 2026-10-16
+closed_by: pi
 ---
 
 # Terminal failed supervisors block authorized worktree discard indefinit…
@@ -26,3 +28,9 @@ The repository records the fix in commit `26e3e226` (`Allow failed caller superv
 
 **Affected area:** `crates/taskfleet/src/supervise/cleanup.rs` and the `run discard` lifecycle. **Reproduction:** reported in the filed incident for two v0.13.1 runs; not independently reproduced here. **Fix sketch:** already implemented and tested in the fix commit; no further change indicated by this report.
 <!-- intakectl:analysis:end job:0c4639eb-e36e-4e0f-bf8d-b9544d7b9598 generation:0 -->
+
+## Resolution
+
+### 2026-10-16T07:30:58Z · @pi
+
+Verified fix 26e3e226 is included in published v0.14.0; no additional implementation required.

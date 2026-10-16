@@ -3,13 +3,16 @@ created: 2026-10-16
 updated: 2026-10-16
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m51nrfvbqwsybz0gdggz6q4b/request:transcript-paths
 originating_run: 01m51nrfvbqwsybz0gdggz6q4b
 originating_run_kind: spinoff
 related: ['@durable-worker-evidence']
+lane: open-habitat
+lane_seq: 30
+collision: [supervise-cleanup, run-public-contract]
 ---
 
 # Expose live and evidence transcript paths for run readers

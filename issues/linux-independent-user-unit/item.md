@@ -3,13 +3,16 @@ created: 2026-10-16
 updated: 2026-10-16
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m51nrfvbqwsybz0gdggz6q4b/request:user-unit
 originating_run: 01m51nrfvbqwsybz0gdggz6q4b
 originating_run_kind: spinoff
 related: ['@caller-owned-agent-runs']
+lane: open-habitat
+lane_seq: 10
+collision: [supervise-cleanup, run-public-contract]
 ---
 
 # Launch Linux supervisors and workers in independent user units

@@ -296,10 +296,49 @@ pub fn write_agent_launcher(
         inner_body.extend_from_slice(&shell_literal_path(&extension));
         inner_body.extend_from_slice(b"\n");
     }
+    let claude_session = if selected.harness == "claude" {
+        // These flags could replace our session-bound hooks or direct them at a
+        // resumed unrelated session. Reject rather than silently override policy.
+        for arg in &selected.command[1..] {
+            if [
+                "--settings",
+                "--session-id",
+                "--resume",
+                "--continue",
+                "--fork-session",
+            ]
+            .iter()
+            .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+                || arg == "--"
+                || arg == "-c"
+                || arg.starts_with("-r")
+            {
+                return Err(CliError::user("recorded_agent_session_conflict",
+                    format!("Claude candidate argv contains Taskfleet-owned settings/session flag {arg:?}")));
+            }
+        }
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
     inner_body.extend_from_slice(b"\nexec");
     for arg in &selected.command {
         inner_body.push(b' ');
         inner_body.extend_from_slice(shell_literal(arg).as_bytes());
+    }
+    if let Some(session) = &claude_session {
+        let settings = crate::claude_hooks::settings(
+            &self_exe,
+            &state_root,
+            run_id,
+            node_id,
+            attempt,
+            session,
+        );
+        inner_body.extend_from_slice(b" --session-id ");
+        inner_body.extend_from_slice(shell_literal(session).as_bytes());
+        inner_body.extend_from_slice(b" --settings ");
+        inner_body.extend_from_slice(shell_literal(&settings.to_string()).as_bytes());
     }
     if pi_session.is_some() {
         inner_body.extend_from_slice(b" --extension \"$TASKFLEET_MESSAGE_EXTENSION\"");
@@ -1173,7 +1212,7 @@ fn absolute_path(path: &Path) -> std::io::Result<PathBuf> {
         Ok(std::env::current_dir()?.join(path))
     }
 }
-fn shell_literal(value: &str) -> String {
+pub(crate) fn shell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 #[cfg(unix)]
@@ -1341,12 +1380,41 @@ pub(crate) mod tests {
             std::fs::read_to_string(run_dir.join("candidate-launch-n-0001-attempt-0.sh")).unwrap();
         let outer =
             std::fs::read_to_string(run_dir.join("agent-launch-n-0001-attempt-0.sh")).unwrap();
-        assert!(inner.contains("exec 'claude' --print \"$@\""));
+        assert!(inner.contains("exec 'claude' --session-id"));
+        assert!(inner.contains(" --settings "));
+        assert!(inner.contains(" --print \"$@\""));
         assert!(!inner.contains("--pi-session"));
         assert!(inner.starts_with("#!/bin/sh\nset -eu\nunset TASKFLEET_CREATOR_SESSION\n"));
         assert!(outer.contains("TASKFLEET_ATTEMPT TASKFLEET_CREATOR_SESSION\n"));
         assert!(!outer.contains("export TASKFLEET_RUN_ID="));
         assert!(outer.contains("run-worker"));
+    }
+
+    #[test]
+    fn claude_launcher_rejects_settings_or_session_override() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("runs/01jxsnap000000000000000000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        for flag in [
+            "--settings",
+            "--settings={}",
+            "--session-id=foreign",
+            "--continue",
+            "-rforeign",
+        ] {
+            let mut selection = builtin_agent_selection("claude", false);
+            selection.selected.command.push(flag.into());
+            let error = write_agent_launcher(
+                &run_dir,
+                tmp.path(),
+                &selection,
+                "01jxsnap000000000000000000",
+                "n-0001",
+                0,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "recorded_agent_session_conflict");
+        }
     }
 
     #[test]

@@ -80,6 +80,12 @@ inspect `run show` once and re-establish the wait. Never promise an automatic
 later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
 known run and establish a fresh wait if needed, rather than create a duplicate.
 
+For unattended waits, add `--check-in 30m` (or a shorter interval within the
+host's command budget). `outcome: check-in`, exit `4`, means the condition is
+still unmet: inspect `data.runs[].progress_evidence` and establish a new wait.
+Absent telemetry or prompt evidence is unknown, not health. This remains a plain
+blocking command and requires no desktop or host-specific wake extension.
+
 Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
 stall, or awaiting-input can settle a wait without a terminal success. Resolve
 that condition; `--terminal` waits for the eventual terminal result but answers

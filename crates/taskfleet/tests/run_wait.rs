@@ -1092,3 +1092,110 @@ fn attention_wins_over_orphaned_stall() {
         "attention-required must suppress the stall verdict: {r}"
     );
 }
+
+#[test]
+fn check_in_is_distinct_bounded_and_does_not_mean_healthy() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "check-in");
+    add_node(&home, &run, "n-0001");
+    let before = std::fs::read(home.path().join("runs").join(&run).join("events.jsonl")).unwrap();
+    let start = std::time::Instant::now();
+    let v = run_exit(
+        bin(&home).env("PATH", "").args([
+            "--json",
+            "run",
+            "wait",
+            &run,
+            "--check-in",
+            "40ms",
+            "--timeout",
+            "1s",
+            "--poll-interval",
+            "10s",
+            "--fail-on-error",
+            "--progress",
+        ]),
+        4,
+    );
+    assert_eq!(v["data"]["outcome"], "check-in");
+    assert!(v["data"]["waited_ms"].as_u64().unwrap() >= 40);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    let e = &v["data"]["runs"][0]["progress_evidence"];
+    assert_eq!(e["prompt_signal"], "no-claude-hook-signal-unsupported");
+    assert_eq!(e["telemetry"]["sample"], "absent");
+    assert_eq!(e["worktree_file_change"], "unavailable-not-sampled");
+    assert!(e["node_updated_at"].is_string());
+    assert_eq!(v["data"]["runs"][0]["status"], "pending");
+    assert_eq!(
+        before,
+        std::fs::read(home.path().join("runs").join(&run).join("events.jsonl")).unwrap()
+    );
+}
+
+#[test]
+fn check_in_deadline_precedence_and_multi_run_terminal_mode() {
+    let home = TestHome::new();
+    let pending = pending_run(&home, "live");
+    add_node(&home, &pending, "n-0001");
+    let done = settle_run(&home, "done", "done", json!({"success":true}));
+    for args in [
+        vec!["--any"],
+        vec!["--terminal", "--any", "--fail-on-error"],
+    ] {
+        let v = run_ok(
+            bin(&home)
+                .args([
+                    "--json",
+                    "run",
+                    "wait",
+                    &pending,
+                    &done,
+                    "--check-in",
+                    "1ms",
+                    "--timeout",
+                    "0",
+                ])
+                .args(args),
+        );
+        assert_eq!(v["data"]["outcome"], "condition-met");
+    }
+    let timed = run_exit(
+        bin(&home).args([
+            "--json",
+            "run",
+            "wait",
+            &pending,
+            "--check-in",
+            "20ms",
+            "--timeout",
+            "20ms",
+        ]),
+        2,
+    );
+    assert_eq!(timed["data"]["outcome"], "timed-out");
+    let interval = run_exit(
+        bin(&home).args([
+            "--json",
+            "run",
+            "wait",
+            &pending,
+            &done,
+            "--all",
+            "--terminal",
+            "--check-in",
+            "10ms",
+            "--timeout",
+            "1s",
+        ]),
+        4,
+    );
+    assert_eq!(interval["data"]["outcome"], "check-in");
+    for invalid in ["0", "0ms", "no", "-1s"] {
+        let output = bin(&home)
+            .args(["--json", "run", "wait", &pending, "--check-in", invalid])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(output.stdout, [] as [u8; 0]);
+    }
+}

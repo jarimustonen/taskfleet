@@ -449,3 +449,201 @@ exec /bin/sleep 30
         );
     }
 }
+
+/// A controlled Claude-compatible harness captures the real generated argv.
+/// Its Notification command runs independently of the sleeping/modal worker,
+/// with no Claude account, telemetry, tmux service, jq, or PATH executable lookup.
+#[test]
+fn claude_generated_hooks_detect_and_recover_without_worker_telemetry() {
+    use serde_json::json;
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let tools = NativeSpawnTools::new();
+    let candidate = scratch.path().join("claude fixture.sh");
+    let argv_path = scratch.path().join("argv");
+    std::fs::write(
+        &candidate,
+        format!(
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" > '{}'\nexec /bin/sleep 2\n",
+            argv_path.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(home.path().join("config.toml"), format!(
+        "[profiles.test]\ndescription='fixture'\ncapability='fast'\nresidency='local'\nagents=[{{harness='claude',command=[{}]}}]\n[profile]\ndefault='test'\n",
+        serde_json::to_string(&candidate.display().to_string()).unwrap())).unwrap();
+    let worktree = tools.worktree("worktree");
+    let created = run_ok(command(&home, &tools, &worktree, "fixture").args([
+        "--json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--interactive",
+        "--tmux-session",
+        "fixture",
+        "--title",
+        "hook fixture",
+        "--task",
+        "no real agent",
+    ]));
+    let run = created["data"]["run_id"].as_str().unwrap();
+    let raw = std::fs::read(&argv_path).unwrap();
+    let argv: Vec<_> = raw
+        .split(|b| *b == 0)
+        .map(|s| String::from_utf8(s.to_vec()).unwrap())
+        .collect();
+    let get = |flag| argv[argv.iter().position(|s| s == flag).unwrap() + 1].clone();
+    let session = get("--session-id");
+    let settings: Value = serde_json::from_str(&get("--settings")).unwrap();
+    let hook = settings["hooks"]["Notification"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    let notify = |kind: &str| json!({"session_id":session,"hook_event_name":"Notification","notification_type":kind});
+    let call = |cmd: &str, payload: Value| {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", cmd])
+            .env("PATH", "")
+            .env("TASKFLEET_HOME", scratch.path().join("wrong-home"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&payload).unwrap())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "hook must never answer a permission prompt"
+        );
+        assert_eq!(out.stderr, [] as [u8; 0]);
+    };
+    let show = || {
+        run_ok(
+            Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+                .env("TASKFLEET_HOME", home.path())
+                .args(["--json", "run", "show", run]),
+        )
+    };
+    call(
+        hook,
+        json!({"session_id":session,"hook_event_name":"PostToolUse","tool_response":"x".repeat(70 * 1024)}),
+    );
+    call(hook, notify("permission_prompt"));
+    let first = show();
+    assert_eq!(first["data"]["awaiting_input"], true);
+    assert_eq!(first["data"]["telemetry_counts"]["absent"], 1);
+    let seq = first["data"]["awaiting_input_detail"]["event_seq"].clone();
+    call(hook, notify("permission_prompt"));
+    assert_eq!(show()["data"]["awaiting_input_detail"]["event_seq"], seq);
+    assert_eq!(
+        show()["data"]["awaiting_input_detail"]["open_discussion_count"],
+        1
+    );
+    // A wrong session, subagent or stale attempt cannot resolve the request.
+    call(
+        hook,
+        json!({"session_id":"wrong", "hook_event_name":"UserPromptSubmit"}),
+    );
+    call(
+        hook,
+        json!({"session_id":session,"agent_id":"child","hook_event_name":"UserPromptSubmit"}),
+    );
+    let stale = hook.replace("'--attempt' '0'", "'--attempt' '1'");
+    assert_ne!(stale, hook);
+    call(
+        &stale,
+        json!({"session_id":session,"hook_event_name":"UserPromptSubmit"}),
+    );
+    assert_eq!(show()["data"]["awaiting_input"], true);
+    let waited = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .env("TASKFLEET_HOME", home.path())
+        .env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0")
+        .env("PATH", "")
+        .args([
+            "--json",
+            "run",
+            "wait",
+            run,
+            "--check-in",
+            "1s",
+            "--timeout",
+            "2s",
+            "--fail-on-error",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(waited.status.code(), Some(3));
+    let v: Value = serde_json::from_slice(&waited.stdout).unwrap();
+    assert_eq!(v["data"]["outcome"], "condition-met");
+    assert_eq!(
+        v["data"]["runs"][0]["progress_evidence"]["prompt_signal"],
+        "awaiting-input-reported"
+    );
+    let recovery = settings["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    call(
+        recovery,
+        json!({"session_id":session,"hook_event_name":"PostToolUseFailure"}),
+    );
+    // A different parallel tool finishing is not proof the permission modal closed.
+    assert_eq!(show()["data"]["awaiting_input"], true);
+    call(
+        recovery,
+        json!({"session_id":session,"hook_event_name":"Stop"}),
+    );
+    assert_eq!(show()["data"]["awaiting_input"], false);
+    call(hook, notify("idle_prompt"));
+    assert_eq!(show()["data"]["awaiting_input"], true);
+    // Coexistence: a manual request appended to the generation must survive.
+    let data = scratch.path().join("manual.json");
+    std::fs::write(&data, json!({"discussion_items":[{"topic":"Human fork","options":["Wait"],"recommended_default":"Wait"}]}).to_string()).unwrap();
+    run_ok(
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .env("TASKFLEET_HOME", home.path())
+            .args([
+                "--json",
+                "event",
+                "create",
+                run,
+                "--kind",
+                "node.awaiting_input",
+                "--node-id",
+                "n-0001",
+                "--from-file",
+                data.to_str().unwrap(),
+            ]),
+    );
+    call(
+        recovery,
+        json!({"session_id":session,"hook_event_name":"UserPromptSubmit"}),
+    );
+    assert_eq!(
+        show()["data"]["awaiting_input_detail"]["open_discussion_count"],
+        2
+    );
+    // Explicit cancellation is still the only operator transition here.
+    run_ok(
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .env("TASKFLEET_HOME", home.path())
+            .args(["--json", "run", "cancel", run]),
+    );
+    call(hook, notify("permission_prompt"));
+    assert_eq!(show()["data"]["status"], "cancelled");
+    assert_eq!(show()["data"]["awaiting_input"], false);
+    assert!(!scratch.path().join("wrong-home").exists());
+}

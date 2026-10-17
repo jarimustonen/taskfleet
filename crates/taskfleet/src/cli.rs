@@ -91,6 +91,9 @@ enum Command {
     /// worker launcher immediately before it execs the recorded candidate.
     #[command(name = "worker-handshake", hide = true)]
     WorkerHandshake(crate::worker_handshake::WorkerHandshakeArgs),
+    /// Invocation-local Claude notification/progress hook (no decisions).
+    #[command(name = "claude-hook", hide = true)]
+    ClaudeHook(crate::claude_hooks::HookArgs),
     /// Read-only self-diagnostic: validate schema, skill-sync, deps,
     /// config, and data integrity. `--fix` applies the safe subset.
     Doctor(crate::doctor::DoctorArgs),
@@ -300,6 +303,16 @@ pub(crate) fn run() -> ExitCode {
         };
     }
 
+    if let Command::ClaudeHook(args) = cli.command {
+        return match crate::claude_hooks::dispatch(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                error.emit();
+                ExitCode::from(1) // Claude reserves 2 for a blocking hook decision.
+            }
+        };
+    }
+
     let internal_worker_root = matches!(&cli.command, Command::RunWorker(_))
         .then(|| std::env::var_os("TASKFLEET_INTERNAL_WORKER_STATE_ROOT").map(PathBuf::from))
         .flatten();
@@ -366,7 +379,9 @@ pub(crate) fn run() -> ExitCode {
         Command::Node { action } => crate::node::dispatch(action, output, &logging_warnings),
         Command::Supervise(args) => crate::supervise::dispatch(args, output, &logging_warnings),
         Command::RunWorker(args) => crate::run_worker::dispatch(args),
-        Command::WorkerHandshake(_) => unreachable!("handshake returns before home resolution"),
+        Command::WorkerHandshake(_) | Command::ClaudeHook(_) => {
+            unreachable!("handshake returns before home resolution")
+        }
         // `doctor` owns its exit code directly: §18 requires exit 1 on any
         // `fail` *without* an error envelope (the report on stdout is the
         // answer), which does not map onto the shared `Result` path below.
@@ -431,7 +446,10 @@ fn command_writes_state(command: &Command) -> bool {
             crate::node::NodeAction::List { .. } | crate::node::NodeAction::Show { .. } => false,
         },
         Command::Supervise(_) | Command::RunWorker(_) | Command::Session { .. } => true,
-        Command::Version | Command::Config { .. } | Command::WorkerHandshake(_) => false,
+        Command::Version
+        | Command::Config { .. }
+        | Command::WorkerHandshake(_)
+        | Command::ClaudeHook(_) => false,
         Command::Doctor(args) => args.fix && !args.dry_run,
     }
 }

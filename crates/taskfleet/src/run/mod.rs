@@ -395,7 +395,7 @@ pub enum RunAction {
     /// Emits a structured summary so callers stop hand-rolling poll loops.
     /// Read-only: never
     /// mutates run state. Exit codes: `0` condition met, `1` usage/unknown
-    /// run, `2` timeout, `3` (`--fail-on-error`) a settled run failed.
+    /// run, `2` timeout, `3` (`--fail-on-error`) a settled run failed, `4` check-in.
     Wait {
         /// One or more run ids to wait on.
         #[arg(required = true, num_args = 1..)]
@@ -413,6 +413,11 @@ pub enum RunAction {
         /// larger value for a long campaign.
         #[arg(long, value_parser = wait::parse_duration, default_value = "6h")]
         timeout: Option<Duration>,
+        /// Return a live snapshot after this positive interval if the wait condition
+        /// is still unmet (e.g. `30m`). Outcome `check-in`, exit `4`, never completion
+        /// or timeout. Reinvoke to continue waiting. Timeout wins equal deadlines.
+        #[arg(long, value_parser = wait::parse_check_in)]
+        check_in: Option<Duration>,
         /// Wait only for terminal status, ignoring non-terminal attention signals
         /// (including awaiting input). Default wait still wakes once for attention.
         #[arg(long)]
@@ -795,6 +800,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             all: _,
             any,
             timeout,
+            check_in,
             terminal,
             fail_on_error,
             progress,
@@ -803,6 +809,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             run_ids: run_id,
             any,
             timeout,
+            check_in,
             mode: if terminal {
                 wait::WaitMode::TerminalOnly
             } else {

@@ -602,7 +602,7 @@ fn claude_headless_stub_merges_and_archives_truthful_evidence() {
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     let worker = scratch.path().join("claude-stub.sh");
-    executable(&worker, "#!/bin/sh\n[ \"$1\" = --print ] || exit 42\n[ \"$2\" = -- ] || exit 43\ncase \"$3\" in *'do work'*) ;; *) exit 44 ;; esac\n[ -z \"${TASKFLEET_RUN_ID:-}\" ] || exit 45\nexec /bin/sleep 120\n");
+    executable(&worker, "#!/bin/sh\n[ \"$1\" = --session-id ] || exit 46\n[ \"$3\" = --settings ] || exit 47\nshift 4\n[ \"$1\" = --print ] || exit 42\n[ \"$2\" = -- ] || exit 43\ncase \"$3\" in *'do work'*) ;; *) exit 44 ;; esac\n[ -z \"${TASKFLEET_RUN_ID:-}\" ] || exit 45\nexec /bin/sleep 120\n");
     std::fs::write(home.path().join("config.toml"), format!(
         "[profiles.claude]\ndescription=\"headless fixture\"\ncapability=\"fast\"\nresidency=\"local\"\nagents=[{{harness=\"claude\",command=[\"{}\"]}}]\n[profile]\ndefault=\"claude\"\n", worker.display())).unwrap();
     let worktree = tools.worktree("claude-merged");
@@ -709,7 +709,7 @@ fn claude_headless_nonzero_exit_preserves_unmerged_work() {
     let worker = scratch.path().join("claude-stub.sh");
     executable(
         &worker,
-        "#!/bin/sh\n[ \"$1\" = --print ] || exit 42\n/bin/sleep 1\nexit 17\n",
+        "#!/bin/sh\n[ \"$1\" = --session-id ] || exit 46\n[ \"$3\" = --settings ] || exit 47\nshift 4\n[ \"$1\" = --print ] || exit 42\n/bin/sleep 1\nexit 17\n",
     );
     std::fs::write(home.path().join("config.toml"), format!(
         "[profiles.claude]\ndescription=\"headless fixture\"\ncapability=\"fast\"\nresidency=\"local\"\nagents=[{{harness=\"claude\",command=[\"{}\"]}}]\n[profile]\ndefault=\"claude\"\n", worker.display())).unwrap();

@@ -43,6 +43,12 @@ remain reachable across PrivateTmp namespaces; the manager boundary also works
 from PATH/USER/HOME-only callers. Non-Linux launch remains native. See
 [Linux lifetime](docs/LINUX-LIFETIME.md) for prerequisites, discovery and tests.
 
+Claude notification/progress subprocess hooks in `claude_hooks.rs` feed the
+existing awaiting-input event contract independently of worker telemetry. They
+never answer prompts or grant teardown authority. `run wait --check-in` bounds
+parent inspection without inventing worker state from activity proxies. See
+[Claude prompt signals](docs/CLAUDE-PROMPT-SIGNALS.md) for supported paths and unknowns.
+
 Creator run and optional native-session attribution are immutable display facts,
 not ownership or fan-out edges. See [Creator attribution](docs/CREATOR-ATTRIBUTION.md)
 for the environment input, replay and worker-environment contract.

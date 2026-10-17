@@ -58,3 +58,21 @@ After answering "2. No" the pane showed `Interrupted · What should Claude do in
 - Consider making the default `--timeout` shorter or the timeout envelope carry the same summary.
 
 Pattern lists belong in a small, harness-specific table so new prompts can be added without code changes.
+
+## Implementation scope
+
+The small design is in [design.md](design.md); installed harness source findings
+and the fixture/live distinction are in [harness-evidence.md](harness-evidence.md).
+Native Claude permission/idle notifications feed the existing awaiting-input
+contract; there is no pane/CPU/mtime fallback or lifecycle inference. No change
+to ADR 0001's completion/cleanup authority is needed. Parent check-ins bound
+inspection even when no signal is available. Existing running launchers and
+pre-session auth/trust prompts are not retrofitted or claimed covered.
+
+## Acceptance Criteria
+
+- [ ] Supported Claude permission/idle notification route is connected through generated invocation-local hooks, without relying on ordinary telemetry or agent commands while modal.
+- [ ] Durable awaiting-input grace, notify and default wait work unchanged; recovery, concurrency, foreign-session/stale-attempt/terminal fences and manual coexistence have deterministic evidence.
+- [ ] Explicit check-in returns an unmet interval outcome/exit 4 with elapsed and available projection evidence, distinct from timeout and completion; timing/multi-run/terminal/progress semantics are tested.
+- [ ] Absent/unsupported evidence is explicitly unknown/unavailable and no recursive worktree scan or parent tmux/desktop dependency is added.
+- [ ] Required release gate and focused independent state/trust review pass; documentation distinguishes fixture/source proof from unperformed live authenticated Claude proof.

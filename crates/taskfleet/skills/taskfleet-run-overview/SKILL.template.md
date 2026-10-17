@@ -55,6 +55,12 @@ inspect `run show` once and re-establish the wait. Never promise an automatic
 later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
 known run and establish a fresh wait if needed, rather than create a duplicate.
 
+For unattended waits, add `--check-in 30m` (or a shorter interval within the
+host's command budget). `outcome: check-in`, exit `4`, means the condition is
+still unmet: inspect `data.runs[].progress_evidence` and establish a new wait.
+Absent telemetry or prompt evidence is unknown, not health. This remains a plain
+blocking command and requires no desktop or host-specific wake extension.
+
 Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
 stall, or awaiting-input can settle a wait without a terminal success. Resolve
 that condition; `--terminal` waits for the eventual terminal result but answers
@@ -166,10 +172,17 @@ each has a different remedy:
   from the preserved worktree; or `run cancel`. When a run matches both this
   and a stall shape, attention wins and the stall flags are cleared, because
   the manual finish is the right fix.
-- `awaiting_input` — the worker is alive and has asked for a human decision.
+- `awaiting_input` — a durable human-decision request from the worker or a
+  Claude harness permission/idle notification (not proof of process liveness).
   `awaiting_input_detail.discussion_items[]` holds the questions with their
   options and recommended defaults. This is the one stuck shape whose answer
-  belongs to a person, not to a command.
+  belongs to a person, not to a command. New Claude launchers install local
+  Notification hooks; they work even with absent ordinary telemetry. Hook-origin
+  details have `source: claude-notification-v1`. Progress hooks clear only their
+  own unmixed request; manual forks still need explicit resolution. No prompt is
+  auto-answered. Existing runs, disabled hooks, auth/trust before session startup,
+  and unsupported harness signals can remain unknown; use bounded check-ins.
+  See `docs/CLAUDE-PROMPT-SIGNALS.md` for coverage and limitations.
 
 ## What `run show` adds
 
@@ -228,7 +241,7 @@ taskfleet node show "$run_id" n-0001 --output json |
 ## What `run wait` returns
 
 Waiting can cover several ids, so its shape differs from `run show`:
-`data.outcome` is `condition-met` or `timed-out`, and per-run results are in
+`data.outcome` is `condition-met`, `timed-out`, or `check-in`, and per-run results are in
 `data.runs[]` (`run_id`, `status`, `merged`, `report_only`, `landed`,
 `landed_method`, `stalled`, `attention_required`, `awaiting_input`,
 `preserved_work`, plus `summary`, `error`, `attention`,
@@ -236,9 +249,20 @@ Waiting can cover several ids, so its shape differs from `run show`:
 is no `data.status`; read the runs array. Read `outcome` first: `timed-out` is
 not completion, and the field is authoritative even when a pipeline swallowed
 the exit code. Exit codes are `0` condition met, `1` usage or unknown run,
-`2` timeout, and `3` under `--fail-on-error` when a settled run did not finish
+`2` timeout, `4` explicit check-in (still unmet), and `3` under `--fail-on-error` when a settled run did not finish
 `done`, or finished `done` without a recorded `run merge` (`report_only`)
 while still holding `preserved_work`.
+
+For bounded overnight visibility, add `--check-in 30m`. This returns once after
+that interval with `outcome: check-in`, exit `4`, if the requested condition is
+still unmet. It is neither timeout nor completion: inspect the facts and reinvoke
+the same wait to continue. A met condition wins; timeout wins an equal deadline.
+`data.waited_ms` measures this wait. Each run's `progress_evidence` adds run age,
+node projection update time, attempt and advisory telemetry (including absent or
+stale). File-change, commit and pane evidence are explicitly unavailable, not
+sampled; a projection timestamp is not proof of work. A missing prompt signal is
+unknown, not a healthy worker. This needs no tmux client, browser, or wake API in
+the parent environment and works with the same host-neutral waiting guidance above.
 
 A run *settles* the wait when it goes terminal or when it can no longer
 progress on its own: stalled, attention-required, or awaiting input past a

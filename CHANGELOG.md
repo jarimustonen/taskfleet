@@ -9,6 +9,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Claude permission/idle notifications now surface through awaiting-input even without worker telemetry; `run wait --check-in <duration>` returns a distinct live check-in (exit 4) with bounded evidence.
+
 ### Changed
 
 ### Fixed

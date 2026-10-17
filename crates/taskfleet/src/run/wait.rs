@@ -56,6 +56,7 @@
 //!   With `--fail-on-error`, every settled run finished `done`.
 //! - `1` — usage / unknown run id / internal error (a `CliError`).
 //! - `2` — `--timeout` reached before the wait condition was met.
+//! - `4` — explicit `--check-in` interval reached; condition still unmet.
 //! - `3` — `--fail-on-error` and the wait condition was met but ≥1 settled
 //!   run was `failed`/`cancelled`/stalled/attention-required. A stalled or
 //!   attention-required run is still `pending`/`running`, so exit `3` can
@@ -131,6 +132,7 @@ pub struct Args<'a> {
     /// `None` (only reachable by a library caller that omits it) keeps the
     /// original block-until-terminal behaviour.
     pub timeout: Option<Duration>,
+    pub check_in: Option<Duration>,
     /// Ignore non-terminal attention verdicts when deciding whether to return.
     pub mode: WaitMode,
     pub fail_on_error: bool,
@@ -155,6 +157,8 @@ pub struct Args<'a> {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 struct RunOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress_evidence: Option<ProgressEvidence>,
     run_id: String,
     status: &'static str,
     /// Report-based landing marker: the terminal `node.report` is a confirmed
@@ -302,14 +306,69 @@ struct WaitData {
     runs: Vec<RunOutcome>,
 }
 
+/// Cheap recorded observations, never a claim that the worker is making progress.
+/// Node timestamps describe projection writes, NOT file/commit/pane activity.
+#[derive(Serialize)]
+struct ProgressEvidence {
+    run_age_secs: i64,
+    node_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    attempt: Option<u32>,
+    prompt_signal: &'static str,
+    telemetry: Option<taskfleet_core::TelemetryView>,
+    telemetry_error: Option<String>,
+    worktree_file_change: &'static str,
+    last_commit: &'static str,
+    pane: &'static str,
+}
+
+fn progress_evidence(paths: &RunPaths) -> Result<ProgressEvidence, CliError> {
+    let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("valid node id");
+    let (manifest, node) = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((read_manifest_opt(paths)?, read_node_opt(paths, &node_id)?))
+    })
+    .map_err(from_core)?;
+    let manifest = manifest
+        .ok_or_else(|| CliError::system("io_error", "manifest disappeared during check-in"))?;
+    let (telemetry, telemetry_error) = match taskfleet_core::read_telemetry(paths, &node_id) {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
+    Ok(ProgressEvidence {
+        run_age_secs: chrono::Utc::now()
+            .signed_duration_since(manifest.created_at)
+            .num_seconds()
+            .max(0),
+        node_updated_at: node.as_ref().map(|n| n.updated_at),
+        attempt: node.as_ref().map(|n| n.retry_attempts),
+        prompt_signal: if node.as_ref().is_some_and(|n| n.awaiting_input.is_some()) {
+            "awaiting-input-reported"
+        } else if manifest
+            .agent_selection
+            .as_ref()
+            .is_some_and(|s| s.selected.harness == "claude")
+        {
+            "not-observed-unknown"
+        } else {
+            "no-claude-hook-signal-unsupported"
+        },
+        telemetry,
+        telemetry_error,
+        worktree_file_change: "unavailable-not-sampled",
+        last_commit: "unavailable-not-sampled",
+        pane: "unavailable-not-sampled",
+    })
+}
+
 /// Why the poll loop stopped.
-#[derive(Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Stop {
     /// The wait condition (`--all`/`--any`) was satisfied.
     ConditionMet,
     /// `--timeout` elapsed first.
     TimedOut,
+    /// Explicit interval return: the requested condition is still unmet.
+    CheckIn,
 }
 
 impl Stop {
@@ -317,6 +376,7 @@ impl Stop {
         match self {
             Self::ConditionMet => "condition-met",
             Self::TimedOut => "timed-out",
+            Self::CheckIn => "check-in",
         }
     }
 }
@@ -360,6 +420,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         &runs,
         condition,
         args.timeout,
+        args.check_in,
         args.poll_interval,
         args.progress,
         args.mode == WaitMode::TerminalOnly,
@@ -377,7 +438,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             latched.awaiting_input = None;
             latched.caller = None;
         }
-        outcomes.push(read_outcome(run_id, paths, latched)?);
+        let mut outcome = read_outcome(run_id, paths, latched)?;
+        if args.check_in.is_some() {
+            outcome.progress_evidence = Some(progress_evidence(paths)?);
+        }
+        outcomes.push(outcome);
     }
 
     // Decide the exit code from the assembled outcomes:
@@ -391,6 +456,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // without ever finishing `done`, so each grades as a failure too.
     let exit_code: u8 = match stop {
         Stop::TimedOut => 2,
+        Stop::CheckIn => 4,
         Stop::ConditionMet
             if args.fail_on_error
                 && any_settled_error(&outcomes, args.mode == WaitMode::TerminalOnly) =>
@@ -440,6 +506,7 @@ fn wait_loop(
     runs: &[(String, RunPaths)],
     condition: Condition,
     timeout: Option<Duration>,
+    check_in: Option<Duration>,
     poll_interval: Option<Duration>,
     progress: bool,
     terminal_only: bool,
@@ -528,14 +595,16 @@ fn wait_loop(
         if met {
             return Ok((Stop::ConditionMet, settle_now));
         }
-        if let Some(t) = timeout {
-            if start.elapsed() >= t {
-                return Ok((Stop::TimedOut, settle_now));
-            }
+        if let Some(stop) = deadline_stop(timeout, check_in, start.elapsed()) {
+            return Ok((stop, settle_now));
         }
 
-        // Sleep, clamped to whatever timeout budget remains.
-        let sleep_dur = match timeout {
+        // Clamp to both deadlines; timeout is checked first on an equal deadline.
+        let deadline = match (timeout, check_in) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let sleep_dur = match deadline {
             Some(t) => backoff.min(t.saturating_sub(start.elapsed())),
             None => backoff,
         };
@@ -549,6 +618,22 @@ fn wait_loop(
         if poll_interval.is_none() {
             backoff = (backoff * 2).min(BACKOFF_CAP);
         }
+    }
+}
+
+// Choose by requested deadlines, not which elapsed check runs first: a delayed
+// poll that overshoots both must still report the earlier check-in correctly.
+fn deadline_stop(
+    timeout: Option<Duration>,
+    check_in: Option<Duration>,
+    elapsed: Duration,
+) -> Option<Stop> {
+    if timeout.is_some_and(|t| elapsed >= t && check_in.is_none_or(|c| t <= c)) {
+        Some(Stop::TimedOut)
+    } else if check_in.is_some_and(|c| elapsed >= c) {
+        Some(Stop::CheckIn)
+    } else {
+        None
     }
 }
 
@@ -892,6 +977,7 @@ fn read_outcome(
     };
 
     Ok(RunOutcome {
+        progress_evidence: None,
         run_id: run_id.to_string(),
         status: status_kebab(status),
         merged,
@@ -1051,6 +1137,10 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     r.report_only,
                     r.preserved_work.len()
                 );
+                if let Some(e) = &r.progress_evidence {
+                    print!("  age_secs={} node_updated_at={:?} prompt_signal={} worktree_evidence=unavailable",
+                        e.run_age_secs, e.node_updated_at, e.prompt_signal);
+                }
                 if let Some(c) = &r.caller_agent {
                     print!(
                         "  caller_agent={} generation={} settled_generation={:?}",
@@ -1119,6 +1209,15 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     Ok(())
 }
 
+/// A check-in is an interval, not an immediate observation.
+pub fn parse_check_in(s: &str) -> Result<Duration, String> {
+    let d = parse_duration(s)?;
+    if d.is_zero() {
+        return Err(format!("invalid check-in '{s}': interval must be positive"));
+    }
+    Ok(d)
+}
+
 /// clap value parser for `--timeout` / `--poll-interval`. Accepts humanly
 /// written durations (`30s`, `5m`, `1h`, `2h 30m`); a malformed value is
 /// rejected up front by clap as `invalid_arguments` (AGENTS-AI-FIRST-CLI §4),
@@ -1154,6 +1253,27 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deadlines_remain_ordered_after_scheduler_overshoot() {
+        let s = Duration::from_secs;
+        assert_eq!(
+            deadline_stop(Some(s(10)), Some(s(5)), s(20)),
+            Some(Stop::CheckIn)
+        );
+        assert_eq!(
+            deadline_stop(Some(s(5)), Some(s(10)), s(20)),
+            Some(Stop::TimedOut)
+        );
+        assert_eq!(
+            deadline_stop(Some(s(5)), Some(s(5)), s(5)),
+            Some(Stop::TimedOut)
+        );
+        assert_eq!(deadline_stop(None, Some(s(5)), s(4)), None);
+        assert_eq!(deadline_stop(None, Some(s(5)), s(5)), Some(Stop::CheckIn));
+        assert_eq!(deadline_stop(Some(s(5)), None, s(5)), Some(Stop::TimedOut));
+        assert_eq!(deadline_stop(None, None, s(20)), None);
+    }
 
     #[test]
     fn parse_duration_accepts_human_units() {
@@ -1211,6 +1331,7 @@ mod tests {
     #[test]
     fn any_settled_error_only_counts_terminal_failures() {
         let mk = |status: &'static str| RunOutcome {
+            progress_evidence: None,
             run_id: "r".into(),
             status,
             merged: false,

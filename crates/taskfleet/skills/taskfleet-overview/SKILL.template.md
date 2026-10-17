@@ -41,6 +41,12 @@ inspect `run show` once and re-establish the wait. Never promise an automatic
 later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
 known run and establish a fresh wait if needed, rather than create a duplicate.
 
+For unattended waits, add `--check-in 30m` (or a shorter interval within the
+host's command budget). `outcome: check-in`, exit `4`, means the condition is
+still unmet: inspect `data.runs[].progress_evidence` and establish a new wait.
+Absent telemetry or prompt evidence is unknown, not health. This remains a plain
+blocking command and requires no desktop or host-specific wake extension.
+
 Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
 stall, or awaiting-input can settle a wait without a terminal success. Resolve
 that condition; `--terminal` waits for the eventual terminal result but answers
@@ -112,7 +118,10 @@ starts the supervisor. Its `data` payload carries `run_id`, `node_id`, `kind`,
 The supervisor then records what it is told: worker exit, telemetry, reports.
 `run show <id>` reads the current state; `run wait <id>...` blocks until runs
 settle (terminal or attention-required) and is the right tool instead of a
-hand-rolled polling loop. A timeout is not completion. `event tail <id> --follow` streams the event log for live monitoring.
+hand-rolled polling loop. Add `--check-in 30m` for bounded visibility: exit `4`
+and `data.outcome: check-in` mean the condition is still unmet; inspect
+`data.runs[].progress_evidence` and reinvoke. Missing telemetry or prompt signals
+are unknown, not health. A timeout is not completion. `event tail <id> --follow` streams the event log for live monitoring.
 
 The worker closes with `run merge <run-id> [--source <branch>]
 [--report-file <path>]`, which rebases and merges the branch into its source,

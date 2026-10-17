@@ -1,5 +1,6 @@
 //! The sole Taskfleet command-line engine.
 
+mod claude_hooks;
 mod cli;
 // User-facing configuration file (`~/.taskfleet/config.toml`), the `file`
 // layer of the flag > env > file > default precedence (AGENTS-AI-FIRST-CLI §8).

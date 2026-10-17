@@ -64,6 +64,11 @@ another repository.
 
 ## Failure / incomplete-command inventory
 
+- First full-gate attempt failed at clippy (`format_push_string`, exit 101):
+  the new snapshot assembly used `push_str(&format!(...))`. Replaced it with
+  `writeln!` into the existing string, with identical snapshot bytes, committed
+  the mechanical test-only repair, and reran the exact full gate. No validation
+  step was waived. Detailed first-attempt log: `history/portable-skills-full-gate.log`.
 - The reviewer independently ran `skill_examples` while the new contract snapshot
   was being amended. Its snapshot assertion failed and produced
   `skill_examples__portable_workflow_contracts.snap.new`; the review itself

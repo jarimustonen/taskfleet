@@ -68,6 +68,7 @@
 //!   `$var` placeholder is left as an opaque string value: clap accepts it as a
 //!   positional/flag value and never reaches it before exiting on `--help`.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -400,7 +401,7 @@ fn portable_workflow_contracts_are_rendered_and_reviewable() {
         assert!(out.status.success());
         let body = String::from_utf8(out.stdout).unwrap();
         let section = markdown_section(&body, heading).expect("rendered capability branch");
-        contracts.push_str(&format!("\n# {skill}\n{heading}\n{section}\n"));
+        writeln!(contracts, "\n# {skill}\n{heading}\n{section}").unwrap();
     }
     insta::assert_snapshot!("portable_workflow_contracts", contracts);
 }

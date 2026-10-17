@@ -2,7 +2,7 @@
 created: 2026-10-16
 updated: 2026-10-17
 type: feature
-status: in-progress
+status: done
 priority: normal
 provenance: ai-review
 source_ref: taskfleet:01m521vczarx5bkx086n64t1t2/review-finding:sha1:a812016fda7c4b258a686b029d1c68af15d6cce1
@@ -19,6 +19,8 @@ review_target: taskfleet@8464733b0d69cf1342eed64995163fd36c33523d:crates/taskfle
 lane: merge
 lane_seq: -10
 collision: [core-run-state]
+closed: 2026-10-17
+closed_by: worker
 ---
 
 # Expose the integrated merge OID for Taskfleet-owned runs
@@ -64,7 +66,7 @@ explicitly without this evidence.
 
 ## Acceptance Criteria
 
-- [ ] An actual ordinary Taskfleet-owned rebase-and-merge exposes its exact integrated OID and operation identity through retained native reads.
-- [ ] An ordinary merge round-trip fixture uses the real producer stream/report, not a manufactured caller-only event, and verifies the Git range after teardown/restart.
-- [ ] Caller-owned intent, fencing and crash recovery retain their existing authority and invariants.
-- [ ] Legacy/pruned evidence is explicit; consumer documentation does not imply worker_oid is the historical source result.
+- [x] An actual ordinary Taskfleet-owned rebase-and-merge exposes its exact integrated OID and operation identity through retained native reads.
+- [x] An ordinary merge round-trip fixture uses the real producer stream/report, not a manufactured caller-only event, and verifies the Git range after teardown/restart.
+- [x] Caller-owned intent, fencing and crash recovery retain their existing authority and invariants.
+- [x] Legacy/pruned evidence is explicit; consumer documentation does not imply worker_oid is the historical source result.

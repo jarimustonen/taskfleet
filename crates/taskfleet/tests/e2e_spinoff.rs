@@ -89,6 +89,13 @@ fn terminal_history_round_trip(interactive: bool, status: &str) {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
+    // Rebase creates new commits without per-command identity overrides.
+    // Declare the committer in this disposable repository, never globally.
+    git(tools.repo_path(), &["config", "user.name", "Fixture"]);
+    git(
+        tools.repo_path(),
+        &["config", "user.email", "fixture@example.invalid"],
+    );
     let worker = scratch.path().join("worker.sh");
     executable(&worker, "#!/bin/sh\nexec /bin/sleep 120\n");
     std::fs::write(

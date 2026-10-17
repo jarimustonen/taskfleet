@@ -82,7 +82,7 @@ expression: value
       },
       {
         "cli_version": "0.15.0",
-        "description": "Spawn one autonomous read-only worker that analyses an already-filed bug and writes its findings into that issue under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the issue update back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on an existing bug. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`).",
+        "description": "Spawn one autonomous read-only worker that analyses a reported bug and writes its findings into its issue or a repository report under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the analysis artifact back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on a bug slug, report path, or explicit report text. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`).",
         "name": "worktree-bug-analysis",
         "skill_schema_version": 1
       },
@@ -100,25 +100,25 @@ expression: value
       },
       {
         "cli_version": "0.15.0",
-        "description": "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and the issuectl DAG, spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`).",
+        "description": "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and accepted work (the issuectl DAG when enabled), spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`).",
         "name": "stint-start",
         "skill_schema_version": 1
       },
       {
         "cli_version": "0.15.0",
-        "description": "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the issuectl DAG with foreign-run reservations, then run `/wrap-up` and any declared reset. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree.",
+        "description": "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the repository schedule when enabled, then save repository lessons and perform only authorized resets. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree.",
         "name": "stint-handoff",
         "skill_schema_version": 1
       },
       {
         "cli_version": "0.15.0",
-        "description": "Prepare an unattended overnight work session (yörupeama) from the live issuectl DAG and the issue texts: choose a bounded, useful wave, separate autonomous work from what waits for a human, and write and commit the TODO.md handoff the next `/stint-start` conductor will read. Use for 'prepare an overnight stint', 'suunnittele yörupeama', or bare `/night-stint-prep`. Not for running the round (`/stint-start`) or finishing a session (`/stint-handoff`).",
+        "description": "Prepare an unattended overnight work session (yörupeama) from accepted repository work (the live issuectl DAG when enabled): choose a bounded, useful wave, separate autonomous work from what waits for a human, and write and commit the TODO.md handoff the next `/stint-start` conductor will read. Use for 'prepare an overnight stint', 'suunnittele yörupeama', or bare `/night-stint-prep`. Not for running the round (`/stint-start`) or finishing a session (`/stint-handoff`).",
         "name": "night-stint-prep",
         "skill_schema_version": 1
       },
       {
         "cli_version": "0.15.0",
-        "description": "Fan out five or more similar, fully independent units as parallel autonomous worktrees — one `taskfleet run create --kind fan-out` driver run whose agent spawns one parent-pointed child run per unit, bounds concurrency, waits with `run wait`, and merges the batch back. Use when the user says `/fan-out <batch>` or asks to apply the same operation to every item of an enumerated set, each writing a disjoint output. NOT for fewer than five units (`/worktree-spinoff` each), units that edit the same file, units that depend on each other (issuectl-scheduled `/stint-start` waves), generic parallel shell commands, or per-unit human review (`--interactive` spinoffs).",
+        "description": "Fan out five or more similar, fully independent units as parallel autonomous worktrees — one `taskfleet run create --kind fan-out` driver run whose agent spawns one parent-pointed child run per unit, bounds concurrency, waits with `run wait`, and merges the batch back. Use when the user says `/fan-out <batch>` or asks to apply the same operation to every item of an enumerated set, each writing a disjoint output. NOT for fewer than five units (`/worktree-spinoff` each), units that edit the same file, units that depend on each other (bounded `/stint-start` waves), generic parallel shell commands, or per-unit human review (`--interactive` spinoffs).",
         "name": "fan-out",
         "skill_schema_version": 1
       }
@@ -208,7 +208,7 @@ expression: value
     },
     {
       "cli_version": "0.15.0",
-      "description": "Spawn one autonomous read-only worker that analyses an already-filed bug and writes its findings into that issue under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the issue update back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on an existing bug. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`).",
+      "description": "Spawn one autonomous read-only worker that analyses a reported bug and writes its findings into its issue or a repository report under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the analysis artifact back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on a bug slug, report path, or explicit report text. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`).",
       "name": "worktree-bug-analysis",
       "skill_schema_version": 1
     },
@@ -226,25 +226,25 @@ expression: value
     },
     {
       "cli_version": "0.15.0",
-      "description": "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and the issuectl DAG, spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`).",
+      "description": "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and accepted work (the issuectl DAG when enabled), spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`).",
       "name": "stint-start",
       "skill_schema_version": 1
     },
     {
       "cli_version": "0.15.0",
-      "description": "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the issuectl DAG with foreign-run reservations, then run `/wrap-up` and any declared reset. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree.",
+      "description": "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the repository schedule when enabled, then save repository lessons and perform only authorized resets. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree.",
       "name": "stint-handoff",
       "skill_schema_version": 1
     },
     {
       "cli_version": "0.15.0",
-      "description": "Prepare an unattended overnight work session (yörupeama) from the live issuectl DAG and the issue texts: choose a bounded, useful wave, separate autonomous work from what waits for a human, and write and commit the TODO.md handoff the next `/stint-start` conductor will read. Use for 'prepare an overnight stint', 'suunnittele yörupeama', or bare `/night-stint-prep`. Not for running the round (`/stint-start`) or finishing a session (`/stint-handoff`).",
+      "description": "Prepare an unattended overnight work session (yörupeama) from accepted repository work (the live issuectl DAG when enabled): choose a bounded, useful wave, separate autonomous work from what waits for a human, and write and commit the TODO.md handoff the next `/stint-start` conductor will read. Use for 'prepare an overnight stint', 'suunnittele yörupeama', or bare `/night-stint-prep`. Not for running the round (`/stint-start`) or finishing a session (`/stint-handoff`).",
       "name": "night-stint-prep",
       "skill_schema_version": 1
     },
     {
       "cli_version": "0.15.0",
-      "description": "Fan out five or more similar, fully independent units as parallel autonomous worktrees — one `taskfleet run create --kind fan-out` driver run whose agent spawns one parent-pointed child run per unit, bounds concurrency, waits with `run wait`, and merges the batch back. Use when the user says `/fan-out <batch>` or asks to apply the same operation to every item of an enumerated set, each writing a disjoint output. NOT for fewer than five units (`/worktree-spinoff` each), units that edit the same file, units that depend on each other (issuectl-scheduled `/stint-start` waves), generic parallel shell commands, or per-unit human review (`--interactive` spinoffs).",
+      "description": "Fan out five or more similar, fully independent units as parallel autonomous worktrees — one `taskfleet run create --kind fan-out` driver run whose agent spawns one parent-pointed child run per unit, bounds concurrency, waits with `run wait`, and merges the batch back. Use when the user says `/fan-out <batch>` or asks to apply the same operation to every item of an enumerated set, each writing a disjoint output. NOT for fewer than five units (`/worktree-spinoff` each), units that edit the same file, units that depend on each other (bounded `/stint-start` waves), generic parallel shell commands, or per-unit human review (`--interactive` spinoffs).",
       "name": "fan-out",
       "skill_schema_version": 1
     }

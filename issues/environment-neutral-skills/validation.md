@@ -79,6 +79,18 @@ another repository.
   fixture/environment dependency is disclosed for the conductor rather than
   widening this skills-only worker into parallel-owned runtime code. Detailed
   log: `history/portable-skills-full-gate-retry.log`.
+- Third full-gate attempt reached caller-session tests and found the worker's
+  build scratch parent still had mode `0775` from its initial creation. Native
+  session-path checks correctly rejected that group-writable ancestor. Set only
+  `/var/tmp/taskfleet-portable-build` (created by this worker) to `0700`; no
+  repository runtime code, household service, or foreign scratch was changed.
+  Log: `history/portable-skills-full-gate-private-umask.log`.
+- Fourth full-gate attempt passed both permission-dependent fixtures and reached
+  the skill catalog envelope snapshots. The intentionally updated skill
+  descriptions made `skill_list_text` stale (exit 100). Ran the focused
+  `envelope_snapshots` update loop, read each accepted text/JSON diff, and reran
+  the full gate with no update flag. Log:
+  `history/portable-skills-full-gate-private-scratch.log`.
 - The reviewer independently ran `skill_examples` while the new contract snapshot
   was being amended. Its snapshot assertion failed and produced
   `skill_examples__portable_workflow_contracts.snap.new`; the review itself

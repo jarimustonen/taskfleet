@@ -12,6 +12,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 ### Fixed
+
+- Make bundled workflows portable across agent hosts: repository-scoped optional
+  issuectl, tracker-free serial stints and bug reports, configured profiles, and
+  plain run waits without a desktop or notification service.
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.15.0] - 2026-10-16

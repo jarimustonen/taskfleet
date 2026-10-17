@@ -1,12 +1,127 @@
 ---
 name: stint-start
-description: "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and the issuectl DAG, spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`)."
+description: "Run one round of a work session (työrupeama, 'stint') as the conductor the user talks to: sync the source branch, plan from the TODO.md handoff and accepted work (the issuectl DAG when enabled), spawn worktree workers, wait for them to land, deploy when the project allows, and report in product terms with one next action. Use for 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or bare `/stint-start`. Not a worktree, not a one-off coding task, and not the closing handoff (that is `/stint-handoff`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
 ---
 
 # Stint-start — one round, conducted
+
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
+## Without issuectl: a bounded serial round
+
+If the optional repository tracker is not enabled, use this path instead of
+all tracker-specific round instructions below. Read repository instructions,
+the current handoff if present, and the user's accepted task. Confirm a clean,
+committed source branch; synchronize only where repository remote policy calls
+for it. No upstream or deployment requirement is invented for a local-only repo.
+If there is no accepted scope, agree one with the user before spawning.
+
+Choose one focused free-text task with explicit done criteria and the exact
+repository validation commands. Inspect `taskfleet run list --repo . --output
+json` and known run reports for overlapping live or retained work; if ownership
+or overlap cannot be established, resolve that before spawning. Do not adopt or
+cancel another session's runs. Do not create a private DAG, lane table, issue
+backlog, or reservation file. Sequence tasks: spawn only the next accepted task
+after its predecessor has landed. Use `worktree-spinoff` (or the bundled
+`taskfleet-spawn-spinoff` primitive) and a self-contained brief including the
+closing recipe, failure disclosure, and proportionate review. If a required
+reviewer is unavailable, report that blocker rather than weaken the brief.
+
+Await each full run id as described in Parent wait and delivery. Read the full
+report, verify landing and content on the actual source, and preserve failed
+work for an explicit recovery decision. Never hand-merge around native run
+ownership. Run the project's gate again on integrated work. Deploy or push only
+with repository/user authorization; a missing policy grants neither. Report
+what is ready to try, validation and review gaps, retained work, and one next
+action. Stop after the accepted scope; finishing a round is not a request for
+another one. On an explicit finish request, save a repository-local handoff
+using `stint-handoff` (read it with `taskfleet skill print stint-handoff` if
+not loaded). If that text is unavailable, record accepted intent, delivered
+results, evidence gaps, unresolved owned runs, and the next action in `TODO.md`,
+commit exact paths, and disclose that the full handoff workflow was unavailable. The conductor edits handoff
+and decision records only; product edits remain worktree workers' work.
+
+## With issuectl: tracker-backed round
+
+The remainder of this skill applies only with the optional repository tracker
+enabled. An incompatible or failing DAG command blocks this mode, not a reason
+to replace the repository's schedule with a private one.
 
 ## Who you are this round
 
@@ -73,8 +188,8 @@ The skill is generic. The project's root `AGENTS.md` / `CLAUDE.md` and the
 deploy policy, the green-gate and live-version commands, hot-file guidance,
 what heavy units normally take, and any test-account preference. When a fact
 is missing, read it from project docs or git, or make a reasonable call, say
-so, and suggest documenting it. The toolchain is assumed: `issuectl` for
-issues and scheduling, the `/worktree-*` family on `taskfleet` for workers.
+so, and suggest documenting it. In this tracker-backed mode, `issuectl` owns issues and scheduling;
+the `/worktree-*` family on `taskfleet` supplies workers.
 Read `taskfleet-overview` and `worktree-spinoff` before the first spawn, and
 `taskfleet-run-overview` for the full field lists of `run show` and
 `run wait`; this file repeats only what a conductor's decisions turn on. A
@@ -129,7 +244,7 @@ spawnability from issue metadata on every read, and workers change that
 metadata as they land, so a copy of the graph in prose is stale from the
 moment it is written and leaves the next reader choosing between two sources.
 The graph is therefore never copied into `TODO.md` or recomputed by hand. If
-`issuectl`, `dag`, `--reservations`, or the fields below are missing, the
+`dag`, `--reservations`, or the fields below are missing, the
 project is unmigrated or incompatible; report that and stop rather than fall
 back to a prose schedule.
 
@@ -263,13 +378,10 @@ taskfleet run wait "$run_id" --output json | jq '.data.runs[] | {run_id, status,
 | Architectural choice | `/worktree-technical-decision <task>` (ADR first; implementation is a later issue-driven spinoff) | current branch |
 | Hands-on review wanted | `taskfleet run create --kind spinoff --interactive ...` with the same complete brief | current branch after an explicit `run merge` |
 
-Self-merging spinoffs go `--headless`: the worker's window lands in the
-detached `headless` tmux session instead of the user's window list, and macOS
-runs out of pseudo-terminals around five or six foreground spawns. An
-`--interactive` run stays foreground and its supervisor waits for a
-deliberate `run merge` or `run cancel`. A dependency graph of several features
-is not one unit: issuectl stays the sole DAG owner and dependency-ordered work
-runs as bounded waves, not as an integration orchestrator with its own state.
+Self-merging spinoffs go `--headless` for unattended placement; native tmux
+is not the user's required interface. Interactive runs require an available
+hands-on interface and explicit `run merge` or `run cancel`. Dependency-ordered
+work uses bounded waves from the enabled repository DAG, never a second scheduler.
 
 There is no `--review` flag; the quality bar goes in the brief. Ask the worker
 to assess the final diff's risk, complexity, coverage, and existing review

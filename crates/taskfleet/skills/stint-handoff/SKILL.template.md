@@ -1,12 +1,93 @@
 ---
 name: stint-handoff
-description: "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the issuectl DAG with foreign-run reservations, then run `/wrap-up` and any declared reset. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree."
+description: "Finish a work session (työrupeama, 'stint') on the user's explicit request: record the answers they gave this turn where those decisions live, account for every run this session launched or adopted, write the TODO.md handoff narrative, verify the repository schedule when enabled, then save repository lessons and perform only authorized resets. Use when the user says to wrap up or finish the stint, directly or after `/stint-start` named it as the next action. Not the round engine (`/stint-start`), not a bare `/wrap-up`, and not a worktree."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
 ---
 
 # Stint-handoff — leaving the room in order
+
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
+## Without issuectl: repository-local handoff
+
+If the optional repository tracker is not enabled, use this path instead of
+the tracker-backed handoff below. Read the repository's handoff convention and
+record the user's decisions in the documents that own them, not in a new tracker.
+Inspect every full run id this session launched or explicitly adopted with
+`taskfleet run show`; do not infer ownership from a global list. Read reports,
+verify delivered content, and inventory retained work even for terminal runs.
+Do not cancel, recover, or discard foreign runs. A live owned run or retained
+work needs an explicit recovery/retention decision; record it honestly and do
+not claim the handoff resolved it.
+
+Write the repository's existing handoff file (default `TODO.md`) with accepted
+intent, landed results and validation evidence, decisions still needed, known
+unresolved owned run ids and recovery actions, and the next bounded task. Do
+not manufacture issue slugs, lanes, reservations, a backlog, or a private DAG.
+There is no DAG verification step in this mode. Preserve other sessions' edits;
+stage only your exact paths, inspect the staged diff, and commit the narrative
+separately from other changes. Push only if repository policy authorizes it.
+
+If an external session-saving skill is available, read its actual contract;
+otherwise save durable repository lessons in the most specific existing agent
+instructions or owning document and commit those separately. Do not write
+personal/global preferences implicitly. A test-account reset is neither assumed
+nor automatic: perform one only with explicit project/user authorization and
+disclose its result. Report what was saved, unresolved work and failures, and
+one next action; a required failure prevents claiming completion.
+
+## With issuectl: tracker-backed handoff
+
+The remainder applies only with the optional repository tracker enabled. Missing
+or incompatible DAG support is a disclosed blocker for this mode; it never
+authorizes hand editing tracker metadata or fabricating a schedule.
 
 ## Who you are at the end
 
@@ -187,16 +268,11 @@ it executable; it must pass human triage, move to an accepted active status,
 and gain a lane before a future round may launch it.
 
 **`/wrap-up` has its own contract, and it is not bundled with Taskfleet.**
-It is a separate skill from the user's own environment. When installed, it
-presents proposed `AGENTS.md`, issue, and preference changes and asks before
-writing, commits what it writes, and reports either what was saved or that
-nothing was; do not assume it committed unless it says so. It also runs the
-light "every open issue is in the DAG" check, which is a different question
-from whether the graph is valid for the next round. When it is not installed,
-do its work yourself in the same spirit: write what this session learned and
-future agents need into the repository's most specific `AGENTS.md` or the
-issue it belongs to, check that every open issue is in the DAG, and commit
-those edits separately from the handoff narrative.
+Read its installed instructions if present; do not assume its permissions,
+checks, or commits. When absent, save repository lessons in the most specific
+`AGENTS.md` or owning issue/document, verify the enabled tracker schedule and
+note unscheduled work without accepting it, and commit exact paths separately
+from the handoff. Neither route authorizes global preference changes.
 
 ## The order, and why
 
@@ -242,7 +318,7 @@ for the same reason: a second copy is the thing that drifts.
 Stage `TODO.md` and any answer file by exact path, check that
 `git diff --cached --name-only` is exactly that set, and commit; if nothing
 changed, there is nothing to commit. Then call `/wrap-up` and let it run its
-own contract, or do its work yourself when it is not installed. Do or remind
-the user of any declared test-account reset. A handoff is complete when
+own contract, or do its work yourself when it is not installed. Perform a test-account reset only with explicit repository/user authorization;
+report its result rather than treating a preference as permission. A handoff is complete when
 `git status --short` is clean; if `/wrap-up` wrote approved files without
 committing, follow its commit contract or ask.

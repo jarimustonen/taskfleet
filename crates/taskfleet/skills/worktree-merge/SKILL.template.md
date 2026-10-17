@@ -31,6 +31,18 @@ which preserves the branch and worktree for a human. `run merge` refuses a repor
 that says `success: false`, because a report contradicting the merge that just
 landed would either mis-terminalize the node or strand its teardown.
 
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
 ## What is at stake
 
 **The source branch.** The merge target is the branch the run was spawned from,
@@ -59,10 +71,15 @@ reaches for `/complex-rebase` when the two branches overlap in intent. Only a
 conflict whose two resolutions differ in a way the human would care about is
 worth a question.
 
+`run merge` is local delivery, not authorization to push, publish, deploy, or
+change installed tools. Resolve conflicts with ordinary Git and revalidate changed
+content; optional rebase helpers may assist. If intent cannot be reconciled safely,
+report blocked and preserve work rather than bypass native merge.
+
 ## Before you merge
 
 The merge refuses an uncommitted worker tree, including untracked files, so
-commit first (`/git-commit`). It merges the branch recorded on the node, not
+commit your exact paths with ordinary Git first (or an available Git-helper skill). It merges the branch recorded on the node, not
 whatever is checked out, and refuses a recorded branch named `main` or `master`;
 confirm you are on the run's branch with `git rev-parse --abbrev-ref HEAD`,
 because the ownership lookup below fails closed when the checkout and the record

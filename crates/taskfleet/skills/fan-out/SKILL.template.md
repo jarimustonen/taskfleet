@@ -1,6 +1,6 @@
 ---
 name: fan-out
-description: Fan out five or more similar, fully independent units as parallel autonomous worktrees — one `taskfleet run create --kind fan-out` driver run whose agent spawns one parent-pointed child run per unit, bounds concurrency, waits with `run wait`, and merges the batch back. Use when the user says `/fan-out <batch>` or asks to apply the same operation to every item of an enumerated set, each writing a disjoint output. NOT for fewer than five units (`/worktree-spinoff` each), units that edit the same file, units that depend on each other (issuectl-scheduled `/stint-start` waves), generic parallel shell commands, or per-unit human review (`--interactive` spinoffs).
+description: Fan out five or more similar, fully independent units as parallel autonomous worktrees — one `taskfleet run create --kind fan-out` driver run whose agent spawns one parent-pointed child run per unit, bounds concurrency, waits with `run wait`, and merges the batch back. Use when the user says `/fan-out <batch>` or asks to apply the same operation to every item of an enumerated set, each writing a disjoint output. NOT for fewer than five units (`/worktree-spinoff` each), units that edit the same file, units that depend on each other (bounded `/stint-start` waves), generic parallel shell commands, or per-unit human review (`--interactive` spinoffs).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -26,6 +26,81 @@ spawning, waiting, and closing goes into the brief. If the run / supervisor /
 node vocabulary is new to you, read `taskfleet-overview` first; the shared
 worker contract is in `worktree-spinoff`.
 
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
 ## Is this a fan-out?
 
 It is when five or more units undergo the same operation on different inputs
@@ -34,7 +109,7 @@ It is when five or more units undergo the same operation on different inputs
 file or path, so siblings never touch the same file. Fewer than five is just
 that many spinoffs. Units that edit a shared file are serialized spinoffs, or
 the work is restructured until the outputs are disjoint. Units that depend on
-each other belong to issuectl's DAG and bounded `/stint-start` waves; taskfleet
+each other belong to bounded `/stint-start` waves; taskfleet
 has no dependency scheduler. Per-unit human review means each unit is a
 spinoff created with `--interactive`. A batch of plain shell commands with no
 agent judgment in them is a shell loop, not a fan-out.
@@ -66,13 +141,11 @@ terminalizes, because a child that neither merges nor reports stays alive
 forever, and the driver run cannot complete while any child is live. Every
 unit brief therefore ends with exactly one terminal path.
 
-**The machine.** Each child is an agent process, a tmux window, and a git
-worktree. Ten at once is a reasonable default; more only when the units are
-cheap and the host has headroom, fewer for heavy model or IO work. On macOS
-five or six foreground spawns exhaust pseudo-terminals and the batch fails
-mid-way with `workmux_add_failed`, so children are created `--headless` or in
-one named `--tmux-session <batch-slug>`; that also keeps N windows out of the
-user's foreground session.
+**The machine.** Each child consumes an agent process, native tmux resources,
+and a worktree. Choose a bounded concurrency from operator capacity, provider
+budget, and unit cost; when unknown start conservatively, not with a presumed
+machine-wide default. Use `--headless` for unattended workers; an explicit
+`--tmux-session` may also supply placement. No human attachment is needed.
 
 **The user's attention.** Successful units are silent: a receipt that
 converted cleanly is not a discussion item, and N of them drown the user. What
@@ -87,7 +160,7 @@ bundled skills by any mechanism (`cargo install`, Homebrew, a manual copy, any
 `skill install` variant). The installed release is the user's production tool
 and is upgraded through a distribution channel, never by a worker.
 
-**Issues.** The driver owns any issue interaction, typically one epic closed
+**Issues (only with the optional repository tracker enabled).** The driver owns any issue interaction, typically one epic closed
 when the batch is done. Children never touch `issuectl`: N children updating
 the same issue race each other. Both parent flags on a child put the spawning
 skill in driver mode, which skips issue detection and the issue-closing
@@ -359,19 +432,11 @@ closes with a direct report whose `success` says whether the batch is whole.
 (`<workmux-reported-window-name>`), `data.worktree_path`, and
 `data.supervisor` (a pid; a string there outside `--dry-run` and an
 idempotent replay means nothing is driving the batch and the user needs to
-know). Tell the user the driver run id, the unit count and concurrency, the
-branch the units merge into and the branch the batch finally lands on, the
-tmux session you placed it in, and an estimate if the per-unit cost is known.
-
-Be precise about how completion reaches them: the batch runs out of band and
-nothing re-invokes this session by itself. Promise "I'll tell you when it's
-done" only if you wired `--notify <cmd>` on the driver (fired by its
-supervisor on the terminal transition, at least once, in the supervisor's
-environment rather than your login shell, so a file append the harness
-watches is the robust sink) or started a background
-`taskfleet run wait <driver-run-id>` through a harness facility that
-re-invokes you. Otherwise say plainly that they check `run show` or ask you
-to wait.
+know). Tell the caller the full run id, source branch, and deliverable path or scope.
+The worker merges and reports itself; follow the Parent wait and delivery
+section above. Return structured run/node ids and branch to a driver caller.
+The full report remains readable after teardown. Inspect the committed result
+on the target before presenting it as delivered. Retained work is not disposable.
 
 ## Following a batch
 
@@ -455,7 +520,7 @@ JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 ```
 
 The session enumerates the PDFs, writes the driver brief with the unit
-template and a concurrency of 10, and creates the driver:
+template and an explicitly chosen concurrency bound, and creates the driver:
 
 ```
 taskfleet run create \

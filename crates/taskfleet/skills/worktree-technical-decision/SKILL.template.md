@@ -19,11 +19,85 @@ request is a decision, pinning the question so it cannot drift, writing a brief
 the worker can finish alone, creating the run, and telling the caller honestly
 how they will learn the outcome.
 
-The run mechanics are shared with `worktree-spinoff`: placement and PTY
-limits, driver flags, profiles, `--notify`, `run wait`, the `landed` flag, the
+The run mechanics are shared with `worktree-spinoff`: native placement, driver flags, profiles, `--notify`, `run wait`, the `landed` flag, the
 awaiting-input signal, and the error codes are documented there and not
 repeated here. If the run / supervisor / node vocabulary is new to you, read
 `taskfleet-overview` first.
+
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
 
 ## Is this a decision?
 
@@ -54,8 +128,8 @@ title, the ADR path where the repository has a convention, the lenses, the
 profile, is a routine call: make it, say what you chose, and continue.
 
 **The record.** An ADR outlives the run by years and is read as the reason a
-thing is the way it is; in this repository, `AGENTS.md` cites ADRs as the
-grounds for not resurrecting deleted designs. A confident ADR built on a weak
+thing is the way it is; later contributors may rely on it when deciding
+whether to revisit a design. A confident ADR built on a weak
 comparison misleads every later reader, which is why the rejected alternatives
 and their reasons are part of the deliverable, why evidence comes before
 opinion, and why a decision the evidence cannot make is reported as blocked
@@ -121,7 +195,8 @@ you:
   consensus; repeated review/panels require a separate concrete risk. A panel
   that was needed and came back incomplete cannot support an
   Accepted ADR, because the missing voice may be the dissent.
-- **The ADR shape:** title; status `Accepted`; context; the decision; its
+- **The ADR shape:** title; status `Accepted` only when repository policy delegates that authority;
+  otherwise `Proposed` pending the named decider; context; the decision; its
   consequences, including each rejected alternative with the reason it lost;
   date and deciders. The repository's own template wins where one exists.
 - **Done criteria:** the ADR exists at the agreed path, is committed, and is
@@ -130,7 +205,7 @@ you:
   which keeps the decision commit reviewable on its own.
 - **Repository-local build safety**, the installed-taskfleet rule above, when
   the target repository is taskfleet.
-- **What a tie means.** If the worker has a lean, that is the decision, and the
+- **What a tie means.** If the worker has a lean and delegated decision authority, that is the decision, and the
   ADR records how close it was. If the evidence genuinely cannot separate two
   options, the choice belongs to the user: the worker records the fork as an
   awaiting-input signal (the recipe is in `worktree-spinoff`) in case someone is
@@ -264,22 +339,21 @@ supervisor state.
 
 You need a git repository and a compatible binary (see "Install or upgrade"
 below). Capture the current branch; it is the default source and merge target.
-`run create` runs inside tmux or with `--headless` / `--tmux-session <name>`.
+Use `--headless` when the parent has no attached terminal. Native tmux remains
+Taskfleet's implementation detail, not the human's required interface; explicit
+`--tmux-session <name>` or configured placement may also apply.
 
-The routing matrix in `taskfleet-overview` says to
-select the user-owned `capable` profile by default for technical decisions;
-a weak comparison becomes a durable record. A profile is a capability tier the user's `config.toml` maps to a harness and
-argv, so the brief never names a concrete model or command. An explicit caller
-`--profile` (a driver may prefix the request with one; strip it from the
-question text) is their selection and may escalate; do not downgrade it.
-Profile names are user-owned, so find out that the one you intend exists before
-creating state. Preflight the **complete intended create command** with `--dry-run --profile <selected>`.
-On `unknown_profile` for the workflow default, an empty `expected` list means
-the installation predates profiles and the real call omits `--profile`; if
-`error.expected` is non-empty but lacks `capable`, stop with the structured error
-rather than pick another name. An unknown profile the caller chose explicitly is theirs
-to fix. Any other dry-run error also stops. The real call uses exactly the
-selector whose dry-run passed.
+Profile names are installation-owned, not universal capability tiers. Use the
+configured default by omitting `--profile`, unless the caller or repository
+explicitly selects an available name. Describe the required capability and risk
+in the brief, not a presumed local model or launcher. Preflight the complete
+intended create with `--dry-run`; an unknown explicit profile or any other
+preflight error stops creation, without silently substituting a profile. The
+real call uses the selector whose preflight passed. For child creates, preflight
+without both parent flags (child dry-run is unsupported), then restore them on
+the real call with an idempotency key. On `profile_required`, surface the
+configured choices and ask for a selection; do not invent or silently choose
+one. Profile selection is not review evidence.
 
 ```
 # First issue this command with --dry-run; remove only --dry-run after it passes.
@@ -310,32 +384,22 @@ driving the worker, which the user needs to hear. `data.branch`,
 `data.worktree_path`, and `data.tmux_window` (the actual
 `<workmux-reported-window-name>`) name what was created.
 
-Tell the user the run id, the source branch, the tmux window and the session it
-is in, the path the ADR will land at, and that the run merges and reports
-itself, so no `/worktree-merge` is needed from them. Be precise about how
-completion reaches them: the run is out of band and nothing re-invokes this
-session by itself. Promise "I'll tell you when it's done" only if you wired
-`--notify` or started a background `taskfleet run wait <run-id>` through a
-harness facility that re-invokes you; otherwise say plainly that they check
-`taskfleet run show <run-id>` or ask you to wait on it. `run wait` blocks until
-the run is terminal without a hand-rolled poll loop, and `taskfleet event tail
-<run-id> --follow` streams the log. Settled is not landed: read the `landed`
-flag from `run wait` or `run show` rather than checking git ancestry yourself.
-A `failed` run whose report carries a tie is the blocked path working as
-designed, not a crash; the branch is preserved and the user breaks the tie. The
-report persists on the node and `run show` exposes it as `data.report`, so a
-late `run show` still answers after teardown.
+Tell the caller the full run id, source branch, and deliverable path or scope.
+The worker merges and reports itself; follow the Parent wait and delivery
+section above. Return structured run/node ids and branch to a driver caller.
+The full report remains readable after teardown. Inspect the committed result
+on the target before presenting it as delivered. Retained work is not disposable.
 
 ## Issue-driven decisions
 
 A run spawned by a driver with the parent flags leaves the issue to the driver.
-Otherwise, when the decision came from an issue, the ADR is that issue's
+Otherwise, only with the optional repository tracker enabled, when the decision came from an issue, the ADR is that issue's
 deliverable and the worker closes it. Write the concrete slug into the brief and
 have the ADR name it. After the final validated ADR commit and before
 `run merge`, the worker runs
 `issuectl close <slug> --status done --stamp --as <agent> --json`. The stamp rewrites the ADR commit's message with a
 `Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog
-reads; the top-level `.stamp.status` has to be `stamped` or `already_present`,
+reads; `.data.stamp.status` has to be `stamped` or `already_present`,
 because `skipped` (detached HEAD, merge commit, signed, mid rebase) means the
 landing commit would be invisible to the changelog, and that blocks the merge.
 The closure metadata path issuectl returns is committed separately, and the

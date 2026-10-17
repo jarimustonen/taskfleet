@@ -17,6 +17,53 @@ wrote them. The sibling does everything else: it reads the issue, validates the
 flags, writes the worker's brief, and creates the run. Nothing in this skill
 creates a worktree, a run, a prompt file, or a branch.
 
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
 ## The family
 
 Each sibling spawns one kind of autonomous run through `taskfleet run create`
@@ -36,14 +83,15 @@ which one it is.
   ends in a recorded ADR: "decide whether X or Y", "settle the trade-off",
   "make the architectural call".
 - `/worktree-bug-analysis` — understand an existing bug without fixing it, so
-  the user can decide fix / defer / not-a-bug. It needs an already-filed bug
-  slug and writes only to that issue. "Analyse", "understand", "figure out why"
+  the user can decide fix / defer / not-a-bug. With the repository tracker enabled it needs a filed bug slug and writes to
+  that issue; otherwise it takes an existing report path or explicit report text
+  and writes a repository analysis artifact. "Analyse", "understand", "figure out why"
   on a bug slug goes here; "fix" on the same slug is a spinoff.
 - `/fan-out` — five or more identical, independent units over an enumerated
   set ("for every receipt in batch X", "apply this codemod to each package"),
   each writing a disjoint output. Fewer than five, or units that touch the same
   files, are spinoffs, not a fan-out; units that depend on each other are
-  issuectl-scheduled `/stint-start` waves.
+  bounded `/stint-start` waves.
 
 Three more skills belong to the family but act on a worktree that already
 exists, so there is nothing for you to route: `/worktree-merge` merges a
@@ -79,7 +127,7 @@ Announce the choice in one line before invoking anything, for example
 `Routing to /worktree-research — survey-of-options framing on an inquiry topic.`
 That line is the user's chance to interrupt before a worktree exists.
 
-Then invoke the sibling through the Skill tool with `$ARGUMENTS` unchanged:
+Then invoke the sibling through the harness's skill loader or by reading its instructions with `$ARGUMENTS` unchanged:
 the task text, any flags, in the order the user wrote them. Flags such as
 `--headless`, `--tmux-session`, `--profile`, `--interactive`, or a leading
 `--review` mean something specific to the sibling that receives them, and some
@@ -89,7 +137,12 @@ will eventually receive, and rejecting an unknown flag is the sibling's job, wit
 the sibling's error message. Likewise do not expand or "helpfully" enrich the
 task; the sibling owns the brief and knows what the worker needs.
 
-Route to one sibling, once. If the Skill tool reports a failure, tell the user
+If the selected bundled sibling is not loaded, read it with
+`taskfleet skill print <name>` and execute those instructions. If neither a
+loader nor readable bundled text is available, disclose the missing prerequisite
+and stop before creating state. Preserve the original arguments unchanged.
+
+Route to one sibling, once. If loading or executing the sibling reports a failure, tell the user
 what it said rather than trying another sibling: the failed attempt may already
 have created a run or branch, and a second attempt for the same task can leave
 two of them. Do not chain siblings ("research first, then fan out"); the user

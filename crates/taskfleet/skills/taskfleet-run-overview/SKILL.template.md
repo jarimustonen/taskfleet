@@ -35,6 +35,46 @@ Use `--output json` for one envelope or `--output jsonl` for one envelope per
 line. `--output text` is for a human at a terminal; its wording is not a
 contract.
 
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
 ## The envelope
 
 ```json

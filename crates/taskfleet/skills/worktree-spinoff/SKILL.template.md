@@ -22,6 +22,81 @@ nothing tears it down, nothing reports it, and `run wait` / `run show` never see
 it. If the run / supervisor / node vocabulary is new to you, read
 `taskfleet-overview` first.
 
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
 ## Is this a spinoff?
 
 It is when the user says `/worktree-spinoff <task>`, asks for a "background" or
@@ -33,7 +108,8 @@ It is not a spinoff when the user wants to review the work hands-on: create the
 run with `--interactive` instead, and the supervisor then never auto-terminalizes
 but waits for an explicit `run merge` or `run cancel`. Five or more similar
 independent units are `/fan-out`. Several features that depend on each other are
-scheduled as bounded waves through `/stint-start` and the issuectl DAG; taskfleet
+scheduled as bounded waves through `/stint-start` (using the issuectl DAG only
+when the repository tracker is enabled); taskfleet
 has no integration orchestrator. Research and architectural decisions have their
 own kinds (`/worktree-research`, `/worktree-technical-decision`).
 
@@ -74,15 +150,13 @@ below. Capture the current branch with `git rev-parse --abbrev-ref HEAD`; it is
 the default source and merge target, and the caller should hear which branch that
 was.
 
-`run create` must run inside tmux or be given `--headless` / `--tmux-session`;
-otherwise, unless a configured default session applies, it refuses with
-`no_tmux_session`. `--headless` puts the worker's window
-in a detached `headless` session (attach with `tmux attach -t headless`), which
-also matters on macOS: the system runs out of pseudo-terminals around five or six
-foreground spawns, and a batch then fails mid-way with `workmux_add_failed`. Use
-headless placement for any parallel batch larger than three. A user `[tmux]`
-config section may name a default session for autonomous workers; explicit
-placement flags still win.
+Taskfleet uses native tmux internally, not as a required human interface.
+Use `--headless` for an unattended parent without an attached terminal; it still
+uses native tmux. An explicit `--tmux-session <name>` or configured default may
+also supply placement. Report the run id and source branch, with `run show` for
+inspection; window/session details are optional diagnostics, not a requirement
+to attach. Missing native runtime prerequisites are setup failures to report,
+not permission to start unrelated services or implement another supervisor.
 
 Drivers (`/stint-start`, `/fan-out`, `/worktree-bug-analysis`) may prefix the
 request with `--headless`, `--tmux-session <name>`, or `--profile <name>`. Strip
@@ -91,7 +165,7 @@ as the caller's explicit selection. A leading `--review` token is not a
 `run create` flag (it would be rejected); it expresses the quality bar, so fold it
 into the brief.
 
-The task comes from one of two places. An issue reference (`#NN`, `issuectl:slug`,
+The task comes from one of two places. When the optional repository tracker is enabled, an issue reference (`#NN`, `issuectl:slug`,
 or a bare slug that `issuectl show --json` recognises) means the issue's title and
 body are the brief; prefer the bare slug or `issuectl:<slug>` for hyphenated
 slugs, which are not guaranteed to parse behind `#`. Otherwise the user's prompt
@@ -230,8 +304,8 @@ request_seq="$(taskfleet run show "$run_id" --output json | jq -r '.data.awaitin
 `run show` and `run list` show it immediately; after three minutes
 (`TASKFLEET_AWAITING_INPUT_GRACE_SECS` overrides) `run wait` settles and a
 registered `--notify` hook fires with `TASKFLEET_STATUS=awaiting-input`. The
-worker then either waits at most five minutes and proceeds on its recommended
-default, closing the signal with the generation it opened:
+worker may proceed only on a safe default already authorized by the brief or
+repository policy, never merely because time elapsed, closing the signal with the generation it opened:
 
 ```bash
 printf '{"event_seq":%s}\n' "$request_seq" > /tmp/input-resolved-${run_id}.json
@@ -276,31 +350,17 @@ item, and do not add a schema or supervisor state.
 
 ## Choosing a profile and creating the run
 
-A profile is a capability tier, not a model name: `implementation` for bounded
-work from an accepted design (the ordinary feature or bug fix), `lightweight` for
-a mechanical, strongly tested refactor or documentation. In brief form:
-`implementation` — bounded implementation from an accepted design;
-`lightweight` — mechanical, strongly tested refactor or documentation.
-Use `capable` for broad or high-risk design, uncertain or mixed scope, security
-or privacy, destructive or
-concurrency-sensitive behaviour, hard rollback, or weak tests. The full matrix and
-the reasoning live in `taskfleet-overview`. An explicit caller profile wins and
-may escalate; do not silently downgrade it. Concrete model names and commands stay
-out of the issue brief, because the user's `config.toml` owns which harness and
-argv a name means.
-
-Profile names are user-owned, so an installation may not define the one you
-recommend. Find that out before creating state: run the complete intended command
-with `--dry-run`. If a workflow-recommended profile returns `unknown_profile`, retry the dry-run with `--profile capable`;
-if that is also unknown and the error's `expected` list is empty, the
-installation predates profiles and the real call omits `--profile`. If profiles
-exist but neither is defined, stop and surface the structured error rather than
-pick an arbitrary one. If an explicit caller profile is unknown, stop rather than replacing it;
-that selection is theirs to fix. Any other dry-run error also stops. The real
-call uses exactly the selector whose dry-run passed. Driver-mode child creates reject `--dry-run`
-(`dry_run_unsupported`) because parent publication cannot be previewed truthfully;
-perform the profile preflight with both parent flags omitted, add them back for
-the real call, and give that call an `--idempotency-key` so a retry is safe.
+Profile names are installation-owned, not universal capability tiers. Use the
+configured default by omitting `--profile`, unless the caller or repository
+explicitly selects an available name. Describe the required capability and risk
+in the brief, not a presumed local model or launcher. Preflight the complete
+intended create with `--dry-run`; an unknown explicit profile or any other
+preflight error stops creation, without silently substituting a profile. The
+real call uses the selector whose preflight passed. For child creates, preflight
+without both parent flags (child dry-run is unsupported), then restore them on
+the real call with an idempotency key. On `profile_required`, surface the
+configured choices and ask for a selection; do not invent or silently choose
+one. Profile selection is not review evidence.
 
 ```
 # First issue this command with --dry-run; remove only --dry-run after it passes.
@@ -335,11 +395,8 @@ What the flags do that `--help` does not tell you:
   discussion array in `TASKFLEET_AWAITING_INPUT_JSON`. Delivery is at least
   once: a supervisor crash between firing and recording its marker re-fires on
   restart, because a missed completion is worse than a duplicate, so the command
-  should tolerate running twice (an appended line, a toast; nothing that
-  double-counts). It runs in the supervisor's environment, a long-lived detached
-  process, not your login shell, so a desktop toast may lack `DISPLAY` or
-  `DBUS_SESSION_BUS_ADDRESS`; a file or FIFO append the harness watches is the
-  robust sink. Pass it only when such a sink exists.
+  should tolerate running twice. This is an optional operator-supplied hook,
+  not a required parent wake mechanism; use the plain wait process above.
 - Output defaults to `--output jsonl`, one compact envelope per line.
 
 ## What comes back
@@ -367,18 +424,11 @@ the supervisor's pid when one was spawned; a string instead
 explains why not, and outside those expected cases means nothing is driving the
 worker, which the user needs to hear.
 
-Tell the user the run id, the source branch, and the tmux window name together
-with the session you placed it in (`headless`, your `--tmux-session` name, a
-configured `[tmux]` default, or else the session `run create` ran in; the
-envelope does not report the session, so do not guess one); that the spinoff
-merges and reports itself, so no `/worktree-merge` is needed from them; and how
-to follow it (`taskfleet run show <run-id>`). Be precise about how completion
-reaches them: a spinoff runs out of band and nothing re-invokes this session by
-itself, so promise "I'll tell you when it's done" only if you wired one of the
-mechanisms in the next section. Otherwise say plainly that they check
-`run show <run-id>` or ask you to wait on it. A driver gets the structured
-payload (run id, node id, branch, tmux window) instead of a human summary; it
-needs the ids to poll.
+Tell the caller the full run id, source branch, and deliverable path or scope.
+The worker merges and reports itself; follow the Parent wait and delivery
+section above. Return structured run/node ids and branch to a driver caller.
+The full report remains readable after teardown. Inspect the committed result
+on the target before presenting it as delivered. Retained work is not disposable.
 
 ## Following the run and reading the outcome
 
@@ -394,12 +444,10 @@ Resolve the open decision separately; `--terminal` does not answer it.
 Several ids block until all settle, `--any` until the first. Its envelope is multi-run, so read `data.runs[]` (for example
 `jq '.data.runs[] | {run_id, status, summary}'`), not `data.status`.
 
-Two mechanisms deliver completion to this session without polling: `--notify`
-at spawn time, or a background `taskfleet run wait "$run_id"` started at spawn
-time through a harness facility that re-invokes you when a background task exits.
-A run you never waited on has no watcher. Everything persists after teardown
-(the run directory, terminal `manifest.status`, the node's report), so a late
-`run show` still answers.
+A harness-watched plain `taskfleet run wait` delivers results to the parent as
+described above; `--notify` is an optional operator hook, not a general session
+wake. A run you never waited on has no watcher. Everything persists after
+teardown, so a late `run show` still answers.
 
 Settled is not landed. `run wait` and `run show` both carry a `landed` boolean
 with a `landed_method` (`git-verified` | `report-marker` | `unverified`), and
@@ -433,7 +481,7 @@ taskfleet node show "$run_id" n-0001 --output json |
 
 ## Issue-driven runs: closing the issue
 
-For an issue-driven run outside driver mode the worker owns the issue lifecycle;
+Only with the optional repository tracker enabled, for an issue-driven run outside driver mode the worker owns the issue lifecycle;
 you resolve the closing contract while building the brief and write the concrete
 slug, status, and agent identity into it rather than metavariables. For status,
 a bug closes as `fixed`; a feature/task/improvement/chore closes as `done`.
@@ -447,7 +495,7 @@ tree. After the final validated implementation commit and before `run merge`, it
 runs `issuectl close <slug> --status <fixed-or-done> --stamp --as <agent> --json`.
 The stamp rewrites the implementation commit's message with a
 `Fixes-Issue: @<slug>` trailer, which is what the trailer-driven changelog reads,
-without touching its tree; the top-level `.stamp.status` has to be `stamped` or `already_present`, since `skipped` (detached HEAD, merge commit, signed, or mid
+without touching its tree; `.data.stamp.status` has to be `stamped` or `already_present`, since `skipped` (detached HEAD, merge commit, signed, or mid
 rebase) or a missing stamp means the landing commit would be invisible to the
 changelog, and that blocks the merge. The closure metadata path issuectl returns
 needs its own commit: commit that metadata in a separate commit, leaving the tree

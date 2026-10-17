@@ -1,6 +1,6 @@
 ---
 name: worktree-bug-analysis
-description: "Spawn one autonomous read-only worker that analyses an already-filed bug and writes its findings into that issue under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the issue update back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on an existing bug. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`)."
+description: "Spawn one autonomous read-only worker that analyses a reported bug and writes its findings into its issue or a repository report under `## Triage analysis` (verdict, severity, affected area, repro status, fix sketch), then merges only the analysis artifact back. Use when a bug slug needs understanding before a fix / defer / not-a-bug decision, such as 'analyse', 'understand', or 'figure out why' on a bug slug, report path, or explicit report text. Not for fixing it (`/worktree-spinoff <slug>`), filing a new bug, or open-ended multi-source research (`/worktree-research`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -9,9 +9,10 @@ schema_version: 1
 # worktree-bug-analysis
 
 A bug-analysis run is one autonomous worker whose deliverable is understanding,
-not code. It takes an already-filed bug, reproduces or explains the behaviour,
-finds the responsible area, classifies what it found, writes that into the
-bug's own issue, and merges the issue update back with `taskfleet run merge`.
+not code. It takes a bug report, reproduces or explains the behaviour,
+finds the responsible area, classifies what it found, writes an analysis into
+its issue or an agreed repository report, and merges that artifact back with
+`taskfleet run merge`.
 The user, or the triage skill that commissioned the run, then decides fix,
 defer, or not-a-bug with the analysis in hand. Nobody reviews the worker
 interactively and it cannot ask you anything: the brief is the whole
@@ -19,10 +20,110 @@ conversation, and the terminal report is all you hear back.
 
 The run is created as `--kind spinoff`; there is no analysis kind, and the
 read-only nature lives entirely in the brief. The run mechanics are shared with
-`worktree-spinoff`: placement and PTY limits, driver flags, profiles,
+`worktree-spinoff`: native placement, driver flags, profiles,
 `--notify`, `run wait`, the `landed` flag, and the error codes are documented
 there and not repeated here. If the run / supervisor / node vocabulary is new
 to you, read `taskfleet-overview` first.
+
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
+## Without issuectl: analyse an existing report artifact
+
+When the optional repository tracker is not enabled, accept an existing
+repository bug-report path or an explicit free-text report, not an unresolved
+issuectl slug. Agree an exact output path (default `research/<slug>-bug-analysis.md`)
+where `<slug>` is a short kebab-case title derived from the report, not an
+issue id; use it in the run title too. Copy the report and relevant attachments
+into the brief as paths/content.
+Do not file an issue just to run an analysis. If the request supplies only an
+unavailable issue reference, report the missing source and stop before spawning.
+
+Use the native spinoff creation, closing recipe, and full failure-disclosure
+sections below, but skip the issue-specific lookup, status, trailer, and storage
+instructions. The self-contained brief asks for the verdict, severity, affected
+area, reproduction attempts, examined revision, and fix sketch under the exact
+heading `## Triage analysis` in the agreed report file. Commit only that report
+and supporting analysis artifacts, never application changes or tracker
+metadata. The user retains disposition authority. After the plain parent wait,
+read the native report and verify the analysis landed at the agreed path.
+
+## With issuectl: analyse a filed bug
+
+The issue-specific instructions below apply only with the optional repository
+tracker enabled. Use the shared closing and disclosure sections in either mode.
 
 ## Is this a bug analysis?
 
@@ -88,7 +189,7 @@ replaces, or removes the user's installed binary or bundled skills, by
 installed release is the user's production tool and legitimately differs from
 source `HEAD`.
 
-**The user's attention.** The only input this skill needs is the slug. A slug
+**The user's attention.** In tracker-backed mode the input is the slug. A slug
 whose `issues/<slug>/item.md` does not exist is the one thing worth stopping
 for: report it and do not create the issue. Everything else (placement, title,
 profile) is a routine call: make it, say what you chose, and continue.
@@ -273,8 +374,7 @@ name. `--source-branch` defaults to the branch you captured. `--idempotency-key`
 makes a retry after a transient error return the original run instead of
 spawning a second one. Output defaults to `--output jsonl`.
 
-The profile routing matrix in `taskfleet-overview` has no row for bug analysis:
-forward an explicit caller `--profile` as their selection and otherwise let the
+Forward an explicit caller `--profile` as their selection and otherwise let the
 installation's default apply. When you are unsure a selector exists, preflight
 the complete command with `--dry-run`; `unknown_profile` after materialization
 costs a run.
@@ -289,23 +389,11 @@ non-numeric means nothing is driving the worker, which the user needs to hear.
 `data.branch`, `data.worktree_path`, and `data.tmux_window` name what was
 created.
 
-Tell the user the run id, the source branch, the issue path
-`issues/<slug>/item.md`, and that the run merges and reports itself, so no
-`/worktree-merge` is needed from them. Be precise about how completion reaches
-them: the run is out of band and nothing re-invokes this session by itself.
-Promise "I'll tell you when it's done" only if you wired `--notify` or started a
-background `taskfleet run wait <run-id>` through a harness facility that
-re-invokes you; otherwise say plainly that they check `taskfleet run show
-<run-id>` or ask you to wait on it, and that `tmux attach -t headless` shows
-the worker live. Settled is not landed: read the `landed` flag from `run wait`
-or `run show` rather than checking git ancestry yourself. The analysis itself
-is visible on the source branch afterwards, in `git log -- issues/<slug>` or as
-`.data.analysis` from `issuectl intake show <slug> --json`; a triage caller
-confirms landing that way before mapping the verdict onto a recommendation.
-
-When spawned by another skill rather than invoked directly by the user, return
-the structured payload (run id, node id, branch) to the caller instead of a
-human summary; it needs the ids to poll.
+Tell the caller the full run id, source branch, and deliverable path or scope.
+The worker merges and reports itself; follow the Parent wait and delivery
+section above. Return structured run/node ids and branch to a driver caller.
+The full report remains readable after teardown. Inspect the committed result
+on the target before presenting it as delivered. Retained work is not disposable.
 
 ## Errors
 

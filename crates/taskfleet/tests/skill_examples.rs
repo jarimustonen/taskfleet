@@ -302,6 +302,138 @@ fn failure_disclosure_command_shapes_match_the_binary() {
     .expect("successful report command shape");
 }
 
+/// Execute the *documented* capability probe, not a second implementation of
+/// its condition. Empty PATH plus declared stubs keeps the host's tracker out.
+#[cfg(unix)]
+#[test]
+fn documented_tracker_probes_require_repository_and_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = TempDir::new().expect("sandbox");
+    let repo = sandbox.path().join("repo");
+    let path = sandbox.path().join("bin");
+    std::fs::create_dir_all(repo.join("issues")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let cli = path.join("issuectl");
+    let schema = repo.join("issues/.schema.yaml");
+
+    for template in skill_template_paths(&skills_dir()) {
+        let body = std::fs::read_to_string(&template).unwrap();
+        if !body.contains("issuectl") {
+            continue;
+        }
+        let section = markdown_section(&body, "## Repository tracker (optional)")
+            .unwrap_or_else(|| panic!("{} lacks scoped tracker contract", template.display()));
+        let probe = section
+            .split("# issuectl-capability-probe\n")
+            .nth(1)
+            .and_then(|s| s.split("```").next())
+            .expect("copyable capability probe");
+        for (repository_uses_tracker, cli_available) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            if repository_uses_tracker {
+                std::fs::write(&schema, "# declared issuectl schema\n").unwrap();
+            } else if schema.exists() {
+                std::fs::remove_file(&schema).unwrap();
+            }
+            if cli_available {
+                // Detection must not execute the tracker or initialize storage.
+                std::fs::write(&cli, "#!/bin/sh\nexit 99\n").unwrap();
+                std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            } else if cli.exists() {
+                std::fs::remove_file(&cli).unwrap();
+            }
+            let out = Command::new("/bin/sh")
+                .args(["-c", probe])
+                .current_dir(&repo)
+                .env_clear()
+                .env("PATH", &path)
+                .output()
+                .expect("run documented probe");
+            assert!(out.status.success(), "{}: {out:?}", template.display());
+            let expected = match (repository_uses_tracker, cli_available) {
+                (false, _) => "tracker-not-used\n",
+                (true, false) => "issuectl-cli-missing\n",
+                (true, true) => "issuectl-ready\n",
+            };
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), expected);
+        }
+    }
+}
+
+/// Pin the actionable branches, not just absence of personal tool names. Changes
+/// to these snapshots require reading the new instructions as an executor.
+#[test]
+fn portable_workflow_contracts_are_rendered_and_reviewable() {
+    let home = TempDir::new().unwrap();
+    let mut contracts = String::new();
+    for (skill, heading) in [
+        ("worktree-spinoff", "## Repository tracker (optional)"),
+        ("taskfleet-spawn-spinoff", "## Parent wait and delivery"),
+        ("worktree", "## Runtime capabilities"),
+        ("worktree", "## Handing over"),
+        (
+            "worktree-bug-analysis",
+            "## Without issuectl: analyse an existing report artifact",
+        ),
+        ("stint-start", "## Without issuectl: a bounded serial round"),
+        (
+            "stint-handoff",
+            "## Without issuectl: repository-local handoff",
+        ),
+        (
+            "night-stint-prep",
+            "## Without issuectl: prepare accepted tasks, not a private schedule",
+        ),
+        (
+            "worktree-spinoff",
+            "## Choosing a profile and creating the run",
+        ),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .args(["skill", "print", skill])
+            .env("HOME", home.path())
+            .env("TASKFLEET_HOME", home.path().join("state"))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let body = String::from_utf8(out.stdout).unwrap();
+        let section = markdown_section(&body, heading).expect("rendered capability branch");
+        contracts.push_str(&format!("\n# {skill}\n{heading}\n{section}\n"));
+    }
+    insta::assert_snapshot!("portable_workflow_contracts", contracts);
+}
+
+#[test]
+fn bundled_skills_do_not_require_personal_hosts_or_invocation_tools() {
+    for template in skill_template_paths(&skills_dir()) {
+        let body = std::fs::read_to_string(&template).unwrap();
+        for dependency in [
+            "Homebase",
+            "notify-jari",
+            "Telegram",
+            "`tw",
+            "Skill tool",
+            "tmux attach -t",
+        ] {
+            assert!(
+                !body.contains(dependency),
+                "{} assumes {dependency}",
+                template.display()
+            );
+        }
+        let runtime = markdown_section(&body, "## Runtime capabilities").expect("runtime fallback");
+        if template.parent().unwrap().file_name().unwrap() == "worktree-status" {
+            assert!(runtime.contains("only the current conversation"));
+        } else {
+            assert!(runtime.contains("ordinary Git"));
+            assert!(runtime.contains("missing **required**"));
+        }
+        assert!(!body.contains("--profile capable"));
+    }
+}
+
 fn markdown_section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
     let start = body.find(heading)? + heading.len();
     let rest = &body[start..];

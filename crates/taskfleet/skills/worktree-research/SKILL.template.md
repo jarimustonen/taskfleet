@@ -18,10 +18,85 @@ deciding that the request is research-shaped, sharpening the question, writing a
 brief the worker can finish alone, creating the run, and telling the caller
 honestly how they will learn the outcome.
 
-The run mechanics are shared with `worktree-spinoff`: placement and PTY limits,
+The run mechanics are shared with `worktree-spinoff`: native placement,
 driver flags, profiles, `--notify`, `run wait`, the `landed` flag, and the
 error codes are documented there and not repeated here. If the run /
 supervisor / node vocabulary is new to you, read `taskfleet-overview` first.
+
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
 
 ## Is this research?
 
@@ -224,7 +299,9 @@ supervisor state.
 
 You need a git repository and a compatible binary (see "Install or upgrade"
 below). Capture the current branch; it is the default source and merge target.
-`run create` runs inside tmux or with `--headless` / `--tmux-session <name>`.
+Use `--headless` when the parent has no attached terminal. Native tmux remains
+Taskfleet's implementation detail, not the human's required interface; explicit
+`--tmux-session <name>` or configured placement may also apply.
 
 ```
 taskfleet run create \
@@ -243,14 +320,13 @@ Exactly one of `--task` and `--prompt-file`. `--idempotency-key` makes a retry
 after a transient error return the original run instead of spawning a second
 one. Output defaults to `--output jsonl`.
 
-The worker runs under the pi harness by default, and on an installation with
-executable profiles configured an autonomous run accepts pi with `worker-v1`
+The worker uses the installation's configured default unless explicitly selected.
+An autonomous run accepts pi with `worker-v1`
 telemetry or Claude without telemetry. Claude uses headless `--print` mode;
 its exit is recorded separately from the explicit `run merge` completion.
 The profile argv and permission policy must be defined in the user's config,
-not the repository's selection-only config. The routing matrix in `taskfleet-overview`
-recommends no profile for research, so forward an explicit caller `--profile`
-as their selection and otherwise let the installation's default apply. When you
+not the repository's selection-only config. Forward an explicit caller `--profile` as their selection and otherwise let
+the installation's configured default apply. When you
 are unsure a selector exists, preflight the complete command with `--dry-run`;
 `unknown_profile` after materialization costs a run.
 
@@ -270,24 +346,16 @@ driving the worker, which the user needs to hear. `data.branch`,
 `data.worktree_path`, and `data.tmux_window` (the actual
 `<workmux-reported-window-name>`) name what was created.
 
-Tell the user the run id, the source branch, the tmux window and the session it
-is in, the path the report will land at, and that the run merges and reports
-itself, so no `/worktree-merge` is needed from them. Be precise about how
-completion reaches them: a research run is out of band and nothing re-invokes
-this session by itself. Promise "I'll tell you when it's done" only if you wired
-`--notify` or started a background `taskfleet run wait <run-id>` through a
-harness facility that re-invokes you; otherwise say plainly that they check
-`taskfleet run show <run-id>` or ask you to wait on it. `run wait` blocks until
-the run is terminal without a hand-rolled poll loop, and `taskfleet event tail
-<run-id> --follow` streams the log. Settled is not landed: read the `landed`
-flag from `run wait` or `run show` rather than checking git ancestry yourself.
-The report persists on the node and `run show` exposes it as `data.report`, so
-a late `run show` still answers after teardown.
+Tell the caller the full run id, source branch, and deliverable path or scope.
+The worker merges and reports itself; follow the Parent wait and delivery
+section above. Return structured run/node ids and branch to a driver caller.
+The full report remains readable after teardown. Inspect the committed result
+on the target before presenting it as delivered. Retained work is not disposable.
 
 ## Issue-driven research
 
 A research run spawned by a driver with the parent flags leaves the issue to
-the driver. Otherwise, when the request came from an issue, decide which of two
+the driver. Otherwise, only with the optional repository tracker enabled, when the request came from an issue, decide which of two
 cases holds and write the concrete slug into the brief:
 
 - The report is evidence for a larger issue: the worker commits it with a

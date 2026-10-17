@@ -8,6 +8,13 @@ schema_version: 1
 
 # worktree-status
 
+## Runtime capabilities
+
+This skill needs only the current conversation: no external helper, tracker,
+file reader, terminal, or notification service. References to other workflows
+below distinguish their purpose, not commands to execute while briefing. If
+fresh facts are missing, label them unknown; do not invoke tools to fill them.
+
 ## Who this is for
 
 The reader is a decision-maker who was not in the room: a product owner, a

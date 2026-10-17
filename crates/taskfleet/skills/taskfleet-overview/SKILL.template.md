@@ -21,6 +21,46 @@ The binary's `--help` text is the authoritative description of every verb and
 flag; this skill tells you what the help text cannot: how the pieces fit, which
 fields mean what, and where earlier mistakes came from.
 
+## Parent wait and delivery
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
 ## Vocabulary
 
 - **Run** — one workflow, identified by a ULID. Created with `run create`.
@@ -71,8 +111,8 @@ starts the supervisor. Its `data` payload carries `run_id`, `node_id`, `kind`,
 
 The supervisor then records what it is told: worker exit, telemetry, reports.
 `run show <id>` reads the current state; `run wait <id>...` blocks until runs
-reach a terminal state and is the right tool instead of a hand-rolled polling
-loop. `event tail <id> --follow` streams the event log for live monitoring.
+settle (terminal or attention-required) and is the right tool instead of a
+hand-rolled polling loop. A timeout is not completion. `event tail <id> --follow` streams the event log for live monitoring.
 
 The worker closes with `run merge <run-id> [--source <branch>]
 [--report-file <path>]`, which rebases and merges the branch into its source,
@@ -110,39 +150,22 @@ matches; that is why this distinction is spelled out.
 Profile ownership sits in two layers. User configuration defines executable
 profiles under `[profiles.<name>]` in the taskfleet home's `config.toml`,
 including harness and argv. Repository configuration may select names but
-cannot define executables. Bundled workflow skills own the routing decision and
-pass `--profile <name>` to `run create`. Issue briefs describe capability and
+cannot define executables. Bundled workflow skills forward an explicit profile
+selection and otherwise omit `--profile` to use the configured default. Issue briefs describe capability and
 risk; they never name a concrete model or command, because the user's config
 decides what a name means on this machine.
 
-Default routing, unless the caller explicitly selects or escalates:
-
-| Work | Recommended profile |
-| --- | --- |
-| Technical decision, ADR, broad or high-risk design | `capable` |
-| Bounded implementation from an accepted design | `implementation` |
-| Mechanical, strongly tested refactor or documentation | `lightweight` |
-
-Uncertain, mixed, security- or privacy-sensitive, destructive,
-concurrency-sensitive, hard-to-roll-back, or weakly tested work goes to
-`capable`. An explicit caller profile wins and may be escalated; a silent
-downgrade takes a decision the caller already made.
-
-Profile names are user-owned, so an installation may not define the one a
-workflow recommends. Finding that out after `run create` has mutated state is
-expensive (a half-created run to clean up), so preflight the complete intended
-`run create ... --dry-run --profile <recommended>` with all other real-create
-flags and branch on the error code. `unknown_profile` for a workflow-recommended
-name means retry the dry-run with `--profile capable`; if that is also unknown and
-the error's `expected` list is empty, the installation predates profiles and the
-real call omits `--profile`. If profiles exist but neither is defined, surface
-the structured error rather than pick an arbitrary one, and an unknown profile
-the caller chose explicitly is theirs to fix. Then make the real call with
-exactly the selector whose dry-run passed. The dry-run checks arguments,
-profile, and placement, not that the `--source-branch` exists; that is
-`base_ref_not_found` from the real call. Child spawns are the one exception:
-`--parent-run-id` / `--parent-node-id` cannot be dry-run truthfully, so preflight
-without the parent flags and restore them on the real, idempotency-keyed call.
+Profile names are installation-owned, not universal capability tiers. Use the
+configured default by omitting `--profile`, unless the caller or repository
+explicitly selects an available name. Describe the required capability and risk
+in the brief, not a presumed local model or launcher. Preflight the complete
+intended create with `--dry-run`; an unknown explicit profile or any other
+preflight error stops creation, without silently substituting a profile. The
+real call uses the selector whose preflight passed. For child creates, preflight
+without both parent flags (child dry-run is unsupported), then restore them on
+the real call with an idempotency key. On `profile_required`, surface the
+configured choices and ask for a selection; do not invent or silently choose
+one. Profile selection is not review evidence.
 
 Profile choice is not correctness evidence. Primary sources, source-grounded
 scenarios, and deterministic tests are. For a bounded implementation, the
@@ -151,6 +174,8 @@ reviews need a concrete risk or unresolved trade-off to justify their cost.
 
 ## Persistent worker sessions (opt-in)
 
+Native tmux is Taskfleet's implementation, not a required human interface.
+Use `--headless` for an unattended parent without an attached terminal.
 By default autonomous workers spawn a tmux window in the current session and
 the window disappears at teardown; `--headless` or `--tmux-session <name>`
 place it in a detached session instead, which matters on macOS where a batch

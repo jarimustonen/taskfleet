@@ -1,6 +1,6 @@
 ---
 name: night-stint-prep
-description: "Prepare an unattended overnight work session (yörupeama) from the live issuectl DAG and the issue texts: choose a bounded, useful wave, separate autonomous work from what waits for a human, and write and commit the TODO.md handoff the next `/stint-start` conductor will read. Use for 'prepare an overnight stint', 'suunnittele yörupeama', or bare `/night-stint-prep`. Not for running the round (`/stint-start`) or finishing a session (`/stint-handoff`)."
+description: "Prepare an unattended overnight work session (yörupeama) from accepted repository work (the live issuectl DAG when enabled): choose a bounded, useful wave, separate autonomous work from what waits for a human, and write and commit the TODO.md handoff the next `/stint-start` conductor will read. Use for 'prepare an overnight stint', 'suunnittele yörupeama', or bare `/night-stint-prep`. Not for running the round (`/stint-start`) or finishing a session (`/stint-handoff`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -13,6 +13,78 @@ the night from what you leave behind. Your product is a committed `TODO.md`
 handoff and a short briefing. You do not launch workers, write a design
 package, or deploy; the conductor does that, from the live repository, in the
 morning's absence.
+
+## Repository tracker (optional)
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+## Runtime capabilities
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
+## Without issuectl: prepare accepted tasks, not a private schedule
+
+If the optional repository tracker is not enabled, use this path instead of
+the tracker-backed preparation below. Read repository instructions, the current
+handoff and the user's accepted scope. Choose a bounded next task that can be
+completed without human decisions; name its goal, done criteria, exact gate,
+and what must wait for the user. Describe follow-on intent only as conditional
+on the first task landing, not as a new graph or tracker. The next conductor
+works serially from this accepted scope and Taskfleet's live reports, checking
+for overlapping runs before spawning. No lane, issue slug, reservation file,
+or private DAG is required or created.
+
+Write and commit the repository's handoff file (default `TODO.md`), preserving
+useful history and other sessions' edits. Distinguish implementation, evidence
+preparation, and human-gated decisions. Include validation/deployment limits,
+unverified claims, known unresolved run ids, and the morning report expected.
+No workers are launched here. Push only under repository policy. Night work
+grants no extra decision, publishing, credential, or deployment authority.
+Brief the user on the chosen scope and remaining human decisions.
+
+## With issuectl: tracker-backed preparation
+
+The remainder applies only with the optional repository tracker enabled. Read
+its actual issue texts and live DAG; do not replace a failed tracker with prose.
 
 ## What the conductor can and cannot read
 

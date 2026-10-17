@@ -1,0 +1,285 @@
+---
+source: crates/taskfleet/tests/skill_examples.rs
+expression: contracts
+---
+
+# worktree-spinoff
+## Repository tracker (optional)
+
+
+Use issuectl only when **both** repository instructions or an issuectl schema
+establish that this repository uses it **and** its CLI is available. A directory named `issues/` alone may belong to another tracker;
+check the repository policy before treating it as issuectl storage. This probe
+checks the conventional schema-backed case from the repository root:
+
+```sh
+# issuectl-capability-probe
+if [ ! -f issues/.schema.yaml ]; then
+  printf 'tracker-not-used\n'
+elif command -v issuectl >/dev/null 2>&1; then
+  printf 'issuectl-ready\n'
+else
+  printf 'issuectl-cli-missing\n'
+fi
+```
+
+For a documented issuectl tree without that schema path, verify configuration
+by reading repository instructions or tracker files, not by running issuectl
+against an unidentified `issues/` tree. Check CLI availability separately.
+Do not install or initialize a tracker. Without both capabilities, use the free-text task and committed
+repository artifacts; skip issue lookup, mutation, closure, trailers, and DAG
+commands. If an explicit issue-driven request requires unavailable tracker data
+or a required mutation, report that prerequisite and stop before spawning;
+do not silently reinterpret a slug or hand-edit tracker metadata. A CLI command
+failure in an enabled tracker is an error, not permission to switch modes.
+`issuectl-cli-missing` is a disclosed missing capability, not proof that the
+repository is tracker-free. If repository policy requires tracker scheduling or
+writes for this task/stint, stop; only policy-permitted free-text work may use
+the no-issuectl path. Record follow-up findings in the native report's
+`spinoff_proposals` or `discussion_items` instead of creating tracker files.
+State this capability result as a fact in every worker brief; it does not relax
+the generated policy on how an issue, if filed, must be created.
+
+
+# taskfleet-spawn-spinoff
+## Parent wait and delivery
+
+
+Use a plain blocking process:
+
+```bash
+taskfleet run wait <run-id> --output json
+```
+
+Start it through the parent harness's existing background-command/wake facility
+when one exists, requesting a wake on exit, then continue independent work or end
+the turn. No notification hook, desktop, or attached terminal is required. Do not
+shell-background it, invent a callback transport, or poll `run show` for wakeups.
+Without a wake facility, await the same blocking command with `--timeout`
+shorter than the harness's foreground-command limit. On `timed-out`, establish
+another bounded wait if continued waiting is appropriate; do not treat the
+timeout as completion. If the harness kills the process without an envelope,
+inspect `run show` once and re-establish the wait. Never promise an automatic
+later message or interpret a killed observer as a failed worker. After a parent restart, inspect the
+known run and establish a fresh wait if needed, rather than create a duplicate.
+
+Read `data.outcome` and `data.runs[]`: timeout is not completion, and attention,
+stall, or awaiting-input can settle a wait without a terminal success. Resolve
+that condition; `--terminal` waits for the eventual terminal result but answers
+no decision. Then read `taskfleet run show <run-id> --output json` for the full
+`data.report`, `landed`, `landed_method`, and `preserved_work`. A settled run,
+clean worker exit, visible UI entry, or disappearing window is not merge proof.
+Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
+
+
+# worktree
+## Runtime capabilities
+
+
+Read sibling instructions through this harness's skill loader or file-reading
+facility; no particular invocation tool is required. Bundled text is also
+available with `taskfleet skill print <name>`. External review, Git-helper,
+and session-saving skills mentioned here are optional unless the user or
+repository mandates them. If absent, use ordinary Git, evidence-based self-review,
+and repository-local handoff notes instead. A missing **required** review or
+capability blocks completion and is disclosed, never claimed as run. Do not
+install tools, change another user's configuration, or publish artifacts merely
+to satisfy a skill reference.
+
+
+# worktree
+## Handing over
+
+
+Announce the choice in one line before invoking anything, for example
+`Routing to /worktree-research — survey-of-options framing on an inquiry topic.`
+That line is the user's chance to interrupt before a worktree exists.
+
+Then invoke the sibling through the harness's skill loader or by reading its instructions with `$ARGUMENTS` unchanged:
+the task text, any flags, in the order the user wrote them. Flags such as
+`--headless`, `--tmux-session`, `--profile`, `--interactive`, or a leading
+`--review` mean something specific to the sibling that receives them, and some
+are not `taskfleet` flags at all but instructions the sibling folds into the
+brief. Stripping, normalizing, or rephrasing here changes the brief the worker
+will eventually receive, and rejecting an unknown flag is the sibling's job, with
+the sibling's error message. Likewise do not expand or "helpfully" enrich the
+task; the sibling owns the brief and knows what the worker needs.
+
+If the selected bundled sibling is not loaded, read it with
+`taskfleet skill print <name>` and execute those instructions. If neither a
+loader nor readable bundled text is available, disclose the missing prerequisite
+and stop before creating state. Preserve the original arguments unchanged.
+
+Route to one sibling, once. If loading or executing the sibling reports a failure, tell the user
+what it said rather than trying another sibling: the failed attempt may already
+have created a run or branch, and a second attempt for the same task can leave
+two of them. Do not chain siblings ("research first, then fan out"); the user
+invokes the second step when the first has landed.
+
+
+# worktree-bug-analysis
+## Without issuectl: analyse an existing report artifact
+
+
+When the optional repository tracker is not enabled, accept an existing
+repository bug-report path or an explicit free-text report, not an unresolved
+issuectl slug. Agree an exact output path (default `research/<slug>-bug-analysis.md`)
+where `<slug>` is a short kebab-case title derived from the report, not an
+issue id; use it in the run title too. Copy the report and relevant attachments
+into the brief as paths/content.
+Do not file an issue just to run an analysis. If the request supplies only an
+unavailable issue reference, report the missing source and stop before spawning.
+
+Use the native spinoff creation, closing recipe, and full failure-disclosure
+sections below, but skip the issue-specific lookup, status, trailer, and storage
+instructions. The self-contained brief asks for the verdict, severity, affected
+area, reproduction attempts, examined revision, and fix sketch under the exact
+heading `## Triage analysis` in the agreed report file. Commit only that report
+and supporting analysis artifacts, never application changes or tracker
+metadata. The user retains disposition authority. After the plain parent wait,
+read the native report and verify the analysis landed at the agreed path.
+
+
+# stint-start
+## Without issuectl: a bounded serial round
+
+
+If the optional repository tracker is not enabled, use this path instead of
+all tracker-specific round instructions below. Read repository instructions,
+the current handoff if present, and the user's accepted task. Confirm a clean,
+committed source branch; synchronize only where repository remote policy calls
+for it. No upstream or deployment requirement is invented for a local-only repo.
+If there is no accepted scope, agree one with the user before spawning.
+
+Choose one focused free-text task with explicit done criteria and the exact
+repository validation commands. Inspect `taskfleet run list --repo . --output
+json` and known run reports for overlapping live or retained work; if ownership
+or overlap cannot be established, resolve that before spawning. Do not adopt or
+cancel another session's runs. Do not create a private DAG, lane table, issue
+backlog, or reservation file. Sequence tasks: spawn only the next accepted task
+after its predecessor has landed. Use `worktree-spinoff` (or the bundled
+`taskfleet-spawn-spinoff` primitive) and a self-contained brief including the
+closing recipe, failure disclosure, and proportionate review. If a required
+reviewer is unavailable, report that blocker rather than weaken the brief.
+
+Await each full run id as described in Parent wait and delivery. Read the full
+report, verify landing and content on the actual source, and preserve failed
+work for an explicit recovery decision. Never hand-merge around native run
+ownership. Run the project's gate again on integrated work. Deploy or push only
+with repository/user authorization; a missing policy grants neither. Report
+what is ready to try, validation and review gaps, retained work, and one next
+action. Stop after the accepted scope; finishing a round is not a request for
+another one. On an explicit finish request, save a repository-local handoff
+using `stint-handoff` (read it with `taskfleet skill print stint-handoff` if
+not loaded). If that text is unavailable, record accepted intent, delivered
+results, evidence gaps, unresolved owned runs, and the next action in `TODO.md`,
+commit exact paths, and disclose that the full handoff workflow was unavailable. The conductor edits handoff
+and decision records only; product edits remain worktree workers' work.
+
+
+# stint-handoff
+## Without issuectl: repository-local handoff
+
+
+If the optional repository tracker is not enabled, use this path instead of
+the tracker-backed handoff below. Read the repository's handoff convention and
+record the user's decisions in the documents that own them, not in a new tracker.
+Inspect every full run id this session launched or explicitly adopted with
+`taskfleet run show`; do not infer ownership from a global list. Read reports,
+verify delivered content, and inventory retained work even for terminal runs.
+Do not cancel, recover, or discard foreign runs. A live owned run or retained
+work needs an explicit recovery/retention decision; record it honestly and do
+not claim the handoff resolved it.
+
+Write the repository's existing handoff file (default `TODO.md`) with accepted
+intent, landed results and validation evidence, decisions still needed, known
+unresolved owned run ids and recovery actions, and the next bounded task. Do
+not manufacture issue slugs, lanes, reservations, a backlog, or a private DAG.
+There is no DAG verification step in this mode. Preserve other sessions' edits;
+stage only your exact paths, inspect the staged diff, and commit the narrative
+separately from other changes. Push only if repository policy authorizes it.
+
+If an external session-saving skill is available, read its actual contract;
+otherwise save durable repository lessons in the most specific existing agent
+instructions or owning document and commit those separately. Do not write
+personal/global preferences implicitly. A test-account reset is neither assumed
+nor automatic: perform one only with explicit project/user authorization and
+disclose its result. Report what was saved, unresolved work and failures, and
+one next action; a required failure prevents claiming completion.
+
+
+# night-stint-prep
+## Without issuectl: prepare accepted tasks, not a private schedule
+
+
+If the optional repository tracker is not enabled, use this path instead of
+the tracker-backed preparation below. Read repository instructions, the current
+handoff and the user's accepted scope. Choose a bounded next task that can be
+completed without human decisions; name its goal, done criteria, exact gate,
+and what must wait for the user. Describe follow-on intent only as conditional
+on the first task landing, not as a new graph or tracker. The next conductor
+works serially from this accepted scope and Taskfleet's live reports, checking
+for overlapping runs before spawning. No lane, issue slug, reservation file,
+or private DAG is required or created.
+
+Write and commit the repository's handoff file (default `TODO.md`), preserving
+useful history and other sessions' edits. Distinguish implementation, evidence
+preparation, and human-gated decisions. Include validation/deployment limits,
+unverified claims, known unresolved run ids, and the morning report expected.
+No workers are launched here. Push only under repository policy. Night work
+grants no extra decision, publishing, credential, or deployment authority.
+Brief the user on the chosen scope and remaining human decisions.
+
+
+# worktree-spinoff
+## Choosing a profile and creating the run
+
+
+Profile names are installation-owned, not universal capability tiers. Use the
+configured default by omitting `--profile`, unless the caller or repository
+explicitly selects an available name. Describe the required capability and risk
+in the brief, not a presumed local model or launcher. Preflight the complete
+intended create with `--dry-run`; an unknown explicit profile or any other
+preflight error stops creation, without silently substituting a profile. The
+real call uses the selector whose preflight passed. For child creates, preflight
+without both parent flags (child dry-run is unsupported), then restore them on
+the real call with an idempotency key. On `profile_required`, surface the
+configured choices and ask for a selection; do not invent or silently choose
+one. Profile selection is not review evidence.
+
+```
+# First issue this command with --dry-run; remove only --dry-run after it passes.
+# skill-example-ci: skip
+taskfleet run create \
+  --kind spinoff \
+  --title "<2–4 word title>" \
+  --task "<self-contained brief>" \
+  [--profile <resolved-profile>] \
+  [--source-branch <branch>] \
+  [--headless | --tmux-session <name>] \
+  [--notify <cmd>] \
+  [--parent-run-id <id> --parent-node-id <id>] \
+  [--idempotency-key <key>] \
+  [--dry-run]
+```
+
+What the flags do that `--help` does not tell you:
+
+- Exactly one of `--task` and `--prompt-file`; empty or whitespace-only text is
+  rejected, so do not strip it silently. `--parent-run-id` and
+  `--parent-node-id` come together or not at all.
+- `--idempotency-key` makes the call safe to repeat after a transient error: the
+  same key returns the original run, with `idempotent_replay: true` in the
+  envelope, instead of spawning twice.
+- `--notify <cmd>` is the push signal: the supervisor runs it via `sh -c` on the
+  terminal transition, before teardown, with `TASKFLEET_RUN_ID`,
+  `TASKFLEET_STATUS`, `TASKFLEET_SUMMARY`, `TASKFLEET_RUN_KIND`, and
+  `TASKFLEET_RUN_TITLE` in the environment, and again for an unresolved
+  `node.awaiting_input` after the grace window with
+  `TASKFLEET_STATUS=awaiting-input`, `TASKFLEET_AWAITING_INPUT=1`, and the
+  discussion array in `TASKFLEET_AWAITING_INPUT_JSON`. Delivery is at least
+  once: a supervisor crash between firing and recording its marker re-fires on
+  restart, because a missed completion is worse than a duplicate, so the command
+  should tolerate running twice. This is an optional operator-supplied hook,
+  not a required parent wake mechanism; use the plain wait process above.
+- Output defaults to `--output jsonl`, one compact envelope per line.

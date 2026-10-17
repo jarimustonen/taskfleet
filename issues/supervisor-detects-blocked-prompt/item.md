@@ -3,13 +3,15 @@ created: 2026-10-17
 updated: 2026-10-17
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: high
 provenance: chat
 lane: lifecycle
 lane_seq: 10
 blocked_by: ['@environment-neutral-skills', '@particularly-cooperative-chalk']
 collision: [core-run-state, bundled-skills, supervise-cleanup]
+closed: 2026-10-17
+closed_by: worker
 ---
 
 # Supervisor detects a worker blocked on an interactive prompt; run wait --check-in
@@ -71,8 +73,14 @@ pre-session auth/trust prompts are not retrofitted or claimed covered.
 
 ## Acceptance Criteria
 
-- [ ] Supported Claude permission/idle notification route is connected through generated invocation-local hooks, without relying on ordinary telemetry or agent commands while modal.
-- [ ] Durable awaiting-input grace, notify and default wait work unchanged; recovery, concurrency, foreign-session/stale-attempt/terminal fences and manual coexistence have deterministic evidence.
-- [ ] Explicit check-in returns an unmet interval outcome/exit 4 with elapsed and available projection evidence, distinct from timeout and completion; timing/multi-run/terminal/progress semantics are tested.
-- [ ] Absent/unsupported evidence is explicitly unknown/unavailable and no recursive worktree scan or parent tmux/desktop dependency is added.
-- [ ] Required release gate and focused independent state/trust review pass; documentation distinguishes fixture/source proof from unperformed live authenticated Claude proof.
+- [x] Supported Claude permission/idle notification route is connected through generated invocation-local hooks, without relying on ordinary telemetry or agent commands while modal.
+- [x] Durable awaiting-input grace, notify and default wait work unchanged; recovery, concurrency, foreign-session/stale-attempt/terminal fences and manual coexistence have deterministic evidence.
+- [x] Explicit check-in returns an unmet interval outcome/exit 4 with elapsed and available projection evidence, distinct from timeout and completion; timing/multi-run/terminal/progress semantics are tested.
+- [x] Absent/unsupported evidence is explicitly unknown/unavailable and no recursive worktree scan or parent tmux/desktop dependency is added.
+- [x] Required release gate and focused independent state/trust review pass; documentation distinguishes fixture/source proof from unperformed live authenticated Claude proof.
+
+## Comments
+
+### 2026-10-17T14:32:01Z · @worker
+
+Delivered invocation-local Claude permission/idle hook ingestion plus run wait --check-in (distinct outcome and exit 4). Complete scripts/validate-local-release.sh passed twice, latest on 24241fd4 (1249 tests, 1 skipped, plus docs/package/distribution/release checks). Reviewed all three changed snapshots. Focused claude-fable-5-1 review plus gpt-6-astra source/trust verification; large tool-result input finding fixed and tested. Independent static tracing confirms bypass-immune dangerous-rm reaches the Bash-specific native permission notification cue. Disposable generated-hook fixture proves subprocess detection, absent telemetry, recovery/fences/manual coexistence and stripped PATH; no authenticated live Claude safety modal was run. Limitations are explicit in docs/CLAUDE-PROMPT-SIGNALS.md: pre-session/disabled/other-class signals are unknown, unusually slow publication/retry promotion can lose once-only early signals, and approved permission attention may remain until turn end. No original incident run, household session, installed executable or installed skills were modified.

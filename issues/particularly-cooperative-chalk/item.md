@@ -2,7 +2,7 @@
 created: 2026-10-16
 updated: 2026-10-17
 type: feature
-status: open
+status: in-progress
 priority: normal
 provenance: ai-review
 source_ref: taskfleet:01m521vczarx5bkx086n64t1t2/review-finding:sha1:a812016fda7c4b258a686b029d1c68af15d6cce1

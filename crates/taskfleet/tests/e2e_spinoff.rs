@@ -184,6 +184,12 @@ default="e2e"
     );
 
     let worker_oid = git(&worktree, &["rev-parse", "HEAD"]);
+    // Native materialization also supplies a handoff note. Verify the exact
+    // worker patch (including that real producer artifact), not an assumed
+    // one-file result. The independent SOURCE commit must not enter this range.
+    let worker_files = git(&worktree, &["diff", "--name-only", "HEAD^..HEAD"]);
+    let worker_numstat = git(&worktree, &["diff", "--numstat", "HEAD^..HEAD"]);
+    assert!(worker_files.lines().any(|file| file == "WORK"));
     // Force a genuine rebase: the source advances independently after the
     // worker fork. Rebasing must change the worker commit's parent and hash.
     std::fs::write(tools.repo_path().join("SOURCE"), "independent source work").unwrap();
@@ -306,11 +312,11 @@ default="e2e"
         );
         assert_eq!(
             git(tools.repo_path(), &["diff", "--name-only", &range]),
-            "WORK"
+            worker_files
         );
         assert_eq!(
             git(tools.repo_path(), &["diff", "--numstat", &range]),
-            "1\t0\tWORK"
+            worker_numstat
         );
     }
 

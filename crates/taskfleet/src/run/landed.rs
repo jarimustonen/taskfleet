@@ -741,6 +741,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: Some("op-1".into()),
             worker_oid: Some("abc".into()),
+            integrated_oid: None,
         }
         .stamp(&mut merged);
         assert!(report_has_merge_marker(Some(&merged)));
@@ -790,6 +791,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: None,
             worker_oid: None,
+            integrated_oid: None,
         }
         .stamp(&mut merged);
         let inputs = LandingInputs {

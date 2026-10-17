@@ -32,6 +32,13 @@
 //!      worktree/branch reclaim shipped for `merge-skips-teardown` /
 //!      `agent-died-merge-no-teardown-interactive`, restoring single-owner teardown.
 //!
+//! Native merges retain an exact post-rebase tip as optional read evidence:
+//! `merge.native_prepared` is fsynced by the before-ref-move callback under the
+//! Git merge lock/source fence, then copied into the successful report's typed
+//! `origin.integrated_oid`. Prepared evidence alone is not a landing verdict.
+//! Recovery binds it to the immutable transaction and verifies Git ancestry;
+//! caller-owned settlement keeps its separate intent-bound `merge.rebased` path.
+//!
 //! On a merge failure (conflicts, dirty tree, lock timeout) the report is
 //! NOT submitted — the node stays live so the agent can recover (e.g.
 //! `/complex-rebase`) and re-run `run merge`.
@@ -765,13 +772,36 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // stays live for the agent to recover and retry. The source ref mutation is
     // guarded by the recorded `expected_source_oid` (compare-and-swap): the driver
     // refuses if the source branch moved since we recorded the transaction.
+    let integrated_oid = std::cell::OnceCell::new();
     if let Err(e) = run_git_merge(
         Path::new(worktree_path),
         branch,
         effective_source.as_deref(),
         merge_start.as_ref().map(|h| h.expected_source_oid.as_str()),
         || Ok(()),
-        |_| Ok(()),
+        |oid| {
+            if let Some(start) = &merge_start {
+                // Native evidence only: this does not carry caller intent or
+                // confer a second settlement authority. Persist before the FF,
+                // while the Git merge lock and source CAS fence still hold.
+                append_and_apply_event(
+                    &paths,
+                    "merge.native_prepared",
+                    Some(&node_id),
+                    None,
+                    json!({"op_id": start.op_id, "worker_oid": start.worker_oid,
+                        "expected_source_oid": start.expected_source_oid,
+                        "integrated_oid": oid}),
+                )
+                .map_err(from_core)?;
+                let _ = integrated_oid.set(oid.to_string());
+                #[cfg(test)]
+                if std::env::var("TASKFLEET_TEST_NATIVE_MERGE_CRASH").as_deref() == Ok("prepared") {
+                    std::process::exit(76);
+                }
+            }
+            Ok(())
+        },
     ) {
         // The merge did not complete (conflict, dirty tree, CAS mismatch, lock
         // timeout). Clear the transaction we opened so a dangling `merge.started`
@@ -781,6 +811,11 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
             abort_merge_start(&paths, &node_id, &h.op_id, "merge did not complete");
         }
         return Err(e);
+    }
+
+    #[cfg(test)]
+    if std::env::var("TASKFLEET_TEST_NATIVE_MERGE_CRASH").as_deref() == Ok("ref") {
+        std::process::exit(77);
     }
 
     // Merge succeeded: submit the terminal report (built above, stamped with
@@ -801,6 +836,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     taskfleet_core::ReportOrigin::RunMerge {
         op_id: merge_start.as_ref().map(|h| h.op_id.clone()),
         worker_oid: merge_start.as_ref().map(|h| h.worker_oid.clone()),
+        integrated_oid: integrated_oid.into_inner(),
     }
     .stamp(&mut report);
 
@@ -1094,6 +1130,7 @@ fn execute_caller_merge(
     taskfleet_core::ReportOrigin::RunMerge {
         op_id: Some(start.op_id),
         worker_oid: Some(start.worker_oid),
+        integrated_oid: None,
     }
     .stamp(&mut report);
     authority.verify(&node, repo, source)?;
@@ -2093,6 +2130,7 @@ mod caller_merge_tests {
         taskfleet_core::ReportOrigin::RunMerge {
             op_id: Some("not-a-transaction".into()),
             worker_oid: Some(git(&f.repo, &["rev-parse", "wt/worker"])),
+            integrated_oid: None,
         }
         .stamp(&mut report);
         append_and_apply_event(&f.paths, "node.report", Some(&f.node), None, report).unwrap();
@@ -2216,5 +2254,198 @@ mod caller_merge_tests {
             .unwrap()
             .iter()
             .any(|e| e.kind == "merge.started"));
+    }
+}
+
+#[cfg(test)]
+mod native_evidence_tests {
+    use super::*;
+    use taskfleet_core::RunPaths;
+
+    const ID: &str = "01jxsnap000000000000000000";
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().into()
+    }
+
+    #[test]
+    fn native_crash_child() {
+        if std::env::var_os("TASKFLEET_TEST_NATIVE_MERGE_CRASH").is_none() {
+            return;
+        }
+        execute(&Args {
+            run_id: ID.into(),
+            source: Some("main".into()),
+            node_id: None,
+            report_file: None,
+            settlement_key: None,
+            actor: None,
+            dry_run: false,
+            spec: &OutputSpec::default(),
+            warnings: &[],
+        })
+        .unwrap();
+        panic!("expected crash injection");
+    }
+
+    #[test]
+    fn native_producer_recovery_retains_rebased_oid_not_later_source_tip() {
+        crash_round_trip("ref", 77);
+    }
+
+    #[test]
+    fn native_prepared_evidence_alone_does_not_authorize_completion() {
+        crash_round_trip("prepared", 76);
+    }
+
+    fn crash_round_trip(point: &str, code: i32) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "fixture@example.invalid"]);
+        git(&repo, &["config", "user.name", "Fixture"]);
+        std::fs::write(repo.join("BASE"), "base").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "base"]);
+        let base = git(&repo, &["rev-parse", "HEAD"]);
+        let checkout = tmp.path().join("worker");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "wt/worker",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(checkout.join("WORK"), "work\n").unwrap();
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["commit", "-qm", "work"]);
+        let worker = git(&checkout, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("SOURCE"), "source").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "source advance"]);
+        let expected = git(&repo, &["rev-parse", "HEAD"]);
+        let home = tmp.path().join("home");
+        let dir = home.join("runs").join(ID);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, ID).unwrap();
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({"kind":"spinoff", "lifecycle":"interactive", "title":"native",
+                "source_repo":repo, "source_branch":"main"}),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid),
+            None,
+            json!({"kind":"spinoff", "branch":"wt/worker", "worktree_path":checkout,
+                "base_sha":base}),
+        )
+        .unwrap();
+        // The native driver reaches the crash points with only its declared Git
+        // dependency. No installed harness, user manager, tmux or workmux may run.
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let git_exe = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join("git"))
+            .find(|path| path.is_file())
+            .unwrap();
+        std::os::unix::fs::symlink(git_exe, bin.join("git")).unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run::merge::native_evidence_tests::native_crash_child",
+            ])
+            .env("TASKFLEET_HOME", &home)
+            .env("HOME", &home)
+            .env("PATH", &bin)
+            .env("TASKFLEET_TEST_NATIVE_MERGE_CRASH", point)
+            .env_remove("TMUX")
+            .status()
+            .unwrap();
+        assert_eq!(child.code(), Some(code));
+        let events = read_all_events(&paths.events()).unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| e.kind == "merge.rebased" || e.kind == "node.report"));
+        let proof = events
+            .iter()
+            .find(|e| e.kind == "merge.native_prepared")
+            .unwrap();
+        let tip = proof.data["integrated_oid"].as_str().unwrap();
+        assert_ne!(tip, worker);
+        let node = read_node_opt(&paths, &nid).unwrap().unwrap();
+        let txn = node.pending_merge.unwrap();
+        assert!(txn.caller_authority.is_none());
+        assert_eq!(proof.data["op_id"], txn.op_id);
+        if point == "prepared" {
+            assert_eq!(git(&repo, &["rev-parse", "main"]), expected);
+            assert!(matches!(
+                merge_recovery::recover_node(&paths, &nid, "git"),
+                merge_recovery::Recovery::Rejected { .. }
+            ));
+            assert!(read_node_opt(&paths, &nid)
+                .unwrap()
+                .unwrap()
+                .last_report
+                .is_none());
+            assert!(checkout.exists());
+            return;
+        }
+        // Later source work is not the historic result. No current worker ref
+        // is needed to recover or inspect the recorded operation.
+        git(&repo, &["commit", "--allow-empty", "-qm", "later"]);
+        assert_ne!(git(&repo, &["rev-parse", "main"]), tip);
+        assert_eq!(
+            merge_recovery::recover_node(&paths, &nid, "git"),
+            merge_recovery::Recovery::Completed
+        );
+        let report = read_node_opt(&paths, &nid)
+            .unwrap()
+            .unwrap()
+            .last_report
+            .unwrap();
+        assert_eq!(report["origin"]["integrated_oid"], tip);
+        assert_eq!(report["origin"]["worker_oid"], worker);
+        assert_eq!(report["origin"]["op_id"], txn.op_id);
+        append_and_apply_event(&paths, "run.status", None, None, json!({"status":"done"})).unwrap();
+        assert!(cleanup::cleanup_terminal_nodes(&paths));
+        assert!(!checkout.exists());
+        assert!(merge_recovery::read_oid("git", repo.to_str().unwrap(), "wt/worker").is_none());
+        assert_eq!(
+            merge_recovery::recover_node(&paths, &nid, "git"),
+            merge_recovery::Recovery::NothingPending
+        );
+        assert_eq!(
+            read_node_opt(&paths, &nid)
+                .unwrap()
+                .unwrap()
+                .last_report
+                .unwrap(),
+            report
+        );
+        let range = format!("{expected}..{tip}");
+        assert_eq!(git(&repo, &["rev-list", "--count", &range]), "1");
+        assert_eq!(git(&repo, &["diff", "--name-only", &range]), "WORK");
     }
 }

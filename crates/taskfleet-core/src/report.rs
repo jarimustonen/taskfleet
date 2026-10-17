@@ -89,9 +89,13 @@ pub enum ReportOrigin {
         /// The merge transaction's `op_id`, when a transaction was recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         op_id: Option<String>,
-        /// The worker tip OID the merge integrated, when a transaction was recorded.
+        /// The pre-rebase worker tip, when a transaction was recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worker_oid: Option<String>,
+        /// Exact post-rebase tip integrated by a native merge. Absent on legacy,
+        /// caller-owned, or unverifiable recovery evidence; never a current tip guess.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        integrated_oid: Option<String>,
     },
 }
 
@@ -998,10 +1002,12 @@ mod tests {
             ReportOrigin::RunMerge {
                 op_id: Some("op-123".into()),
                 worker_oid: Some("deadbeef".into()),
+                integrated_oid: None,
             },
             ReportOrigin::RunMerge {
                 op_id: None,
                 worker_oid: None,
+                integrated_oid: None,
             },
         ];
         for origin in cases {
@@ -1016,6 +1022,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_merge_origin_decodes_without_exact_integrated_evidence() {
+        let report = json!({"origin": {"kind":"run-merge", "op_id":"old", "worker_oid":"old-tip"}});
+        assert!(matches!(
+            ReportOrigin::from_report(&report),
+            Some(ReportOrigin::RunMerge {
+                integrated_oid: None,
+                ..
+            })
+        ));
+        let mut modern = report.clone();
+        modern["origin"]["integrated_oid"] = json!("post-rebase-tip");
+        let origin = ReportOrigin::from_report(&modern).unwrap();
+        origin.stamp(&mut modern);
+        assert_eq!(modern["origin"]["integrated_oid"], "post-rebase-tip");
+    }
+
+    #[test]
     fn report_origin_serializes_with_kind_tag() {
         let mut report = json!({ "success": true });
         ReportOrigin::Agent.stamp(&mut report);
@@ -1025,6 +1048,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: Some("op-9".into()),
             worker_oid: Some("abc123".into()),
+            integrated_oid: None,
         }
         .stamp(&mut merge);
         assert_eq!(
@@ -1037,6 +1061,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: None,
             worker_oid: None,
+            integrated_oid: None,
         }
         .stamp(&mut bare);
         assert_eq!(bare["origin"], json!({ "kind": "run-merge" }));
@@ -1080,6 +1105,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: Some("op-1".into()),
             worker_oid: Some("abc".into()),
+            integrated_oid: None,
         }
         .stamp(&mut merged);
         assert!(ReportOrigin::report_is_confirmed_merge(&merged));
@@ -1089,6 +1115,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: None,
             worker_oid: None,
+            integrated_oid: None,
         }
         .stamp(&mut bare);
         assert!(ReportOrigin::report_is_confirmed_merge(&bare));
@@ -1131,6 +1158,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: None,
             worker_oid: None,
+            integrated_oid: None,
         }
         .stamp(&mut neg);
         assert!(!ReportOrigin::report_is_confirmed_merge(&neg));
@@ -1139,6 +1167,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: None,
             worker_oid: None,
+            integrated_oid: None,
         }
         .stamp(&mut cancelled);
         assert!(!ReportOrigin::report_is_confirmed_merge(&cancelled));

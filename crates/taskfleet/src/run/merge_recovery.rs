@@ -35,6 +35,12 @@
 //!    - any git read undecidable → **`CannotVerify`**: leave the transaction
 //!      pending; never abort or complete on a guess.
 //!
+//! Native merges additionally persist `merge.native_prepared` before the source
+//! ref move, under the Git merge lock and source fence. Recovery copies that
+//! exact post-rebase OID into the report only after transaction binding and Git
+//! ancestry verification. This is optional read evidence, not a new completion
+//! authority; legacy recovery and caller-owned settlement remain separate.
+//!
 //! The git shell-outs run OUTSIDE the run lock (invariant 3); the resolving event
 //! is appended under the exclusive lock after re-verifying the transaction is
 //! still the one we classified AND the node is still non-terminal (a racing cancel
@@ -168,6 +174,7 @@ pub(crate) fn verified_caller_transaction(
             taskfleet_core::ReportOrigin::RunMerge {
                 op_id: Some(op),
                 worker_oid: Some(oid),
+                ..
             } => (op, oid),
             _ => return None,
         };
@@ -455,6 +462,17 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
         v => v,
     };
 
+    // This enriches a confirmed native completion only; it does not decide
+    // settlement. Legacy recovery remains supported without exact Git evidence.
+    let integrated_oid = verified_native_integrated_oid(
+        paths,
+        node_id,
+        &txn,
+        source_repo.as_deref(),
+        worktree_path.as_deref(),
+        git,
+    );
+
     // 4. Append the resolving event under the exclusive lock, re-verifying the
     //    transaction is still the exact one we classified (a concurrent retry may
     //    have superseded or resolved it in the git-probe window).
@@ -492,7 +510,10 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
             Verdict::Complete => {
                 // Append the terminal report the crashed driver would have — same
                 // idempotency key as `run merge`, so a racing retry dedupes.
-                let report = completion_report(&txn);
+                let mut report = completion_report(&txn);
+                if let Some(oid) = &integrated_oid {
+                    report["origin"]["integrated_oid"] = json!(oid);
+                }
                 let key = format!("explicit-merge:{run_id}:{node_id}");
                 match append_and_apply_idempotent(
                     paths,
@@ -788,6 +809,70 @@ fn worker_landed(
     }
 }
 
+/// Recover exact native evidence, never from mutable worker refs or a source
+/// tip guessed to be the merge result. The start and prepared records must name
+/// the same operation, and Git must still prove that the immutable prepared tip
+/// contains the expected source and is contained by the current source. Missing,
+/// duplicate, malformed, caller-only, or pruned evidence remains absent.
+fn verified_native_integrated_oid(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    txn: &MergeTxn,
+    source_repo: Option<&str>,
+    worktree_path: Option<&str>,
+    git: &str,
+) -> Option<String> {
+    if txn.caller_authority.is_some() {
+        return None;
+    }
+    let events = RunLock::with_shared_lock(&paths.lock(), || {
+        taskfleet_core::read_all_events(&paths.events())
+    })
+    .ok()?;
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.kind == "merge.started"
+                && e.run_id == paths.run_id
+                && e.node_id.as_ref() == Some(node_id)
+                && serde_json::from_value::<MergeTxn>(e.data.clone())
+                    .ok()
+                    .as_ref()
+                    == Some(txn)
+        })
+        .collect();
+    if starts.len() != 1 {
+        return None;
+    }
+    let proofs: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.kind == "merge.native_prepared"
+                && e.seq > starts[0].seq
+                && e.run_id == paths.run_id
+                && e.node_id.as_ref() == Some(node_id)
+                && e.data["op_id"] == txn.op_id
+                && e.data["worker_oid"] == txn.worker_oid
+                && e.data["expected_source_oid"] == txn.expected_source_oid
+        })
+        .collect();
+    if proofs.len() != 1 {
+        return None;
+    }
+    let tip = proofs[0].data["integrated_oid"].as_str()?;
+    if !matches!(tip.len(), 40 | 64) || !tip.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let (repo, now) = resolve_source(source_repo, worktree_path, &txn.source_branch, git)?;
+    if read_oid(git, &repo, tip).as_deref() != Some(tip)
+        || ancestor(git, &repo, &txn.expected_source_oid, tip) != Some(true)
+        || ancestor(git, &repo, tip, &now) != Some(true)
+    {
+        return None;
+    }
+    Some(tip.to_string())
+}
+
 /// The terminal `explicit-merge` report recovery appends to complete a
 /// transaction. Mirrors the minimal report `run merge` synthesizes (a clean
 /// merge is a success), plus a note that it was recovered.
@@ -806,6 +891,7 @@ fn completion_report(txn: &MergeTxn) -> Value {
     taskfleet_core::ReportOrigin::RunMerge {
         op_id: Some(txn.op_id.clone()),
         worker_oid: Some(txn.worker_oid.clone()),
+        integrated_oid: None,
     }
     .stamp(&mut report);
     // Validate the §7.3 shape UNCONDITIONALLY (not `debug_assert!`) so a future
@@ -938,6 +1024,64 @@ mod tests {
             txn,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn exact_native_recovery_evidence_is_optional_and_transaction_bound() {
+        for case in [
+            "valid",
+            "legacy",
+            "wrong-op",
+            "duplicate",
+            "missing-object",
+            "caller-event",
+            "malformed",
+        ] {
+            let (repo_dir, base, worker_tip) = repo_with_worker();
+            let repo = repo_dir.path();
+            git(repo, &["merge", "-q", "--ff-only", "wt/worker"]);
+            let home = tempfile::TempDir::new().unwrap();
+            let paths = fresh_run(&home, repo);
+            record_txn(&paths, &base, &worker_tip, &base);
+            let nid = NodeId::parse_str("n-0001").unwrap();
+            let mut proof = json!({"op_id":"01jxop00000000000000000000",
+                "worker_oid":worker_tip,"expected_source_oid":base,"integrated_oid":worker_tip});
+            match case {
+                "wrong-op" => proof["op_id"] = json!("other-operation"),
+                "missing-object" => proof["integrated_oid"] = json!("f".repeat(40)),
+                "malformed" => proof["integrated_oid"] = json!("main"),
+                _ => {}
+            }
+            if case != "legacy" {
+                let kind = if case == "caller-event" {
+                    "merge.rebased"
+                } else {
+                    "merge.native_prepared"
+                };
+                append_and_apply_event(&paths, kind, Some(&nid), None, proof.clone()).unwrap();
+                if case == "duplicate" {
+                    append_and_apply_event(&paths, kind, Some(&nid), None, proof).unwrap();
+                }
+            }
+            assert_eq!(
+                recover_node(&paths, &nid, &git_bin()),
+                Recovery::Completed,
+                "{case}"
+            );
+            let report = read_node_opt(&paths, &nid)
+                .unwrap()
+                .unwrap()
+                .last_report
+                .unwrap();
+            if case == "valid" {
+                assert_eq!(report["origin"]["integrated_oid"], worker_tip);
+            } else {
+                assert!(
+                    report["origin"].get("integrated_oid").is_none(),
+                    "{case}: {report}"
+                );
+            }
+        }
     }
 
     #[test]

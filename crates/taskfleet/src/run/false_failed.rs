@@ -252,6 +252,7 @@ mod tests {
         ReportOrigin::RunMerge {
             op_id: Some("op-1".into()),
             worker_oid: Some("abc".into()),
+            integrated_oid: None,
         }
         .stamp(&mut typed);
         assert!(!is_false_failed_suspected(

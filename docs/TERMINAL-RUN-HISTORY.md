@@ -47,15 +47,37 @@ Neither grants control or ownership. See [Creator attribution](CREATOR-ATTRIBUTI
 
 Do not copy diffstats, file lists or commit counts into a host history store.
 Read them from the source Git repository on demand using verified commit OIDs.
-The existing `merge.started` event retains `expected_source_oid`, `worker_oid`,
-`base_sha` and the source branch; a modern merge report records
-`origin.worker_oid` and `origin.op_id`. Inspect these through `event tail <run-id>` and
-show's report. The report does **not** guarantee a `merge_commit` field, and the
-worker OID is the pre-rebase worker tip, not necessarily the resulting source
-tip. Resolve/verify the integrated commits in Git before presenting a diff;
-do not silently use today's source tip as the historic merge result. Legacy or
-externally pruned Git objects can make that detail unavailable without making
-the retained report unavailable. `landed` is the supported landing verdict.
+The `merge.started` event retains `expected_source_oid`, `worker_oid`,
+`base_sha` and the source branch. For ordinary Taskfleet-owned merges, the native
+producer writes `merge.native_prepared` with the exact post-rebase
+`integrated_oid` before moving the source ref, while holding the Git merge lock
+and checking the recorded source fence. That event alone is **not** a landing:
+a crash can still prevent the ref move.
+
+A successful native merge's retained report carries `origin.op_id`,
+`origin.worker_oid` (the **pre-rebase** tip), and optional
+`origin.integrated_oid` (the exact integrated post-rebase tip). Read the report
+at show `data.report.origin`, or node show `data.report.origin`; match its
+`op_id` to `merge.started` through `event tail <run-id>`. After verifying that
+both objects still exist as commits in the recorded source repository, use
+`expected_source_oid..integrated_oid` for the commit count, diffstat and file
+list. Do not use `base_sha` as that range's source boundary: concurrent source
+work may have landed since the worker forked.
+
+Crash recovery retains the exact native OID only when the prepared event is
+uniquely bound to that transaction and Git verifies the expected source is an
+ancestor of it and it is an ancestor of the moved source. This optional evidence
+does not change completion authority, fencing or teardown policy. Caller-owned
+`merge.rebased` remains a separate intent-bound settlement event; it is not an
+ordinary native producer stream, and caller reports do not currently expose
+`origin.integrated_oid`.
+
+The optional field is omitted for legacy reports, caller-owned results and
+unverifiable recovery evidence. Never substitute `worker_oid` or today's source
+tip when it is absent. A report does **not** guarantee a `merge_commit` field.
+Externally pruned Git objects can make Git detail unavailable even when the
+retained report still names their OIDs. `landed` is the supported landing verdict,
+not a historical source-tip lookup.
 
 ## Three different resource lifetimes
 
@@ -98,13 +120,20 @@ is read-only and never confers continuation or settlement authority.
 ## Regression evidence
 
 - `tests/e2e_spinoff.rs`: the native merged round trip and terminal-history
-  variants cover autonomous/interactive merge and failed/cancelled preserved
+  variants force a real hash-changing native rebase, verify the exact Git range
+  after teardown/restart and later source advancement, and cover failed/cancelled preserved
   commits. They read list/show after worker/window/worktree cleanup, re-enter
   the supervisor from terminal state, and re-read the retained report,
   attribution and transcript discovery. Native spawn uses real disposable Git,
   declared worker/tmux/workmux doubles and the Linux user-manager fixture.
   `failed_supervised_run_merge_recovers_done_and_tears_down` separately covers
   a failed run's recovery and supervisor reattachment.
+- `run::merge::native_evidence_tests`: real native producer crash windows before
+  and after the ref move, with Git-only PATH; recovery preserves the exact rebased
+  OID after later source advancement and supervisor Git teardown. Prepared
+  evidence alone cannot complete an unlanded merge. `merge_recovery` tests cover
+  absent, duplicate, mismatched, malformed and missing-object native evidence;
+  core report tests cover backward decoding without the optional field.
 - `tests/session_maintenance.rs::display_expiry_keeps_durable_history_and_evidence`:
   deterministic public-command expiry with a strict tmux double and stripped
   PATH, repeated twice; only the owned inert pane is removed. Manifest identity,

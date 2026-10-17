@@ -26,6 +26,20 @@ fn run_ok(command: &mut Command) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
 fn wait_event(path: &Path, kind: &str) {
     wait_event_count(path, kind, 1);
 }
@@ -162,6 +176,25 @@ default="e2e"
         String::from_utf8_lossy(&commit.stderr)
     );
 
+    let worker_oid = git(&worktree, &["rev-parse", "HEAD"]);
+    // Force a genuine rebase: the source advances independently after the
+    // worker fork. Rebasing must change the worker commit's parent and hash.
+    std::fs::write(tools.repo_path().join("SOURCE"), "independent source work").unwrap();
+    git(tools.repo_path(), &["add", "SOURCE"]);
+    git(
+        tools.repo_path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "source advance",
+        ],
+    );
+    let expected_source = git(tools.repo_path(), &["rev-parse", "main"]);
+
     if status == "done" {
         let merged = run_ok(
             Command::new(env!("CARGO_BIN_EXE_taskfleet"))
@@ -217,6 +250,63 @@ default="e2e"
     run_ok(restart.args(["supervise", run_id, "--once", "--json"]));
     let after = assert_terminal_history(home.path(), run_id, status, interactive);
     assert_eq!(before["report"], after["report"]);
+    if status == "done" {
+        let origin = &after["report"]["origin"];
+        let integrated = origin["integrated_oid"]
+            .as_str()
+            .expect("exact native evidence");
+        assert_ne!(integrated, worker_oid, "a rebase actually changed the hash");
+        assert_eq!(origin["worker_oid"], worker_oid);
+        let stream: Vec<Value> = std::fs::read_to_string(&events)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(!stream.iter().any(|e| e["kind"] == "merge.rebased"));
+        let start = stream
+            .iter()
+            .find(|e| e["kind"] == "merge.started")
+            .unwrap();
+        let prepared = stream
+            .iter()
+            .find(|e| e["kind"] == "merge.native_prepared")
+            .unwrap();
+        assert_eq!(origin["op_id"], start["data"]["op_id"]);
+        assert_eq!(prepared["data"]["op_id"], origin["op_id"]);
+        assert_eq!(prepared["data"]["integrated_oid"], integrated);
+        assert_eq!(start["data"]["expected_source_oid"], expected_source);
+        // Advance source again: history reads must not substitute today's tip.
+        git(
+            tools.repo_path(),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "later",
+            ],
+        );
+        assert_ne!(git(tools.repo_path(), &["rev-parse", "main"]), integrated);
+        let retained = assert_terminal_history(home.path(), run_id, status, interactive);
+        assert_eq!(retained["report"]["origin"], *origin);
+        let range = format!("{expected_source}..{integrated}");
+        assert_eq!(
+            git(tools.repo_path(), &["rev-list", "--count", &range]),
+            "1"
+        );
+        assert_eq!(
+            git(tools.repo_path(), &["diff", "--name-only", &range]),
+            "WORK"
+        );
+        assert_eq!(
+            git(tools.repo_path(), &["diff", "--numstat", &range]),
+            "1\t0\tWORK"
+        );
+    }
+
     assert_eq!(before["node_transcripts"], after["node_transcripts"]);
     let kinds: Vec<String> = std::fs::read_to_string(events)
         .unwrap()

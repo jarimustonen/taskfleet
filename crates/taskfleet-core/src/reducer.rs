@@ -2836,6 +2836,7 @@ mod tests {
         crate::ReportOrigin::RunMerge {
             op_id: Some("op-1".into()),
             worker_oid: Some("cafebabe".into()),
+            integrated_oid: None,
         }
         .stamp(&mut run_merge);
         assert_eq!(

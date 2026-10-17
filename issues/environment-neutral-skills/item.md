@@ -3,7 +3,7 @@ created: 2026-10-16
 updated: 2026-10-17
 type: task
 reporter: jari
-status: open
+status: in-progress
 priority: high
 lane: skills
 lane_seq: 10

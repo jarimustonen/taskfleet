@@ -69,6 +69,16 @@ another repository.
   `writeln!` into the existing string, with identical snapshot bytes, committed
   the mechanical test-only repair, and reran the exact full gate. No validation
   step was waived. Detailed first-attempt log: `history/portable-skills-full-gate.log`.
+- Second full-gate attempt passed clippy, then failed at the unchanged
+  `linux_lifetime::tests::runtime_validation_rejects_wrong_owner_symlink_missing_and_open_permissions`
+  fixture (exit 100, `validate_dir(dir.path(), uid).is_ok()`). This shell's
+  umask is `0002`; tempfile 3.27 creates directories with default permissions,
+  while the fixture assumes mode `0700` without setting it. The next exact gate
+  invocation uses process-local `umask 077`, preserving the runtime check and
+  touching no household service or runtime implementation. This pre-existing
+  fixture/environment dependency is disclosed for the conductor rather than
+  widening this skills-only worker into parallel-owned runtime code. Detailed
+  log: `history/portable-skills-full-gate-retry.log`.
 - The reviewer independently ran `skill_examples` while the new contract snapshot
   was being amended. Its snapshot assertion failed and produced
   `skill_examples__portable_workflow_contracts.snap.new`; the review itself

@@ -9,16 +9,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.16.0] - 2026-10-17
+
+### Added
+
 - Claude permission/idle notifications now surface through awaiting-input even without worker telemetry; `run wait --check-in <duration>` returns a distinct live check-in (exit 4) with bounded evidence.
 
+- Expose the integrated merge OID for Taskfleet-owned runs (`particularly-cooperative-chalk`).
+- Supervisor detects a worker blocked on an interactive prompt; run wait --check-in (`supervisor-detects-blocked-prompt`).
+
 ### Changed
+
+- Environment-neutral bundled skills; issuectl conditional per repository (`environment-neutral-skills`).
 
 ### Fixed
 
 - Make bundled workflows portable across agent hosts: repository-scoped optional
   issuectl, tracker-free serial stints and bug reports, configured profiles, and
   plain run waits without a desktop or notification service.
-<!-- oss-changelog:unreleased-end -->
 
 ## [0.15.0] - 2026-10-16
 

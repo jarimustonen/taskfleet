@@ -3,9 +3,13 @@ created: 2026-10-17
 updated: 2026-10-17
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: high
 provenance: chat
+lane: lifecycle
+lane_seq: 10
+blocked_by: ['@environment-neutral-skills', '@particularly-cooperative-chalk']
+collision: [core-run-state, bundled-skills, supervise-cleanup]
 ---
 
 # Supervisor detects a worker blocked on an interactive prompt; run wait --check-in

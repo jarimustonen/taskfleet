@@ -1,10 +1,13 @@
 ---
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-17
 type: task
 reporter: jari
 status: open
 priority: high
+lane: skills
+lane_seq: 10
+collision: [bundled-skills]
 ---
 
 # Environment-neutral bundled skills; issuectl conditional per repository

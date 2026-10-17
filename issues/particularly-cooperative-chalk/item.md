@@ -1,8 +1,8 @@
 ---
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-17
 type: feature
-status: untriaged
+status: open
 priority: normal
 provenance: ai-review
 source_ref: taskfleet:01m521vczarx5bkx086n64t1t2/review-finding:sha1:a812016fda7c4b258a686b029d1c68af15d6cce1
@@ -16,6 +16,9 @@ assessment_classification: CONFIRMED
 assessment_outcome: SPIN_OFF
 review_severity: P2
 review_target: taskfleet@8464733b0d69cf1342eed64995163fd36c33523d:crates/taskfleet/src/run/merge.rs
+lane: merge
+lane_seq: -10
+collision: [core-run-state]
 ---
 
 # Expose the integrated merge OID for Taskfleet-owned runs

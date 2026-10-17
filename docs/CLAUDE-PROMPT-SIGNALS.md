@@ -53,8 +53,14 @@ hooks, authentication or trust prompts before session initialization, unsupporte
 harnesses and new modal classes without these native notifications may supply no
 signal. Existing `elicitation_dialog`, `elicitation_url_dialog` and remote-worker
 notification classes are outside this permission/idle matcher. In particular,
-`CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS` can suppress native permission
-notification delivery; Taskfleet does not override that user-owned switch.
+`CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS` suppresses the SDK permission
+timer in the inspected version, not its separate interactive dialog cue.
+Taskfleet does not override that user-owned switch.
+Once-only notifications that arrive before run publication or retry-attempt
+promotion are ignored by the identity fence; delivery is not buffered. The native
+interactive cue's six-second delay makes the normal launch race unlikely, but
+an unusually slow publication can still lose an early signal. A short hook retry
+would only shift this window, so the fence is retained rather than weakened.
 No notification means **unknown**, not “healthy” or “not blocked”. Hooks
 cannot fix those cases retroactively. Check-in is the bounded inspection path;
 it is not a substitute claim that every possible modal is detected.
@@ -90,8 +96,10 @@ cover malformed/bounded input, interval timing and precedence. Existing awaiting
 tests cover durable grace/notify deduplication.
 
 Read-only source inspection of installed Claude **2.1.280** found its
-`permission_prompt` timer in the permission ask path, `idle_prompt` emission from
-the interactive input controller, and hook dispatch separate from OS notification
-delivery. This is source evidence plus fixture proof, **not a live authenticated
+SDK `permission_prompt` timer and the distinct interactive Bash dialog path:
+bypass-immune dangerous-removal ask → `permission_bash` (`ZLe`) → shared
+permission notification metadata → six-second inactivity cue → Notification
+hook dispatch before OS delivery. `idle_prompt` comes from the interactive input
+controller. This is source evidence plus fixture proof, **not a live authenticated
 Claude safety-modal test**. Neither the original incident run nor household
 sessions were used. Protocol reference: <https://code.claude.com/docs/en/hooks>.

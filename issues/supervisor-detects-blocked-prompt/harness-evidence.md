@@ -9,7 +9,12 @@ configuration. Its embedded source exposes these paths:
   dispatch uses the notification type as matcher.
 - SDK permission ask requests start a `permission_prompt` hook timer. The
   interactive dialog host separately defaults its cue type to `permission_prompt`
-  (`U0` -> `Ome` -> `zP` -> `vI`). The dialog cue timer waits for inactivity;
+  (`U0` -> `Ome` -> `zP` -> `vI`). More specifically, dangerous-removal
+  safety asks are marked bypass-immune before bypass-mode auto-allow, and
+  interactive Bash selects `ZLe` (`permission_bash`). The dialog metadata table
+  gives both generic `Rde` and Bash-specific `ZLe` `notification:Lh`; `Lh`
+  supplies text without a type, so `U0` defaults it to `permission_prompt`.
+  The dialog cue timer waits at least six seconds after mounting and for inactivity;
   `zP` dispatches the hook before the independent OS notification channel.
   Thus a terminal without OS notifications is not a reason to lose the hook.
 - The idle-input controller emits `idle_prompt` with “Claude is waiting for

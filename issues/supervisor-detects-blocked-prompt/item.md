@@ -3,7 +3,7 @@ created: 2026-10-17
 updated: 2026-10-17
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: high
 provenance: chat
 lane: lifecycle

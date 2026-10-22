@@ -194,6 +194,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
     .trim()
     .to_owned();
     let root = crate::home::root_dir()?;
+    super::writer_fence::preflight(&root)?;
     let _admission = super::admission::admit(&root)?;
     let repo_string = repo.to_string_lossy().into_owned();
     // JSON encoding is unambiguous even if a title or task contains separators.
@@ -345,14 +346,14 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
                 return Err(uncertain(
                     id,
                     plan,
-                    "staging directory lacks manifest; no recorded run.created identity",
+                    "staging directory lacks manifest; no recorded run.created identity. This is a partial creation, not a normal run: run discard/settlement cannot authorize its removal. Preserve the reservation and staging directory; inspect the recorded checkout with git status and git worktree list --porcelain, back up any work, and reconcile the exact artifacts manually before retrying; do not synthesize a manifest or delete the key to bypass identity checks",
                 ));
             }
-            std::fs::create_dir_all(&staged_dir)
-                .map_err(|e| uncertain(id, plan, &format!("create staging: {e}")))?;
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&staged_dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| uncertain(id, plan, &format!("protect staging: {e}")))?;
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&staged_dir)
+                .map_err(|e| uncertain(id, plan, &format!("create private staging: {e}")))?;
             std::fs::File::open(&stage_root)
                 .and_then(|f| f.sync_all())
                 .map_err(|e| uncertain(id, plan, &format!("sync staging parent: {e}")))?;
@@ -365,8 +366,6 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
         }
         crash_at("staged");
         verify(&repo, &source, plan).map_err(|e| uncertain(id, plan, &e.message))?;
-        std::fs::create_dir_all(root.join("runs"))
-            .map_err(|e| uncertain(id, plan, &format!("create runs: {e}")))?;
         std::fs::rename(&staged_dir, &public.root)
             .map_err(|e| uncertain(id, plan, &format!("publish run: {e}")))?;
         std::fs::File::open(root.join("runs"))

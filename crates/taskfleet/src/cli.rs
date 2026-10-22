@@ -893,7 +893,15 @@ fn init_logging(command_writes_state: bool) -> LoggingInit {
         // command. A command that will mutate state may create it here so the
         // first state-establishing invocation retains its diagnostics.
         if command_writes_state {
-            if let Err(e) = fs::create_dir_all(parent) {
+            // A first caller-owned create must see a private state root at
+            // fence preflight. Secure only directories we create; never chmod
+            // an existing user's state directory on behalf of logging.
+            use std::os::unix::fs::DirBuilderExt as _;
+            if let Err(e) = fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+            {
                 warnings.push(format!(
                     "could not create log directory {}: {}",
                     parent.display(),

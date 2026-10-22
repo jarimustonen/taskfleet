@@ -1837,3 +1837,175 @@ fn caller_same_key_retries_rejected_dead_transaction_in_one_call() {
     assert!(events.contains("merge.aborted"));
     assert_eq!(events.matches("\"kind\":\"merge.started\"").count(), 2);
 }
+
+#[test]
+fn caller_preflight_rejects_public_parents_before_reservation_then_same_key_succeeds() {
+    use std::os::unix::fs::PermissionsExt;
+    for parent in ["", ".creating", ".creating/runs", "runs"] {
+        let (home, workspace, tools) = fixture();
+        let path = home.path().join(parent);
+        std::fs::create_dir_all(&path).unwrap();
+        if parent == ".creating/runs" {
+            std::fs::set_permissions(
+                home.path().join(".creating"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let refused = create(&home, &workspace, &tools, "permission-retry", None);
+        assert!(!refused.status.success(), "{parent}: {refused:?}");
+        let error: serde_json::Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "writer_fence_unavailable");
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no key reserved"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o775
+        );
+        assert!(!home.path().join("idempotency").exists());
+        assert!(!workspace.path().join(".taskfleet-worktrees").exists());
+        let branches = Command::new(fixture_git_binary())
+            .arg("-C")
+            .arg(workspace.path().join("repo"))
+            .args(["branch", "--format=%(refname:short)"])
+            .output()
+            .unwrap();
+        assert!(branches.status.success());
+        assert_eq!(String::from_utf8(branches.stdout).unwrap().trim(), "main");
+        if home.path().join(".creating/runs").exists() {
+            assert_eq!(
+                std::fs::read_dir(home.path().join(".creating/runs"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let retried = create(&home, &workspace, &tools, "permission-retry", None);
+        assert!(retried.status.success(), "{parent}: {retried:?}");
+        let data: serde_json::Value = serde_json::from_slice(&retried.stdout).unwrap();
+        assert_eq!(data["data"]["idempotent_replay"], false);
+        for parent in [
+            home.path().to_path_buf(),
+            home.path().join(".creating"),
+            home.path().join(".creating/runs"),
+            home.path().join("runs"),
+        ] {
+            assert_eq!(
+                std::fs::metadata(parent).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+        }
+        assert!(!workspace.path().join("forbidden").exists());
+    }
+}
+
+#[test]
+fn caller_preflight_creates_private_parents_even_with_permissive_umask() {
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    let (home, workspace, tools) = fixture();
+    let root = home.path().join("fresh-state");
+    struct Reap(std::path::PathBuf);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            common::reap_supervisors_under(&self.0);
+        }
+    }
+    let _reap = Reap(root.clone());
+    let mut cmd = create_cmd(&home, &workspace, &tools, "fresh", None);
+    cmd.env("TASKFLEET_HOME", &root);
+    #[cfg(target_os = "linux")]
+    common::configure_linux_units(&mut cmd, home.path());
+    // Only the child changes umask; parallel tests keep their process state.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::umask(0);
+            Ok(())
+        });
+    }
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for path in [
+        root.clone(),
+        root.join(".creating"),
+        root.join(".creating/runs"),
+        root.join("runs"),
+        root.join("runs")
+            .join(value["data"]["run_id"].as_str().unwrap()),
+    ] {
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+    }
+}
+
+#[test]
+fn caller_preflight_refuses_symlink_parents_without_enrolling_them() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    for parent in [".creating", ".creating/runs", "runs"] {
+        let (home, workspace, tools) = fixture();
+        let target = workspace.path().join("redirect");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir_all(home.path().join(parent).parent().unwrap()).unwrap();
+        if parent == ".creating/runs" {
+            std::fs::set_permissions(
+                home.path().join(".creating"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+        }
+        symlink(&target, home.path().join(parent)).unwrap();
+        let output = create(&home, &workspace, &tools, "symlink", None);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("writer_fence_unavailable"));
+        assert!(!home.path().join("idempotency").exists());
+        assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
+        assert!(!workspace.path().join(".taskfleet-worktrees").exists());
+    }
+}
+
+#[test]
+fn legacy_manifestless_staging_is_preserved_and_diagnosed_as_partial_creation() {
+    let (home, workspace, tools) = fixture();
+    let crash = create(&home, &workspace, &tools, "legacy-orphan", Some("git"));
+    assert_eq!(crash.status.code(), Some(71));
+    let record = std::fs::read_dir(home.path().join("idempotency"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_file() && p.extension().is_none())
+        .unwrap();
+    let original = std::fs::read(&record).unwrap();
+    let reservation: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    let run = reservation["run_id"].as_str().unwrap();
+    let stage = home.path().join(".creating/runs").join(run);
+    std::fs::create_dir(&stage).unwrap();
+    std::fs::write(stage.join("writer.lock"), "ambiguous old artifact").unwrap();
+    for _ in 0..2 {
+        let output = create(&home, &workspace, &tools, "legacy-orphan", None);
+        assert!(!output.status.success(), "{output:?}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("creation_uncertain") && message.contains("not a normal run"),
+            "{message}"
+        );
+        assert!(
+            message.contains("reconcile the exact artifacts manually"),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(&record).unwrap(), original);
+        assert_eq!(
+            std::fs::read_to_string(stage.join("writer.lock")).unwrap(),
+            "ambiguous old artifact"
+        );
+        assert!(!stage.join("manifest.json").exists());
+        assert!(!stage.join("writer-fence.json").exists());
+        assert!(Path::new(reservation["caller_plan"]["checkout"].as_str().unwrap()).is_dir());
+        assert!(!home.path().join("runs").join(run).exists());
+    }
+}

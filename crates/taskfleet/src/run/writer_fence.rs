@@ -48,6 +48,30 @@ fn open_at(dir: &File, name: &str, flags: i32, mode: u32) -> Result<File, CliErr
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 fn directory(path: &Path) -> Result<File, CliError> {
+    open_directory(path, 3, false)
+}
+
+/// Prepare the fence's parent chain before admission, reservation or Git effects.
+/// Existing directories are checked, never chmodded. mkdirat creates missing
+/// components with private permissions and openat refuses redirected ancestors.
+pub(super) fn preflight(root: &Path) -> Result<(), CliError> {
+    for (path, private_count) in [
+        (root.to_path_buf(), 1),
+        (root.join(".creating"), 2),
+        (root.join("runs"), 2),
+        (root.join(".creating/runs"), 3),
+    ] {
+        open_directory(&path, private_count, true).map_err(|e| {
+            CliError::user("writer_fence_unavailable", format!(
+                "caller create preflight at {}: {}; no key reserved or Git resources created by this attempt. Inspect ownership, symlinks and permissions; existing state root, .creating, .creating/runs and runs must be same-user 0700, then retry the same key",
+                path.display(), e.message
+            ))
+        })?.sync_all().map_err(unavailable)?;
+    }
+    Ok(())
+}
+
+fn open_directory(path: &Path, private_count: usize, create: bool) -> Result<File, CliError> {
     let mut current = File::open("/").map_err(unavailable)?;
     if !path.is_absolute() {
         return Err(unavailable("state root is not absolute"));
@@ -56,6 +80,18 @@ fn directory(path: &Path) -> Result<File, CliError> {
     for (index, part) in parts.iter().enumerate() {
         if let std::path::Component::Normal(name) = part {
             let c = CString::new(name.as_bytes()).map_err(unavailable)?;
+            if create {
+                // SAFETY: held parent fd and NUL terminated component. Never
+                // repair an existing directory: validate it after opening below.
+                if unsafe { libc::mkdirat(current.as_raw_fd(), c.as_ptr(), 0o700) } != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::AlreadyExists {
+                        return Err(unavailable(error));
+                    }
+                } else {
+                    current.sync_all().map_err(unavailable)?;
+                }
+            }
             // SAFETY: held parent directory fd and NUL terminated component.
             let fd = unsafe {
                 libc::openat(
@@ -71,7 +107,7 @@ fn directory(path: &Path) -> Result<File, CliError> {
             current = unsafe { File::from_raw_fd(fd) };
             // The state root, publication/staging parent, and run itself must
             // all be private. Earlier ancestors may be root-owned (/var/tmp).
-            if index + 3 >= parts.len() {
+            if index + private_count >= parts.len() {
                 let m = current.metadata().map_err(unavailable)?;
                 if !m.is_dir()
                     || m.uid() != unsafe { libc::geteuid() }

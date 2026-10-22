@@ -1493,11 +1493,10 @@ fn watchdog_defers_when_report_already_present() {
     );
 }
 
-/// supervisor-child-detach-reap: a supervisor spawned through the detached
-/// path (`run reattach` → `spawn_and_reap`, which `setsid`s into its own
-/// session) must SURVIVE a `SIGHUP` delivered to its spawner's process group
-/// — the exact signal a closing terminal sends. Without `setsid` the
-/// supervisor would share the spawner's group and die.
+/// A supervisor spawned through `run reattach` must SURVIVE a `SIGHUP`
+/// delivered to its spawner's process group — the signal a closing terminal
+/// sends. Non-Linux uses detached spawn; Linux uses the explicit fake user
+/// manager boundary (not proof of real cgroup independence).
 #[test]
 #[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn spawned_supervisor_survives_sighup_to_spawner_group() {
@@ -1526,6 +1525,8 @@ fn spawned_supervisor_survives_sighup_to_spawner_group() {
     cmd.arg("-c").arg(script);
     cmd.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
+    #[cfg(target_os = "linux")]
+    common::configure_linux_units(&mut cmd, home.path());
     cmd.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     cmd.env("TMUX_BIN", "/usr/bin/true");
     // Keep the watchdog from synthesizing an agent-death for the forged node

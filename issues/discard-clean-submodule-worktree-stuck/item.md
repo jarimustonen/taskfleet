@@ -3,7 +3,7 @@ created: 2026-10-20
 updated: 2026-10-22
 type: bug
 reporter: agent
-status: open
+status: in-progress
 priority: normal
 provenance: other
 provenance_detail: Observed installed-tool failure during Homebase stint

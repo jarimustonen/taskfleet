@@ -749,3 +749,126 @@ fn claude_headless_nonzero_exit_preserves_unmerged_work() {
     );
     assert!(dir.join("evidence/n-0001/claude-headless.json").exists());
 }
+
+/// Follow the shipped non-Pi decision recipe through real materialization,
+/// attention events, reporting, and supervisor cleanup. No reply transport is
+/// invented and clearing attention must not make the unapproved work mergeable.
+#[test]
+fn claude_headless_unresolved_decision_reports_failure_and_preserves_work() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let tools = NativeSpawnTools::new();
+    let worker = scratch.path().join("claude-stub.sh");
+    executable(&worker, "#!/bin/sh\nexec /bin/sleep 120\n");
+    std::fs::write(home.path().join("config.toml"), format!(
+        "[profiles.claude]\ndescription=\"decision fixture\"\ncapability=\"fast\"\nresidency=\"local\"\nagents=[{{harness=\"claude\",command=[\"{}\"]}}]\n[profile]\ndefault=\"claude\"\n", worker.display())).unwrap();
+    // Only declared Git and absolute fixture executables are available.
+    let path = scratch.path().join("bin");
+    std::fs::create_dir(&path).unwrap();
+    std::os::unix::fs::symlink(common::fixture_git_binary(), path.join("git")).unwrap();
+    let worktree = tools.worktree("claude-decision");
+    let command = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+        cmd.env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
+            .env("PATH", &path);
+        cmd
+    };
+    let mut create = command();
+    tools.configure(&mut create, &worktree, "headless");
+    let created = run_ok(create.args([
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--headless",
+        "--title",
+        "unresolved decision",
+        "--task",
+        "Preserve work and report failure if a new decision is needed.",
+        "--output",
+        "json",
+    ]));
+    let id = created["data"]["run_id"].as_str().unwrap();
+    let dir = home.path().join("runs").join(id);
+    std::fs::write(worktree.join("UNAPPROVED"), "retain pending decision").unwrap();
+    let discussion = serde_json::json!([{
+        "topic": "New product decision", "severity": "discuss",
+        "options": ["Decide and respawn with the preserved branch"],
+        "recommended_default": "Decide and respawn with the preserved branch"
+    }]);
+    let input = scratch.path().join("input.json");
+    std::fs::write(
+        &input,
+        serde_json::json!({"discussion_items":discussion}).to_string(),
+    )
+    .unwrap();
+    run_ok(
+        command()
+            .args([
+                "event",
+                "create",
+                id,
+                "--kind",
+                "node.awaiting_input",
+                "--node-id",
+                "n-0001",
+                "--from-file",
+            ])
+            .arg(&input),
+    );
+    let shown = run_ok(command().args(["run", "show", id, "--output", "json"]));
+    let seq = shown["data"]["awaiting_input_detail"]["event_seq"]
+        .as_u64()
+        .unwrap();
+    let rejected = command()
+        .args(["run", "message", id, "Approved"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    let error: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "message_unsupported");
+    std::fs::write(&input, serde_json::json!({"event_seq":seq}).to_string()).unwrap();
+    run_ok(
+        command()
+            .args([
+                "event",
+                "create",
+                id,
+                "--kind",
+                "node.input_resolved",
+                "--node-id",
+                "n-0001",
+                "--from-file",
+            ])
+            .arg(&input),
+    );
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(!events.contains("worker.message."));
+    assert!(!events.contains("merge.started"));
+    let report = scratch.path().join("report.json");
+    std::fs::write(
+        &report,
+        serde_json::json!({
+            "success": false, "summary": "Decision required; work preserved for respawn",
+            "discussion_items": discussion
+        })
+        .to_string(),
+    )
+    .unwrap();
+    run_ok(
+        command()
+            .args(["node", "report", id, "n-0001", "--from-file"])
+            .arg(&report),
+    );
+    wait_for_manifest_status(&dir, "failed");
+    wait_event(&dir.join("events.jsonl"), "supervisor.exited");
+    let shown = run_ok(command().args(["run", "show", id, "--output", "json"]));
+    assert_eq!(shown["data"]["landed"], false);
+    assert_eq!(shown["data"]["report"]["discussion_items"], discussion);
+    assert!(worktree.join("UNAPPROVED").exists());
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        git(tools.repo_path(), &["rev-parse", "main"])
+    );
+}

@@ -1,0 +1,44 @@
+---
+source: crates/taskfleet/tests/skill.rs
+expression: decision
+---
+ uses a safe default only if already
+authorized by the brief or repository policy. Otherwise it preserves work and
+submits a terminal `success: false` report with the decision in `discussion_items`
+through `taskfleet node report`, without merging. The caller can decide and
+respawn with that answer and the preserved branch in the new brief. Do not wait
+indefinitely for a reply the harness cannot receive.
+
+`run message` delivers only to live Taskfleet-launched Pi workers with the
+acknowledged message adapter. Claude, caller-owned workers, and older Pi runs
+without that adapter are unsupported, including in headless placement. An
+accepted message is not proof it was read or acted on.
+
+When useful, record the fork as durable attention state before taking the
+authorized-default or terminal-report path. Write report-shaped discussion
+items (`topic`, non-empty string `options`, `recommended_default`) to a file
+shaped `{"discussion_items":[…]}` and open the signal:
+
+```bash
+taskfleet event create "$run_id" --kind node.awaiting_input --node-id n-0001 \
+  --from-file /tmp/awaiting-input-${run_id}.json \
+  --idempotency-key "awaiting-input:${run_id}:<short-topic>"
+request_seq="$(taskfleet run show "$run_id" --output json | jq -r '.data.awaiting_input_detail.event_seq')"
+```
+
+`run show` and `run list` show it immediately; after three minutes
+(`TASKFLEET_AWAITING_INPUT_GRACE_SECS` overrides) `run wait` settles and a
+registered `--notify` hook fires with `TASKFLEET_STATUS=awaiting-input`. The
+worker may proceed only on a safe default already authorized by the brief or
+repository policy, never merely because time elapsed, closing the signal with the generation it opened:
+
+```bash
+printf '{"event_seq":%s}\n' "$request_seq" > /tmp/input-resolved-${run_id}.json
+taskfleet event create "$run_id" --kind node.input_resolved --node-id n-0001 \
+  --from-file /tmp/input-resolved-${run_id}.json
+```
+
+A fork resolved by other evidence is closed the same way before continuing.
+`node.input_resolved` only clears the matching attention generation; it neither
+delivers an answer nor grants approval. A Pi worker may continue on an actually
+received, authorized decision, not on an attention clear or adapter receipt alone.

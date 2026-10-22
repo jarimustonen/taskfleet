@@ -1,0 +1,19 @@
+---
+source: crates/taskfleet/tests/skill.rs
+expression: decision
+---
+
+Attention is not a reply channel. `run message` supports only live
+Taskfleet-launched Pi workers with the acknowledged message adapter; Claude,
+caller-owned workers, and older Pi runs without that adapter cannot receive it.
+Headless placement does not add messaging support. Acceptance does not prove
+that Pi read or acted on the message.
+
+Keep autonomous Claude profiles available. For non-Pi or headless briefs,
+pre-authorize safe defaults and require a terminal `success: false` report with
+`discussion_items` when a new decision exceeds that authority, preserving work
+without merging. Read the report, get the decision, then respawn with the answer
+and preserved branch to harvest; do not wait for an impossible live reply.
+`node.input_resolved` only clears a matching attention generation: it is neither
+delivery nor approval. Even for Pi, continue only on an actually received,
+authorized decision or an already authorized default, not a cleared signal.

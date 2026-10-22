@@ -1884,3 +1884,37 @@ fn handoff_preservation_is_independent_of_settlement() {
     assert!(!content.contains("stop before `/wrap-up`"));
     assert!(!content.contains("without\ncalling `/wrap-up`"));
 }
+
+#[test]
+fn decision_guidance_ships_without_an_ambient_reply_transport() {
+    let home = mk_home();
+    for name in ["worktree-spinoff", "stint-start"] {
+        let out = bin(&home)
+            .env("PATH", "")
+            .args(["skill", "print", name, "--output", "json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let content = value["data"]["content"].as_str().unwrap();
+        // Review the rendered instruction, not only the source template.
+        let decision = if name == "stint-start" {
+            content
+                .split("## Decisions during a run\n")
+                .nth(1)
+                .unwrap()
+                .split("## Runtime capabilities")
+                .next()
+                .unwrap()
+        } else {
+            content
+                .split("A worker that hits a genuine human decision")
+                .nth(1)
+                .unwrap()
+                .split("### Tool and sub-workflow failure disclosure")
+                .next()
+                .unwrap()
+        };
+        insta::assert_snapshot!(format!("{name}_decision_guidance"), decision);
+    }
+}

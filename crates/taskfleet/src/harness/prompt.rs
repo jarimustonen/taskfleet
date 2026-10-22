@@ -39,6 +39,22 @@ context for an older run, use `taskfleet run show --current --output json`.
 It resolves the exact canonical worktree-path + branch owner and fails closed on
 missing, duplicate, stale, or malformed evidence.
 
+## Decisions and live replies
+
+Live `run message` replies are Pi-only: they require a Taskfleet-launched worker
+and the acknowledged message adapter. Claude, caller-owned workers, and older
+Pi runs without that adapter cannot receive them; headless placement adds no
+reply channel. Acceptance does not prove a message was read or acted on.
+`node.input_resolved` only clears a matching attention generation, not delivery
+or approval. Continue only on an actually received, authorized decision or a
+safe default already authorized by the brief or repository policy.
+
+For unattended work, if a new decision exceeds that authority, preserve work:
+do not wait for an impossible reply or merge on a guess. Write a terminal report with `success: false`
+and the decision in `discussion_items` to `/tmp/node-report-{RUN_ID}.json`, then
+submit it with `taskfleet node report {RUN_ID} n-0001 --from-file /tmp/node-report-{RUN_ID}.json`.
+The caller can decide and respawn with the answer and preserved work.
+
 ## Issue filing from this run
 
 The scheduling boundary is hard: **an issue created by this worker must be born
@@ -225,6 +241,20 @@ mod tests {
                 assert!(!p.contains(RUN_ID_SENTINEL), "{harness}/{kind:?}");
                 assert!(!p.contains(RUN_KIND_SENTINEL), "{harness}/{kind:?}");
             }
+        }
+    }
+
+    #[test]
+    fn every_worker_gets_a_safe_terminal_path_for_unresolved_decisions() {
+        for harness in ["pi", "claude"] {
+            let p = worker_prompt_preamble(harness, Kind::Spinoff, RUN_ID);
+            assert!(p.contains("Live `run message` replies are Pi-only"));
+            assert!(p.contains("not delivery\nor approval"));
+            assert!(p.contains("safe default already authorized"));
+            assert!(p.contains("terminal report with `success: false`"));
+            assert!(p.contains(&format!(
+                "taskfleet node report {RUN_ID} n-0001 --from-file /tmp/node-report-{RUN_ID}.json"
+            )));
         }
     }
 

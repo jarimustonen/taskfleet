@@ -77,6 +77,23 @@ no decision. Then read `taskfleet run show <run-id> --output json` for the full
 clean worker exit, visible UI entry, or disappearing window is not merge proof.
 Taskfleet's CLI and supervisor retain merge, reporting, and teardown authority.
 
+## Decisions during a run
+
+Attention is not a reply channel. `run message` supports only live
+Taskfleet-launched Pi workers with the acknowledged message adapter; Claude,
+caller-owned workers, and older Pi runs without that adapter cannot receive it.
+Headless placement does not add messaging support. Acceptance does not prove
+that Pi read or acted on the message.
+
+Keep autonomous Claude profiles available. For non-Pi or headless briefs,
+pre-authorize safe defaults and require a terminal `success: false` report with
+`discussion_items` when a new decision exceeds that authority, preserving work
+without merging. Read the report, get the decision, then respawn with the answer
+and preserved branch to harvest; do not wait for an impossible live reply.
+`node.input_resolved` only clears a matching attention generation: it is neither
+delivery nor approval. Even for Pi, continue only on an actually received,
+authorized decision or an already authorized default, not a cleared signal.
+
 ## Runtime capabilities
 
 Read sibling instructions through this harness's skill loader or file-reading
@@ -153,9 +170,10 @@ file buys either a serialization or a broken integrated `main`. A brief that
 carries the goal, concrete done criteria, the project's exact gate command,
 the files the worker should expect to touch, and the review level the risk
 warrants produces a worker that lands; a brief that paraphrases the gate
-produces a worktree that passes alone and turns `main` red. The worker cannot
-ask follow-up questions, so whatever the brief leaves out is settled by a
-guess. The useful test when writing one is what the worker would want to ask.
+produces a worktree that passes alone and turns `main` red. Do not rely on live
+follow-up replies: pre-authorize safe defaults and say which new decisions
+require preserving work and escalating. The useful test when writing a brief
+is what the worker would want to ask.
 
 **When the round leaves the script, you ask three questions, not which step
 you are on.** What does a primary source say? Git says whether content landed,

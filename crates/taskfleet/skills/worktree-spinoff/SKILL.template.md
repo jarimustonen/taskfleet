@@ -10,9 +10,9 @@ schema_version: 1
 
 A spinoff is one autonomous agent in its own git worktree, doing one well-scoped
 task and merging itself back to the source branch with `taskfleet run merge`.
-Nobody reviews it interactively. The brief you write is the only conversation it
-will ever have with you, and the terminal report it submits is the only thing you
-will hear back. Your job is therefore mostly writing: decide that the task is
+Nobody reviews it interactively. Write the brief so it can finish without a live
+reply; attention signals can surface decisions, but not every harness can receive
+an answer. Your job is therefore mostly writing: decide that the task is
 spinoff-shaped, write a brief the worker can finish alone, create the run through
 `taskfleet`, and tell the caller honestly how they will learn the outcome.
 
@@ -141,8 +141,8 @@ bundled skills, by `cargo install`, Homebrew, a manual copy, or any
 legitimately differs from source `HEAD`, and upgrading it is a separate
 distribution-channel step, never part of a worker's task.
 
-**The user's attention.** The worker cannot ask follow-up questions, so a brief
-that misreads the task costs a worktree and a merge cycle. If the goal, the
+**The user's attention.** A brief that misreads the task costs a worktree and
+a merge cycle; live follow-up replies are not guaranteed. If the goal, the
 context, or what "done" means is genuinely missing from the request, one question
 before spawning is cheaper than that. Everything else, the title, the profile,
 the placement, is a routine call: make it, say what you chose, and continue.
@@ -194,6 +194,10 @@ Everything else the worker needs is yours to supply:
 
 - **Goal.** One sentence on what to deliver.
 - **Context.** Files, modules, constraints, relative paths.
+- **Decision authority.** Pre-authorize safe defaults, especially for non-Pi or
+  headless work. Name decisions that require preserved-work escalation instead
+  of guessing. Claude remains supported for autonomous work; it has no live
+  `run message` reply channel.
 - **Done criteria**, concrete and verifiable. Copy the repository's exact
   green-gate commands from its `AGENTS.md` rather than paraphrasing: a debug build
   or a looser warning policy passes in the worktree and turns `main` red. A
@@ -294,9 +298,20 @@ For the completed path, once the work is committed:
    stays live: resolve the conflict (or `/complex-rebase` for a deeply diverged
    branch) and re-run the same `run merge` command.
 
-A worker that hits a genuine human decision does not stop at an interactive
-prompt; nobody is watching, and a blocked prompt looks exactly like a hung run.
-It records the fork as durable run state instead. Write report-shaped discussion
+A worker that hits a genuine human decision uses a safe default only if already
+authorized by the brief or repository policy. Otherwise it preserves work and
+submits a terminal `success: false` report with the decision in `discussion_items`
+through `taskfleet node report`, without merging. The caller can decide and
+respawn with that answer and the preserved branch in the new brief. Do not wait
+indefinitely for a reply the harness cannot receive.
+
+`run message` delivers only to live Taskfleet-launched Pi workers with the
+acknowledged message adapter. Claude, caller-owned workers, and older Pi runs
+without that adapter are unsupported, including in headless placement. An
+accepted message is not proof it was read or acted on.
+
+When useful, record the fork as durable attention state before taking the
+authorized-default or terminal-report path. Write report-shaped discussion
 items (`topic`, non-empty string `options`, `recommended_default`) to a file
 shaped `{"discussion_items":[…]}` and open the signal:
 
@@ -319,10 +334,10 @@ taskfleet event create "$run_id" --kind node.input_resolved --node-id n-0001 \
   --from-file /tmp/input-resolved-${run_id}.json
 ```
 
-or submits a terminal blocked report (`success: false`, the same
-`discussion_items`) through `node report`, which preserves the branch and
-worktree for the human. A fork resolved by other evidence is closed the same way
-before continuing.
+A fork resolved by other evidence is closed the same way before continuing.
+`node.input_resolved` only clears the matching attention generation; it neither
+delivers an answer nor grants approval. A Pi worker may continue on an actually
+received, authorized decision, not on an attention clear or adapter receipt alone.
 
 ### Tool and sub-workflow failure disclosure
 

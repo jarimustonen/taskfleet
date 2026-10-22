@@ -1,13 +1,15 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
+updated: 2026-10-22
 type: bug
 reporter: agent
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: Observed installed-tool failure during Homebase stint
 source_ref: homebase-stint:2026-10-20:discard:01m5cmshg3cy1x78avsqe0hy0s
+lane: resources
+lane_seq: 10
 ---
 
 # Discard of clean initialized-submodule worktree gets stuck behind its non-force authorization

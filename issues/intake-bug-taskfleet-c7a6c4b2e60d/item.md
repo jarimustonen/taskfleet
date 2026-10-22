@@ -1,12 +1,14 @@
 ---
 created: 2026-10-18
-updated: 2026-10-18
+updated: 2026-10-22
 type: bug
 reporter: jari
-status: untriaged
+status: wontfix
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-oom-pending-20261018
+closed: 2026-10-22
+closed_by: pi-conductor
 ---
 
 # OOM-killed interactive worker leaves its run pending forever
@@ -43,3 +45,9 @@ Related but different: `supervisor-detects-blocked-prompt` (a live agent stuck a
 
 **Fix sketch:** Do not merely remove the interactive early return: that would also terminalize intentional quit/restart sessions and reverse the existing contract. If automatic failure is wanted for unattended work, use autonomous lifecycle rather than `--interactive`. If interactive workers must additionally auto-fail on crashes, first define how an authoritative crash is distinguished from an intentional stop and how restart remains safe; then change the lifecycle policy and its paired regression tests, retaining branch/worktree preservation. Separately, exposing non-terminal stopped-worker attention and worktree guidance could improve recovery without granting automatic teardown authority. Until a policy change, the reported commit-WIP / explicit cancel / adopt workflow is consistent with manual lifecycle ownership; forced discard should remain a separate deliberate action after recovery is verified.
 <!-- intakectl:analysis:end job:423862af-a9f4-4a4d-a4c3-24f9b2fbba81 generation:0 -->
+
+## Resolution
+
+### 2026-10-22T12:02:04Z · @pi-conductor
+
+Jari approved triage recommendation: interactive lifecycle deliberately remains human-owned across worker exit/restart. Work was preserved; use autonomous lifecycle for automatic death settlement. A separate non-terminal crash-attention improvement can be proposed without reversing interactive termination policy.

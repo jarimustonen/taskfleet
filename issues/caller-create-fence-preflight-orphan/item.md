@@ -1,13 +1,15 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
+updated: 2026-10-22
 type: bug
 reporter: homebase-execution-acceptance-agent
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: Observed directly during live heavy-command execution rollout acceptance
 source_ref: homebase:hb-exec-acceptance:2026-10-20:caller-create-fence-preflight
+lane: resources
+lane_seq: 20
 ---
 
 # Caller-owned create leaves a manifest-less reservation after writer-fence preflight failure

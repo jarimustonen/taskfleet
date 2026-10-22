@@ -1,12 +1,14 @@
 ---
 created: 2026-10-21
-updated: 2026-10-21
+updated: 2026-10-22
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-wrapup-20261021-run-message
+lane: skills
+lane_seq: 20
 ---
 
 # run message cannot reach headless Claude workers, so awaiting_input can…

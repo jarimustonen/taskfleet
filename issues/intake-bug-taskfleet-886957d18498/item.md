@@ -1,12 +1,14 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
+updated: 2026-10-22
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-wrapup-20261020-idle-prompt
+lane: signals
+lane_seq: 10
 ---
 
 # claude-hook reports idle_prompt (awaiting input) while a Claude worker …

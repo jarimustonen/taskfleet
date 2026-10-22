@@ -1861,6 +1861,10 @@ fn caller_preflight_rejects_public_parents_before_reservation_then_same_key_succ
             .as_str()
             .unwrap()
             .contains("no key reserved"));
+        assert!(!error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("preserve the run and checkout"));
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
             0o775

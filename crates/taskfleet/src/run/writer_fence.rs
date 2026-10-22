@@ -48,7 +48,7 @@ fn open_at(dir: &File, name: &str, flags: i32, mode: u32) -> Result<File, CliErr
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 fn directory(path: &Path) -> Result<File, CliError> {
-    open_directory(path, 3, false)
+    open_directory(path, 3, false).map_err(unavailable)
 }
 
 /// Prepare the fence's parent chain before admission, reservation or Git effects.
@@ -61,35 +61,37 @@ pub(super) fn preflight(root: &Path) -> Result<(), CliError> {
         (root.join("runs"), 2),
         (root.join(".creating/runs"), 3),
     ] {
-        open_directory(&path, private_count, true).map_err(|e| {
+        open_directory(&path, private_count, true)
+            .and_then(|dir| dir.sync_all().map_err(|e| e.to_string()))
+            .map_err(|e| {
             CliError::user("writer_fence_unavailable", format!(
                 "caller create preflight at {}: {}; no key reserved or Git resources created by this attempt. Inspect ownership, symlinks and permissions; existing state root, .creating, .creating/runs and runs must be same-user 0700, then retry the same key",
-                path.display(), e.message
+                path.display(), e
             ))
-        })?.sync_all().map_err(unavailable)?;
+        })?;
     }
     Ok(())
 }
 
-fn open_directory(path: &Path, private_count: usize, create: bool) -> Result<File, CliError> {
-    let mut current = File::open("/").map_err(unavailable)?;
+fn open_directory(path: &Path, private_count: usize, create: bool) -> Result<File, String> {
+    let mut current = File::open("/").map_err(|e| e.to_string())?;
     if !path.is_absolute() {
-        return Err(unavailable("state root is not absolute"));
+        return Err("state root is not absolute".into());
     }
     let parts: Vec<_> = path.components().collect();
     for (index, part) in parts.iter().enumerate() {
         if let std::path::Component::Normal(name) = part {
-            let c = CString::new(name.as_bytes()).map_err(unavailable)?;
+            let c = CString::new(name.as_bytes()).map_err(|e| e.to_string())?;
             if create {
                 // SAFETY: held parent fd and NUL terminated component. Never
                 // repair an existing directory: validate it after opening below.
                 if unsafe { libc::mkdirat(current.as_raw_fd(), c.as_ptr(), 0o700) } != 0 {
                     let error = std::io::Error::last_os_error();
                     if error.kind() != std::io::ErrorKind::AlreadyExists {
-                        return Err(unavailable(error));
+                        return Err(error.to_string());
                     }
                 } else {
-                    current.sync_all().map_err(unavailable)?;
+                    current.sync_all().map_err(|e| e.to_string())?;
                 }
             }
             // SAFETY: held parent directory fd and NUL terminated component.
@@ -101,25 +103,23 @@ fn open_directory(path: &Path, private_count: usize, create: bool) -> Result<Fil
                 )
             };
             if fd < 0 {
-                return Err(unavailable(std::io::Error::last_os_error()));
+                return Err(std::io::Error::last_os_error().to_string());
             }
             // SAFETY: successful openat returns an owned fd.
             current = unsafe { File::from_raw_fd(fd) };
             // The state root, publication/staging parent, and run itself must
             // all be private. Earlier ancestors may be root-owned (/var/tmp).
             if index + private_count >= parts.len() {
-                let m = current.metadata().map_err(unavailable)?;
+                let m = current.metadata().map_err(|e| e.to_string())?;
                 if !m.is_dir()
                     || m.uid() != unsafe { libc::geteuid() }
                     || m.permissions().mode() & 0o7777 != 0o700
                 {
-                    return Err(unavailable(
-                        "state root, run parent and run must be same-user 0700",
-                    ));
+                    return Err(format!("{} must be same-user 0700", path.display()));
                 }
             }
         } else if !matches!(part, std::path::Component::RootDir) {
-            return Err(unavailable("state path contains traversal"));
+            return Err("state path contains traversal".into());
         }
     }
     Ok(current)

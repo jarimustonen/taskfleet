@@ -3,7 +3,7 @@ created: 2026-10-17
 updated: 2026-10-22
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-conductor-2026-10-17-worker-visibility

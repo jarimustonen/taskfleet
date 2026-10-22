@@ -1370,3 +1370,53 @@ fn detached_absent_branch_orphan_keeps_force_upgrade_recovery() {
     );
     assert!(!f.worktree.exists());
 }
+
+#[test]
+fn branch_only_force_upgrade_retry_rejects_replaced_source_git_directory() {
+    let f = Fixture::failed();
+    populate_submodule(&f);
+    git(&f.worktree, &["submodule", "deinit", "-f", "--all"]);
+    record_nonforce_receipt(&f);
+    let lock = f.source.path().join(".git/refs/heads/wt/retained.lock");
+    std::fs::write(&lock, "fixture ref lock").unwrap();
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--force"]), false)["error"]["code"],
+        "discard_partial_cleanup"
+    );
+    assert!(!f.worktree.exists());
+    std::fs::remove_file(lock).unwrap();
+    let old_oid = git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]);
+    let replacement = f.home.path().join("replacement.git");
+    git(
+        f.home.path(),
+        &[
+            "clone",
+            "--bare",
+            f.source.path().to_str().unwrap(),
+            replacement.to_str().unwrap(),
+        ],
+    );
+    std::fs::rename(
+        f.source.path().join(".git"),
+        f.home.path().join("saved.git"),
+    )
+    .unwrap();
+    std::fs::rename(replacement, f.source.path().join(".git")).unwrap();
+    git(f.source.path(), &["config", "core.bare", "false"]);
+    assert_eq!(
+        git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]),
+        old_oid
+    );
+    let before = std::fs::read(f.paths.events()).unwrap();
+    for extra in [&["--force", "--dry-run"][..], &["--force"][..]] {
+        assert_eq!(
+            envelope(&isolated_discard(&f, extra), false)["error"]["code"],
+            "preserved_work_unverifiable"
+        );
+        assert_eq!(std::fs::read(f.paths.events()).unwrap(), before);
+        assert_eq!(
+            git(f.source.path(), &["rev-parse", "refs/heads/wt/retained"]),
+            old_oid
+        );
+    }
+}

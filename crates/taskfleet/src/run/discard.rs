@@ -415,9 +415,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // A force upgrade is only valid for the same inode/repository/ref pins,
     // including previews: never advertise recovery for a replacement target.
-    if !orphan && observation.view.worktree_present {
+    if !orphan {
         if let Some(auth) = prior_auth.as_ref().filter(|a| a.identity.is_some()) {
-            verify_registered(auth, &manifest, &node, &git)?;
+            if observation.view.worktree_present {
+                verify_registered(auth, &manifest, &node, &git)?;
+            } else {
+                verify_source_identity(auth, &manifest, &git)?;
+            }
         }
     }
     let force_required = populated_submodules
@@ -547,6 +551,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     let mut removed_branch = false;
     if observation.view.branch_present {
+        if auth.identity.is_some() {
+            verify_source_identity(&auth, &manifest, &git)?;
+        }
         let branch = observation
             .view
             .branch
@@ -789,6 +796,33 @@ fn stale_own_marker(path: &Path, common: &Path) -> bool {
                     .as_deref()
                     == Some(common)
         })
+}
+
+// After worktree removal its inode is necessarily absent, but branch-only
+// recovery still belongs to the original source Git directory, not a replacement
+// repository at the same path with a coincidentally identical branch tip.
+fn verify_source_identity(
+    auth: &Authorization,
+    manifest: &taskfleet_core::Manifest,
+    git: &Git,
+) -> Result<(), CliError> {
+    let matches = auth
+        .identity
+        .as_ref()
+        .zip(manifest.source_repo.as_deref())
+        .and_then(|(id, repo)| {
+            git.common_dir(repo)?.metadata().ok().map(|meta| {
+                meta.is_dir() && (meta.dev(), meta.ino()) == (id.source_git_dev, id.source_git_ino)
+            })
+        })
+        == Some(true);
+    if !matches {
+        return Err(CliError::system(
+            "preserved_work_unverifiable",
+            "source Git directory no longer matches discard authorization",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_registered(

@@ -147,6 +147,15 @@ neither tests nor clippy notice a dangling intra-doc link. A cut that removes a
 symbol leaves any `[`crate::…`]` link to it dangling; this made `main` red once
 (`ci-red-main`, 2026-08-15) after a green test-and-clippy round.
 
+**Linux gate environment.** Use a short private disk-backed `TMPDIR` such as
+`mktemp -d /var/tmp/tfg.XXXXXX` with mode 0700 and `umask 077`. Tests derive
+private runtime directories from it: a long scratch path can exceed the Unix
+socket limit before the intended assertion, while permissive modes correctly
+fail caller writer-fence checks. For the local release gate, prepend the real
+stable toolchain's bin directory (the parent of `rustup which --toolchain stable cargo`)
+to that command's `PATH`; do not route exact-commit validation through a host
+Cargo offload wrapper or change global configuration.
+
 **A developer machine is not a bare CI runner.** A test that depends on an
 ambient `tmux`, an installed harness binary, or any other undeclared tool
 passes locally and fails in CI. Exercise tool-sensitive tests with a stripped

@@ -55,6 +55,28 @@ capability blocks completion and is disclosed, never claimed as run. Do not
 install tools, change another user's configuration, or publish artifacts merely
 to satisfy a skill reference.
 
+## Session preservation and resource settlement
+
+These are separate outcomes. Unresolved retained resources or invalid scheduling
+prevent claiming full settlement, not saving the session. After inventorying
+what is known, continue permitted lesson capture, tool-friction reporting, and
+lightweight schedule/unlaned-issue checks through `/wrap-up` or the local
+fallback below. This applies with or without issuectl, including clean harvested
+work whose authorized native cleanup is blocked and genuinely unmerged work.
+Neither case grants deletion authority: leave retained resources untouched
+unless the user has authorized a supported native lifecycle action. Do not
+control foreign runs or bypass native checks to make the handoff look clean.
+
+Read an available `/wrap-up` contract before using it. If one of its actions
+depends on settled resources, a valid schedule, or another missing prerequisite,
+skip only that action and disclose why; continue independent preservation.
+Record tool friction through the permitted reporting path, not invented tracker
+files. When the external skill is absent, use the repository-local fallback;
+its absence alone does not block saving the session. Report session preservation,
+resource settlement, and schedule verification separately, with unresolved run
+ids, failures, skipped actions, and the next authorized recovery action. Never
+claim all resources settled or the schedule valid without evidence.
+
 ## Without issuectl: repository-local handoff
 
 If the optional repository tracker is not enabled, use this path instead of
@@ -141,9 +163,10 @@ and where its handoff block lives come from the repository's own `AGENTS.md`
 and `TODO.md`. Scheduling comes from `issuectl dag --json --reservations`,
 which derives everything from issue metadata on every read; if
 `--reservations` or the fields named below are missing, the project is
-unmigrated or incompatible, so report that and stop rather than fall back to
-a prose schedule. `taskfleet-run-overview` carries the full field lists of
-`run show` and `run wait`; this file repeats only what the handoff turns on.
+unmigrated or incompatible, so report that and skip schedule-dependent actions
+rather than fall back to a prose schedule. Continue independent session
+preservation. `taskfleet-run-overview` carries the full field lists of `run show`
+and `run wait`; this file repeats only what the handoff turns on.
 
 ## What is precious here
 
@@ -276,8 +299,9 @@ from the handoff. Neither route authorizes global preference changes.
 
 ## The order, and why
 
-Ownership is settled before the schedule is read, because holds you cannot
-account for make the reservation-aware answer meaningless. The schedule is
+Ownership is inventoried before the schedule is read, because unresolved holds
+must remain visible in the reservation-aware answer; cleanup need not succeed
+for independent preservation to proceed. The schedule is
 read before the narrative is written, because a verification failure is one
 of the things the narrative records. The narrative is committed before
 `/wrap-up` runs, because `/wrap-up` makes its own commits and the handoff
@@ -286,12 +310,14 @@ record should not be folded into them.
 So: start read-only. A clean index (`git diff --cached --quiet`) and no
 unstaged edits to the files this handoff would touch; anything else is
 someone's work and a stop. Inspect every owned run with `run show`; every
-live or resumable one has landed or relinquished ownership, and every terminal
-one, `done` included, shows an empty `preserved_work`. A non-empty array
-blocks completion until the user chooses salvage, harvest, or discard. If
-ownership stays unresolved, still record the answers, the owned run id and
-slug, and the preserved-work fact in the narrative and commit that, then stop
-before `/wrap-up` with one exact recovery action.
+live or resumable one needs its ownership accounted for, and every terminal
+one, `done` included, needs its `preserved_work` inspected. A non-empty array
+means resource settlement is incomplete, even if git verifies that its work
+was harvested. Record unresolved ownership, the owned run id and slug, the
+preserved-work fact, any native cleanup failure, and the next authorized
+recovery action in the narrative. Commit that record and continue independent
+`/wrap-up` work or the local fallback; do not salvage, harvest, or discard
+merely to finish this skill.
 
 Read the schedule with the foreign holds. An unmappable foreign run does not
 block a handoff, because the handoff spawns nothing; say in the terminal
@@ -299,9 +325,10 @@ report, not in `TODO.md`, that the next `/stint-start` must resolve that
 reservation before spawning. The run's state will have changed by then and
 `/stint-start` rebuilds holds from the live list, so a note in `TODO.md`
 would outlive its truth. If verification fails, record the failure and the
-affected slugs for the narrative, commit the narrative, and stop there without
-calling `/wrap-up` or declaring the handoff complete, so the broken graph is
-the one thing the user sees.
+affected slugs for the narrative and commit it. Keep the invalid schedule
+explicit in the final report; skip only actions that require valid scheduling,
+not independent `/wrap-up` work or the local fallback. Do not fabricate holds,
+accept issues, or claim verification succeeded to get past a failure.
 
 Record the current-turn answers in the issue or document that already owns
 each decision, then update `## 🔄 Continue here` / `ALOITA TÄSTÄ`: where the
@@ -319,6 +346,9 @@ Stage `TODO.md` and any answer file by exact path, check that
 `git diff --cached --name-only` is exactly that set, and commit; if nothing
 changed, there is nothing to commit. Then call `/wrap-up` and let it run its
 own contract, or do its work yourself when it is not installed. Perform a test-account reset only with explicit repository/user authorization;
-report its result rather than treating a preference as permission. A handoff is complete when
+report its result rather than treating a preference as permission. Session
+preservation is complete when its permitted saving work is committed and
 `git status --short` is clean; if `/wrap-up` wrote approved files without
-committing, follow its commit contract or ask.
+committing, follow its commit contract or ask. A clean checkout does not prove
+resource settlement or schedule validity: report either as incomplete when
+unresolved, even after session preservation succeeds.

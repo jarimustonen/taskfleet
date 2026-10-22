@@ -1,0 +1,24 @@
+---
+source: crates/taskfleet/tests/skill.rs
+expression: preservation
+---
+
+These are separate outcomes. Unresolved retained resources or invalid scheduling
+prevent claiming full settlement, not saving the session. After inventorying
+what is known, continue permitted lesson capture, tool-friction reporting, and
+lightweight schedule/unlaned-issue checks through `/wrap-up` or the local
+fallback below. This applies with or without issuectl, including clean harvested
+work whose authorized native cleanup is blocked and genuinely unmerged work.
+Neither case grants deletion authority: leave retained resources untouched
+unless the user has authorized a supported native lifecycle action. Do not
+control foreign runs or bypass native checks to make the handoff look clean.
+
+Read an available `/wrap-up` contract before using it. If one of its actions
+depends on settled resources, a valid schedule, or another missing prerequisite,
+skip only that action and disclose why; continue independent preservation.
+Record tool friction through the permitted reporting path, not invented tracker
+files. When the external skill is absent, use the repository-local fallback;
+its absence alone does not block saving the session. Report session preservation,
+resource settlement, and schedule verification separately, with unresolved run
+ids, failures, skipped actions, and the next authorized recovery action. Never
+claim all resources settled or the schedule valid without evidence.

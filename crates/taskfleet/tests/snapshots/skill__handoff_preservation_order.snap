@@ -1,0 +1,58 @@
+---
+source: crates/taskfleet/tests/skill.rs
+expression: order
+---
+
+Ownership is inventoried before the schedule is read, because unresolved holds
+must remain visible in the reservation-aware answer; cleanup need not succeed
+for independent preservation to proceed. The schedule is
+read before the narrative is written, because a verification failure is one
+of the things the narrative records. The narrative is committed before
+`/wrap-up` runs, because `/wrap-up` makes its own commits and the handoff
+record should not be folded into them.
+
+So: start read-only. A clean index (`git diff --cached --quiet`) and no
+unstaged edits to the files this handoff would touch; anything else is
+someone's work and a stop. Inspect every owned run with `run show`; every
+live or resumable one needs its ownership accounted for, and every terminal
+one, `done` included, needs its `preserved_work` inspected. A non-empty array
+means resource settlement is incomplete, even if git verifies that its work
+was harvested. Record unresolved ownership, the owned run id and slug, the
+preserved-work fact, any native cleanup failure, and the next authorized
+recovery action in the narrative. Commit that record and continue independent
+`/wrap-up` work or the local fallback; do not salvage, harvest, or discard
+merely to finish this skill.
+
+Read the schedule with the foreign holds. An unmappable foreign run does not
+block a handoff, because the handoff spawns nothing; say in the terminal
+report, not in `TODO.md`, that the next `/stint-start` must resolve that
+reservation before spawning. The run's state will have changed by then and
+`/stint-start` rebuilds holds from the live list, so a note in `TODO.md`
+would outlive its truth. If verification fails, record the failure and the
+affected slugs for the narrative and commit it. Keep the invalid schedule
+explicit in the final report; skip only actions that require valid scheduling,
+not independent `/wrap-up` work or the local fallback. Do not fabricate holds,
+accept issues, or claim verification succeeded to get past a failure.
+
+Record the current-turn answers in the issue or document that already owns
+each decision, then update `## 🔄 Continue here` / `ALOITA TÄSTÄ`: where the
+round left off, what landed and how you confirmed it, the intended product
+direction, the unresolved decisions, a verification failure with its slugs, a
+run-ownership fact from preflight, and, as context only, an "awaiting human
+triage" note for `untriaged` candidates or a "not now" note for `deferred`
+work. Issue slugs give context; lane order, dependency edges, collision
+values, computed heads, spawnability, and any claim that an issue is currently
+ready or blocked do not belong there, because the next round reads them live
+and a prose copy is stale when it is written. No checkpoint file is invented
+for the same reason: a second copy is the thing that drifts.
+
+Stage `TODO.md` and any answer file by exact path, check that
+`git diff --cached --name-only` is exactly that set, and commit; if nothing
+changed, there is nothing to commit. Then call `/wrap-up` and let it run its
+own contract, or do its work yourself when it is not installed. Perform a test-account reset only with explicit repository/user authorization;
+report its result rather than treating a preference as permission. Session
+preservation is complete when its permitted saving work is committed and
+`git status --short` is clean; if `/wrap-up` wrote approved files without
+committing, follow its commit contract or ask. A clean checkout does not prove
+resource settlement or schedule validity: report either as incomplete when
+unresolved, even after session preservation succeeds.

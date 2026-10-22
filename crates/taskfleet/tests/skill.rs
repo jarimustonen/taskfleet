@@ -1857,3 +1857,30 @@ fn corrupt_marker_traversal_records_never_escape_agent_roots() {
     );
     assert_eq!(std::fs::read(&codex_victim).unwrap(), b"codex user bytes\n");
 }
+
+/// Exercise the embedded/rendered production text without any ambient tools or
+/// external skills. Executor scenarios are documented beside the owning issue.
+#[test]
+fn handoff_preservation_is_independent_of_settlement() {
+    let home = mk_home();
+    let out = bin(&home)
+        .env("PATH", "")
+        .args(["skill", "print", "stint-handoff", "--output", "json"])
+        .output()
+        .expect("spawn skill print by absolute path");
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let content = v["data"]["content"].as_str().expect("rendered skill");
+    let preservation = content
+        .split("## Session preservation and resource settlement\n")
+        .nth(1)
+        .expect("independent preservation contract")
+        .split("## Without issuectl:")
+        .next()
+        .unwrap();
+    insta::assert_snapshot!("handoff_independent_preservation", preservation);
+    let order = content.split("## The order, and why\n").nth(1).unwrap();
+    insta::assert_snapshot!("handoff_preservation_order", order);
+    assert!(!content.contains("stop before `/wrap-up`"));
+    assert!(!content.contains("without\ncalling `/wrap-up`"));
+}

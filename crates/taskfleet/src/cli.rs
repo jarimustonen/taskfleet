@@ -62,7 +62,7 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
-    /// Create, list, show, wait on, cancel, merge, salvage, or reattach a run.
+    /// Create, inspect, attach to, wait on, settle, or recover a run.
     Run {
         #[command(subcommand)]
         action: crate::run::RunAction,
@@ -285,6 +285,21 @@ pub(crate) fn run() -> ExitCode {
             format: OutputFormat::Json,
             file: None,
         },
+        // Attachment is an explicit terminal operation; machine selectors
+        // instead request a validated descriptor, never terminal bytes.
+        (None, false)
+            if matches!(
+                cli.command,
+                Command::Run {
+                    action: crate::run::RunAction::Attach { .. }
+                }
+            ) =>
+        {
+            OutputSpec {
+                format: OutputFormat::Text,
+                file: None,
+            }
+        }
         (None, false) => OutputSpec::default(),
     };
 
@@ -434,6 +449,7 @@ fn command_writes_state(command: &Command) -> bool {
             }
             | crate::run::RunAction::List { .. }
             | crate::run::RunAction::Show { .. }
+            | crate::run::RunAction::Attach { .. }
             | crate::run::RunAction::Wait { .. } => false,
         },
         Command::Event { action } => match action {

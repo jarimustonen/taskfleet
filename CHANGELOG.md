@@ -9,9 +9,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Discover exact worker displays in `run show` and `run create`, validate with
+  `run attach --json`, and open a read-only viewer with `run attach <full-run-id>`
+  from a terminal outside tmux. Linux workers keep their private manager-owned server.
+
 ### Changed
 
+- Worker decision guidance now distinguishes live Pi steering from runtimes
+  without a reply transport: use pre-authorized safe defaults or preserve work
+  for a human decision, without claiming attention resolution delivered a reply.
+- Stint handoff preserves session context and performs independent wrap-up even
+  when run settlement or scheduling is blocked; blockers still prevent reset.
+
 ### Fixed
+
+- Populated submodule worktrees require explicit force for discard. Existing
+  non-force receipts can be retried with a separately audited `--force` upgrade,
+  preserving the same reason and target identity/OID pins.
+- Caller-owned creation validates private writer-fence paths before reserving
+  Git work. Older ambiguous partial creations remain preserved for manual recovery.
+- Bare Claude idle notifications no longer falsely request human attention
+  while background work may still be running; permission prompts remain explicit.
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.16.0] - 2026-10-17

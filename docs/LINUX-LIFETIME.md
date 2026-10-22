@@ -35,12 +35,40 @@ its restart.
   choose the session name. Outside tmux, one of those flags remains required.
 
 The socket is `$XDG_RUNTIME_DIR/taskfleet/tmux-<state-home-digest>.sock`.
-Use the **recorded** node `tmux_identity.socket`, not a guessed name, to inspect
-it from SSH:
+Discover a worker from SSH with `taskfleet run show <full-run-id> --json`:
+`data.attach` reports the recorded socket, session, stable window and pane IDs,
+server generation, and a shell-quoted `command`. This is discovery, not a claim
+that the display is still present. `run create` returns the same descriptor.
+
+From a terminal **outside tmux**, run:
 
 ```sh
-tmux -S <recorded-socket> attach -t <recorded-session>
+taskfleet run attach <full-run-id>
 ```
+
+This opens a read-only tmux client on the exact recorded pane (detach with the
+normal tmux detach binding). An ephemeral viewer session links only the worker window,
+with per-client active-pane selection. Other clients' selected window, active pane
+and zoom remain unchanged. A target hidden by another pane's zoom is refused.
+The viewer expires automatically when its client detaches, without removing the
+source window. An explicit setup acknowledgement prevents a post-attach error
+from looking like a successful view; worker teardown still belongs only to the
+supervisor. Later user layout changes can change what is visible in any client. It does not inject input, switch your existing
+client, move the worker, start a server, or recover a supervisor. Inside tmux,
+native attach explicitly refuses: use another terminal, not `switch-client`
+against a potentially unrelated server. `--json` (or `--output json|jsonl`) is
+safe inside or outside tmux: it validates the exact display and returns a
+single descriptor, without opening a terminal client. Native mode requires
+terminal stdin/stdout; output selection never depends on terminal detection.
+
+Attachment validates socket/session/window/pane, server PID and OS start time,
+and the recorded server marker. Retained inert displays additionally require
+the exact ownership marker and dead pane. Missing, stale, cleaned or ambiguous
+multi-node displays fail explicitly; legacy identities without a recorded socket,
+pane or generation cannot be attached safely. A terminal run can still have a
+retained or not-yet-cleaned display. Archives remain available through `run show`
+after the display is removed. There is no default-server placement option:
+Linux workers retain their manager-owned lifetime boundary.
 
 This socket is outside a daemon's `PrivateTmp` namespace. The runtime directory
 must be an absolute, non-symlink directory owned by the effective uid, with no

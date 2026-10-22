@@ -463,13 +463,18 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
         Some(pid) => json!({"state":"confirmed","pid":pid}),
         None => json!({"state":"terminal"}),
     };
-    let payload = json!({"run_id":id,"node_id":"n-0001","dir":public.root,"kind":"spinoff","agent_owner":"caller","lifecycle":"interactive","status":super::status_kebab(status),"source_repo":repo_string,"source_branch":source,"branch":plan.branch,"worktree_path":plan.checkout,"checkout_verified":!terminal,"supervisor":supervisor,"idempotent_replay":replay,"writer_fence":{"state":"foundation-only","writer":fence.writer,"launch_gate":fence.launch_gate}});
+    let attach = super::attach::read(&public)?;
+    let payload = json!({"attach":attach,"run_id":id,"node_id":"n-0001","dir":public.root,"kind":"spinoff","agent_owner":"caller","lifecycle":"interactive","status":super::status_kebab(status),"source_repo":repo_string,"source_branch":source,"branch":plan.branch,"worktree_path":plan.checkout,"checkout_verified":!terminal,"supervisor":supervisor,"idempotent_replay":replay,"writer_fence":{"state":"foundation-only","writer":fence.writer,"launch_gate":fence.launch_gate}});
     match args.spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, args.spec, args.warnings)?;
         }
         OutputFormat::Text => {
             println!("caller-owned run {id} node n-0001: {} ({}; Pi launch requires host-held gate and writer lease)", plan.checkout, super::status_kebab(status));
+            println!(
+                "attach: unavailable ({})",
+                attach.reason.unwrap_or("display-not-recorded")
+            );
             output::emit_text_warnings(args.warnings);
         }
     }

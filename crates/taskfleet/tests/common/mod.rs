@@ -85,7 +85,7 @@ case "$1" in
   kill-window|kill-session) /bin/rm -f "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
   display-message)
     case " $* " in
-      *" -t "*) printf '%s\t%s\t@77\t%s\n' "$NATIVE_TEST_TMUX_SOCKET" "${NATIVE_TEST_SESSION:-headless}" "$(/bin/cat "$NATIVE_TEST_WINDOW_NAME_STATE")" ;;
+      *" -t "*) printf '%s\t%s\t@77\t%s\t%s\t%s\n' "$NATIVE_TEST_TMUX_SOCKET" "${NATIVE_TEST_SESSION:-headless}" "$(/bin/cat "$NATIVE_TEST_WINDOW_NAME_STATE")" "${NATIVE_TEST_TMUX_SERVER_PID:-}" "${NATIVE_TEST_TMUX_SERVER_MARKER:-}" ;;
       *) printf '%s\n' "${NATIVE_TEST_SESSION:-fixture}" ;;
     esac
     exit 0 ;;

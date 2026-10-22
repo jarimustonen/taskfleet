@@ -1,6 +1,5 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 234
 expression: value
 ---
 {
@@ -98,6 +97,14 @@ expression: value
     },
     "counts": {
       "nodes": 1
+    },
+    "attach": {
+      "state": "unavailable",
+      "reason": "display-not-recorded",
+      "node_id": null,
+      "display": null,
+      "identity": null,
+      "command": null
     },
     "telemetry": [
       {

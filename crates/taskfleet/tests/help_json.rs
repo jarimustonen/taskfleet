@@ -529,3 +529,17 @@ fn output_file_help_writes_json_file() {
     let v: Value = serde_json::from_str(&body).expect("file is valid JSON");
     assert_eq!(v["data"]["schema_version_help"], 3);
 }
+
+#[test]
+fn run_attach_help_json() {
+    let text = help_stdout(&["run", "attach", "--help", "--json"]);
+    let value: Value = serde_json::from_str(&text).unwrap();
+    let output = value["data"]["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flag| flag["name"] == "output")
+        .unwrap();
+    assert_eq!(output["defaults"], serde_json::json!(["text"]));
+    insta::assert_snapshot!("run_attach_help_json", text);
+}

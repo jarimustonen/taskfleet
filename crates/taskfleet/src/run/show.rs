@@ -31,6 +31,7 @@ struct ShowPayload<'a> {
     summary: crate::run::dto::RunSummary,
     manifest: ManifestView<'a>,
     counts: Counts,
+    attach: super::attach::Attachment,
     /// Per-node last-told activity and freshness. Observational only: every row
     /// explicitly leaves the run status unchanged.
     telemetry: Vec<crate::run::telemetry::NodeTelemetryView>,
@@ -342,7 +343,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             crate::run::telemetry::counts(&telemetry),
             telemetry_warning.is_none(),
         );
+    let attach = super::attach::discover(&paths, &manifest, &nodes);
     let payload = ShowPayload {
+        attach,
         summary,
         manifest: ManifestView::from(&manifest),
         counts,
@@ -408,6 +411,17 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         }
         OutputFormat::Text => {
             println!("run-id:        {}", payload.manifest.run_id);
+            if let Some(command) = &payload.attach.command {
+                println!(
+                    "attach:        {} ({}; run outside tmux)",
+                    command, payload.attach.state
+                );
+            } else {
+                println!(
+                    "attach:        unavailable ({})",
+                    payload.attach.reason.unwrap_or("unknown")
+                );
+            }
             println!(
                 "title:         {}",
                 output::escape_one_line(payload.manifest.title)

@@ -244,3 +244,14 @@ tool maintenance rather than something to do silently inside another task. A
 missing binary is the same: say so and let the user install it. Inside the
 taskfleet repository itself, never touch the installed binary or skills at
 all; maintained `HEAD` and the installed release are allowed to differ.
+
+## Viewing a worker
+
+`run create` and `run show --json` expose `data.attach`: recorded exact display
+identity and a shell-quoted command, or an explicit unavailability reason.
+`taskfleet run attach <full-run-id> --json` validates that identity without
+opening a client. Native `run attach <full-run-id>` opens a read-only viewer
+from a terminal outside tmux; inside tmux it refuses rather than switch an
+unrelated client. Missing/stale/cleaned or non-unique displays are errors, not
+reasons to start a server. `run reattach` recovers a supervisor; it is not a
+viewer. Linux workers remain on Taskfleet's manager-owned private server.

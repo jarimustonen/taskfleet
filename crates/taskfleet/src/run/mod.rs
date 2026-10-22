@@ -5,6 +5,7 @@
 //! single `dispatch` entry point called from `cli.rs`.
 
 mod admission;
+pub mod attach;
 pub mod attention;
 pub mod awaiting_input;
 mod caller_create;
@@ -253,6 +254,11 @@ pub enum RunAction {
         #[arg(long)]
         current: bool,
     },
+    /// View the exact recorded worker display read-only (outside tmux only).
+    /// Default: native terminal client. --json or --output json|jsonl validates
+    /// and returns a descriptor without attaching. Never creates a tmux server.
+    /// Example: taskfleet run attach 01arz3ndektsv4rrffq69g5fav --json
+    Attach { run_id: String },
     /// Send a steering message to a live Taskfleet-launched Pi worker with an
     /// acknowledged extension adapter. Acceptance does not prove it was read or acted on.
     Message {
@@ -609,6 +615,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             spec,
             warnings,
         }),
+        RunAction::Attach { run_id } => attach::run(&run_id, spec, warnings),
         RunAction::Show { run_id, current } => {
             let run_id = if current {
                 let root = crate::home::root_dir()?;

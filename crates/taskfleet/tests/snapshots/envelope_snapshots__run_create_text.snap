@@ -4,6 +4,7 @@ assertion_line: 234
 expression: value
 ---
 run-id: [RUN_ID]
+attach: unavailable (no-unique-node-display)
 dir:    [HOME]/runs/[RUN_ID]
 kind:   spinoff
 profile: builtin (source builtin-harness, autonomous)

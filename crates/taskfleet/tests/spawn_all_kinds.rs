@@ -102,20 +102,28 @@ fn each_kind_native_spawn_publishes_a_live_handshaken_node() {
         let tools = NativeSpawnTools::new();
         profile(&home, &scratch);
         let worktree = tools.worktree("worktree");
-        let created = run_ok(command(&home, &tools, &worktree, "fixture").args([
-            "--output",
-            "json",
-            "run",
-            "create",
-            "--kind",
-            kind,
-            "--tmux-session",
-            "fixture",
-            "--title",
-            "native smoke",
-            "--task",
-            "do work",
-        ]));
+        let created = run_ok(
+            command(&home, &tools, &worktree, "fixture")
+                .env(
+                    "NATIVE_TEST_TMUX_SERVER_PID",
+                    std::process::id().to_string(),
+                )
+                .env("NATIVE_TEST_TMUX_SERVER_MARKER", "fixture")
+                .args([
+                    "--output",
+                    "json",
+                    "run",
+                    "create",
+                    "--kind",
+                    kind,
+                    "--tmux-session",
+                    "fixture",
+                    "--title",
+                    "native smoke",
+                    "--task",
+                    "do work",
+                ]),
+        );
         assert_eq!(created["data"]["kind"], *kind);
         assert_eq!(created["data"]["node_id"], "n-0001");
         assert_eq!(
@@ -135,6 +143,12 @@ fn each_kind_native_spawn_publishes_a_live_handshaken_node() {
         .unwrap();
         assert!(node["agent_pid"].as_u64().is_some_and(|pid| pid > 0));
         assert_eq!(node["tmux_identity"]["pane_id"], "%77");
+        assert_eq!(created["data"]["attach"]["state"], "recorded");
+        assert_eq!(created["data"]["attach"]["identity"], node["tmux_identity"]);
+        let shown = run_ok(
+            command(&home, &tools, &worktree, "fixture").args(["run", "show", run_id, "--json"]),
+        );
+        assert_eq!(shown["data"]["attach"], created["data"]["attach"]);
         assert!(home
             .path()
             .join("runs")

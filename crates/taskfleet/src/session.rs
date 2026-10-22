@@ -1316,6 +1316,7 @@ fn tmux_exec_for(bin: &str, socket: Option<&str>, args: &[&str], timeout: Durati
         return TmuxExec::TimedOut;
     }
     let mut command = Command::new(bin);
+    command.arg("-N"); // Inspection/maintenance must never start a replacement server.
     if let Some(socket) = socket {
         command.args(["-S", socket]);
     }
@@ -1360,6 +1361,42 @@ fn emit_maintenance(
             output::emit_text_warnings(warnings);
             Ok(())
         }
+    }
+}
+
+/// Read-only exact display checks shared with the attachment surface. Inputs
+/// are a single shared-lock snapshot; never reselect another pane after probing.
+pub(crate) fn validate_attachment(
+    identity: &taskfleet_core::TmuxIdentity,
+    retained: Option<&RetainedDisplay>,
+) -> Result<(), CliError> {
+    let reason = if let Some(display) = retained {
+        match inspect_exact_display(display, Instant::now() + TMUX_TIMEOUT) {
+            Inspect::Owned => None,
+            Inspect::WindowGone => Some("retained window is missing or cleaned".to_string()),
+            Inspect::ServerGone => Some("recorded server generation is gone".to_string()),
+            Inspect::Unsafe(reason) => Some(reason),
+        }
+    } else {
+        match identity.pane_id.as_deref().map(|pane| {
+            inspect_original_pane(&crate::multiplexer::tmux::tmux_bin(), identity, pane)
+        }) {
+            Some(OriginalPane::Exact) => None,
+            Some(OriginalPane::Gone) => {
+                Some("recorded server/window/pane is missing or cleaned".to_string())
+            }
+            Some(OriginalPane::Drift) => {
+                Some("recorded socket/session/window/pane/server marker changed".to_string())
+            }
+            Some(OriginalPane::Unsafe) | None => {
+                Some("recorded display identity cannot be verified".to_string())
+            }
+        }
+    };
+    if let Some(reason) = reason {
+        Err(CliError::user("display_stale", format!("{reason}; no viewer started. Use run show for archives; run reattach is supervisor recovery, not display attachment.")))
+    } else {
+        Ok(())
     }
 }
 

@@ -119,6 +119,7 @@ pub struct Args<'a> {
 
 #[derive(Serialize)]
 struct CreatedPayload<'a> {
+    attach: super::attach::Attachment,
     run_id: &'a str,
     dir: String,
     supervisor: SupervisorField,
@@ -1633,7 +1634,14 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
         // Child-spawn: parent supervisor handles supervisor creation.
         (None, _, _) => SupervisorField::Note("delegated-to-parent-supervisor"),
     };
+    let attach = if i.dry_run == Some(true) {
+        super::attach::Attachment::not_created()
+    } else {
+        let paths = taskfleet_core::RunPaths::new(&i.dir, i.run_id).map_err(from_core)?;
+        super::attach::read(&paths)?
+    };
     let payload = CreatedPayload {
+        attach,
         run_id: i.run_id,
         dir: i.dir,
         supervisor,
@@ -1658,6 +1666,14 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
         }
         OutputFormat::Text => {
             println!("run-id: {}", payload.run_id);
+            if let Some(command) = &payload.attach.command {
+                println!("attach: {command} (recorded; run outside tmux)");
+            } else {
+                println!(
+                    "attach: unavailable ({})",
+                    payload.attach.reason.unwrap_or("unknown")
+                );
+            }
             println!("dir:    {}", payload.dir);
             println!("kind:   {}", kind_kebab(i.kind));
             match &payload.selection {

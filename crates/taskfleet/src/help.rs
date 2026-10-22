@@ -589,6 +589,14 @@ fn build_node(cmd: &Command, command_path: &str, depth: HelpDepth) -> CommandNod
         .filter(|a| !a.is_positional())
         .map(|a| build_flag(cmd, a))
         .collect();
+    // Attachment's explicit terminal default is resolved after clap, like the
+    // shared jsonl default below. Do not advertise jsonl/native ambiguously.
+    if command_path == "taskfleet run attach" {
+        if let Some(output) = flags.iter_mut().find(|flag| flag.name == "output") {
+            output.defaults = vec!["text".to_string()];
+            output.help = Some("text (default): native read-only terminal viewer outside tmux. json/jsonl or a file path: validate and return the descriptor without attaching.".to_string());
+        }
+    }
     flags.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut positionals: Vec<PositionalInfo> =

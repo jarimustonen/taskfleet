@@ -1,6 +1,5 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 234
 expression: value
 ---
-{"schema_version":1,"data":{"run_id":"[RUN_ID]","dir":"[HOME]/runs/[RUN_ID]","supervisor":"delegated-to-parent-supervisor","kind":"spinoff","lifecycle":"autonomous","selection":{"schema_version":1,"profile":"builtin","selection_source":"builtin-harness","interaction":"autonomous","capability":"capable","residency":"local","requested_harness":"pi","selected":{"candidate_index":0,"harness":"pi","command":["pi"],"telemetry":"worker-v1"},"fallback":[]}},"warnings":[]}
+{"schema_version":1,"data":{"attach":{"state":"unavailable","reason":"no-unique-node-display","node_id":null,"display":null,"identity":null,"command":null},"run_id":"[RUN_ID]","dir":"[HOME]/runs/[RUN_ID]","supervisor":"delegated-to-parent-supervisor","kind":"spinoff","lifecycle":"autonomous","selection":{"schema_version":1,"profile":"builtin","selection_source":"builtin-harness","interaction":"autonomous","capability":"capable","residency":"local","requested_harness":"pi","selected":{"candidate_index":0,"harness":"pi","command":["pi"],"telemetry":"worker-v1"},"fallback":[]}},"warnings":[]}

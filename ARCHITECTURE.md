@@ -40,7 +40,10 @@ On Linux the user manager owns supervisor services and a state-home-specific,
 foreground tmux server service. Workers belong to that server's cgroup, not the
 creating daemon's. Validated private sockets under the user's runtime directory
 remain reachable across PrivateTmp namespaces; the manager boundary also works
-from PATH/USER/HOME-only callers. Non-Linux launch remains native. See
+from PATH/USER/HOME-only callers. `run/attach.rs` exposes recorded display
+identity on show/create and validates it for read-only native viewing or a
+machine-readable descriptor; it never recovers or creates a server. Non-Linux
+launch remains native. See
 [Linux lifetime](docs/LINUX-LIFETIME.md) for prerequisites, discovery and tests.
 
 Claude notification/progress subprocess hooks in `claude_hooks.rs` feed the

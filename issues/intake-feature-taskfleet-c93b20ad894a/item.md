@@ -36,3 +36,11 @@ Suggestion: (1) `run show`/`run create` report the attach command; (2) `taskflee
 
 **Verification targets:** Private-server and non-Linux placement; shell-sensitive socket/session values; invocation inside and outside tmux; missing or stale display identities; terminal runs with retained versus removed windows; and unchanged supervisor/cleanup ownership. Use isolated tmux stubs for regular tests and retain the real Linux lifetime smoke as evidence that discovery changes do not regress worker survival.
 <!-- intakectl:analysis:end job:8ae7ee88-4684-41e4-8c67-38e10c441207 generation:0 -->
+
+## Acceptance Criteria
+
+- [x] `run show` and `run create` expose recorded exact display identity and a shell-quoted command; `run attach <full-run-id>` validates it before viewing.
+- [x] JSON/JSONL attachment validates and returns a descriptor without terminal bytes; native attachment is read-only and refuses invocation inside tmux.
+- [x] Missing, stale, incomplete, cleaned and non-unique displays fail explicitly without server creation, input injection or worker cleanup.
+- [x] Independent viewer selection preserves other clients' current window, active pane and zoom; Linux placement/lifetime are unchanged.
+- [x] Deterministic CLI regression tests, reviewed snapshots, focused independent review/assessment and opt-in private-socket native smoke cover the change; see `validation.md` and the final worker report for gate evidence.

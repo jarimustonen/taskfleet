@@ -1031,3 +1031,274 @@ fn legacy_branch_only_receipt_without_oid_preserves_branch() {
         ""
     );
 }
+
+/// Real initialized submodule, with a space in the gitlink path. No network or
+/// ambient file-protocol configuration is needed.
+fn populate_submodule(f: &Fixture) {
+    let module = f.home.path().join("module-source");
+    std::fs::create_dir(&module).unwrap();
+    git(&module, &["init", "-q", "-b", "main"]);
+    git(&module, &["config", "user.email", "t@t"]);
+    git(&module, &["config", "user.name", "t"]);
+    std::fs::write(module.join("tracked"), "module\n").unwrap();
+    git(&module, &["add", "."]);
+    git(&module, &["commit", "-qm", "module"]);
+    git(
+        &f.worktree,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--",
+            module.to_str().unwrap(),
+            "module space",
+        ],
+    );
+    git(&f.worktree, &["commit", "-qam", "add module"]);
+    assert_eq!(git(&f.worktree, &["status", "--porcelain"]), "");
+}
+
+/// Capture the exact production receipt without deleting the target by making
+/// only the final removal fail. The caller uses a Git executable pinned below;
+/// every observation and authorization check still runs real Git.
+fn record_nonforce_receipt(f: &Fixture) {
+    use std::os::unix::fs::PermissionsExt;
+    let real_git = git_binary();
+    let stub = f.home.path().join("git-refuse-remove");
+    std::fs::write(&stub, format!("#!/bin/sh\nif [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then echo 'fixture removal refusal' >&2; exit 1; fi\nexec '{}' \"$@\"\n", real_git.display())).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .env("TASKFLEET_HOME", f.home.path())
+        .env("HOME", f.home.path())
+        .env("GIT_BIN", &stub)
+        .args([
+            "--json", "run", "discard", &f.run_id, "--reason", "operator",
+        ])
+        .output()
+        .unwrap();
+    let error = envelope(&out, false);
+    assert_eq!(error["error"]["code"], "discard_partial_cleanup");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("fixture removal refusal"));
+}
+
+fn git_binary() -> PathBuf {
+    // Resolve before PATH is stripped; only Git (and /bin/sh for the declared
+    // refusal stub) is needed by these production CLI invocations.
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("git"))
+        .find(|p| p.is_file())
+        .unwrap()
+}
+
+fn isolated_discard(f: &Fixture, extra: &[&str]) -> Output {
+    let bin = f.home.path().join("only-git");
+    std::fs::create_dir_all(&bin).unwrap();
+    let git = bin.join("git");
+    if !git.exists() {
+        std::os::unix::fs::symlink(git_binary(), &git).unwrap();
+    }
+    Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+        .env("TASKFLEET_HOME", f.home.path())
+        .env("HOME", f.home.path())
+        .env("PATH", bin)
+        .env("GIT_BIN", &git)
+        .args([
+            "--json", "run", "discard", &f.run_id, "--reason", "operator",
+        ])
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn populated_submodule_discard_previews_and_requires_explicit_force() {
+    let f = Fixture::failed();
+    populate_submodule(&f);
+    // Independently exercise the underlying refusal, not a mock.
+    let refused = Command::new("git")
+        .arg("-C")
+        .arg(f.source.path())
+        .args(["worktree", "remove"])
+        .arg(&f.worktree)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(f.worktree.join("module space/tracked").exists());
+    let before = std::fs::read(f.paths.events()).unwrap();
+    let preview = envelope(&isolated_discard(&f, &["--dry-run"]), true);
+    assert_eq!(preview["data"]["cleanliness"], "clean");
+    assert_eq!(preview["data"]["force_required"], true);
+    assert_eq!(
+        envelope(&isolated_discard(&f, &[]), false)["error"]["code"],
+        "force_required"
+    );
+    assert_eq!(std::fs::read(f.paths.events()).unwrap(), before);
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--force"]), true)["data"]["discarded"],
+        true
+    );
+    assert!(!f.worktree.exists());
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--force"]), true)["data"]["already_discarded"],
+        true
+    );
+}
+
+#[test]
+fn existing_nonforce_submodule_receipt_supports_audited_force_upgrade() {
+    let f = Fixture::failed();
+    populate_submodule(&f);
+    // Simulate the older release's receipt by suppressing only the new probe.
+    // Production creates the original pinned receipt before module population;
+    // restore the identical index/HEAD after recording it.
+    git(&f.worktree, &["submodule", "deinit", "-f", "--all"]);
+    record_nonforce_receipt(&f);
+    git(
+        &f.worktree,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+        ],
+    );
+    let before = std::fs::read(f.paths.events()).unwrap();
+    for extra in [&["--dry-run"][..], &["--force", "--dry-run"][..]] {
+        assert_eq!(
+            envelope(&isolated_discard(&f, extra), true)["data"]["force_required"],
+            true
+        );
+        assert_eq!(std::fs::read(f.paths.events()).unwrap(), before);
+    }
+    assert_eq!(
+        envelope(&isolated_discard(&f, &[]), false)["error"]["code"],
+        "force_required"
+    );
+    let done = envelope(&isolated_discard(&f, &["--force"]), true);
+    assert_eq!(done["data"]["discarded"], true);
+    let events = taskfleet_core::read_all_events(&f.paths.events()).unwrap();
+    let original = events
+        .iter()
+        .find(|e| e.kind == "cleanup.discard_authorized")
+        .unwrap();
+    assert_eq!(original.data["force"], false);
+    let upgrades: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "cleanup.discard_force_authorized")
+        .collect();
+    assert_eq!(upgrades.len(), 1);
+    assert_eq!(upgrades[0].data["authorization_seq"], original.seq);
+    assert_eq!(upgrades[0].data["reason"], "operator");
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--force"]), true)["data"]["already_discarded"],
+        true
+    );
+}
+
+#[test]
+fn submodule_force_upgrade_preserves_changed_target_and_dirty_work() {
+    for mutation in ["oid", "directory", "dirty", "reason"] {
+        let f = Fixture::failed();
+        populate_submodule(&f);
+        git(&f.worktree, &["submodule", "deinit", "-f", "--all"]);
+        record_nonforce_receipt(&f);
+        git(
+            &f.worktree,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+            ],
+        );
+        match mutation {
+            "oid" => {
+                git(&f.worktree, &["commit", "--allow-empty", "-qm", "new tip"]);
+            }
+            "directory" => {
+                std::fs::rename(&f.worktree, f.source.path().join("saved")).unwrap();
+                std::fs::create_dir(&f.worktree).unwrap();
+                std::fs::write(f.worktree.join("valuable"), "replacement").unwrap();
+            }
+            "dirty" => {
+                std::fs::write(f.worktree.join("untracked"), "new work").unwrap();
+            }
+            "reason" => {}
+            _ => unreachable!(),
+        }
+        let before = std::fs::read(f.paths.events()).unwrap();
+        for dry in [true, false] {
+            let mut extra = vec!["--force"];
+            if dry {
+                extra.push("--dry-run");
+            }
+            let out = if mutation == "reason" {
+                command(
+                    &f.home,
+                    &[
+                        "run",
+                        "discard",
+                        &f.run_id,
+                        "--reason",
+                        "different",
+                        "--force",
+                    ],
+                )
+            } else {
+                isolated_discard(&f, &extra)
+            };
+            let error = envelope(&out, false);
+            assert!(
+                matches!(
+                    error["error"]["code"].as_str(),
+                    Some("idempotency_conflict" | "preserved_work_unverifiable")
+                ),
+                "{mutation}: {error}"
+            );
+            assert_eq!(std::fs::read(f.paths.events()).unwrap(), before);
+            assert!(f.worktree.exists());
+        }
+    }
+}
+
+#[test]
+fn submodule_force_upgrade_resumes_branch_only_after_ref_lock_refusal() {
+    let f = Fixture::failed();
+    populate_submodule(&f);
+    git(&f.worktree, &["submodule", "deinit", "-f", "--all"]);
+    record_nonforce_receipt(&f);
+    git(
+        &f.worktree,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+        ],
+    );
+    let lock = f.source.path().join(".git/refs/heads/wt/retained.lock");
+    std::fs::write(&lock, "fixture ref lock").unwrap();
+    let error = envelope(&isolated_discard(&f, &["--force"]), false);
+    assert_eq!(error["error"]["code"], "discard_partial_cleanup");
+    assert!(!f.worktree.exists());
+    std::fs::remove_file(lock).unwrap();
+    let retry = envelope(&isolated_discard(&f, &["--force"]), true);
+    assert_eq!(
+        retry["data"]["removed"],
+        json!({"worktree":false,"branch":true})
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.paths.events())
+            .unwrap()
+            .matches("cleanup.discard_force_authorized")
+            .count(),
+        1
+    );
+}

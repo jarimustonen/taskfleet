@@ -268,6 +268,25 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             })
         })
         .transpose()?;
+    let populated_submodules = if observation
+        .as_ref()
+        .is_some_and(|o| o.view.worktree_present && o.verified_for_discard())
+    {
+        git.worktree_has_populated_submodules(
+            observation
+                .as_ref()
+                .and_then(|o| o.view.worktree_path.as_deref())
+                .expect("present path"),
+        )
+        .ok_or_else(|| {
+            CliError::system(
+                "preserved_work_unverifiable",
+                "could not inspect worktree submodules; refusing discard",
+            )
+        })?
+    } else {
+        false
+    };
     let orphan = if let (Some(prior), Some(recorded)) = (prior.as_ref(), prior_auth.as_ref()) {
         // Inputs remain pinned even if the recorded path no longer looks like a
         // worktree. An old receipt without inode proof cannot authorize orphan
@@ -284,7 +303,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if recorded.reason != args.reason
             || (recorded.force != args.force
                 && !upgraded
-                && !orphan_retry_allowed(recorded, observation.as_ref(), args.force))
+                && !force_retry_allowed(
+                    recorded,
+                    observation.as_ref(),
+                    args.force,
+                    populated_submodules,
+                ))
         {
             return Err(CliError::user(
                 "idempotency_conflict",
@@ -389,7 +413,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
 
-    let force_required = observation.view.cleanliness == "dirty"
+    // A force upgrade is only valid for the same inode/repository/ref pins,
+    // including previews: never advertise recovery for a replacement target.
+    if !orphan && observation.view.worktree_present {
+        if let Some(auth) = prior_auth.as_ref().filter(|a| a.identity.is_some()) {
+            verify_registered(auth, &manifest, &node, &git)?;
+        }
+    }
+    let force_required = populated_submodules
+        || observation.view.cleanliness == "dirty"
         || (orphan && !prior_auth.as_ref().is_some_and(|auth| auth.force));
     if args.dry_run {
         return emit(
@@ -418,7 +450,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         return Err(CliError::user(
             "force_required",
             format!(
-                "node {node_id}'s worktree is dirty or partially removed; --force explicitly authorizes deletion of remaining files"
+                "node {node_id}'s worktree is dirty, has populated submodules, or is partially removed; --force explicitly authorizes deletion of remaining files (retry with the same reason)"
             ),
         )
         .with_expected(json!({"force": true})));
@@ -435,7 +467,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             &git,
         )?
     };
-    if !orphan && auth.identity.is_some() {
+    if !orphan && observation.view.worktree_present && auth.identity.is_some() {
         verify_registered(&auth, &manifest, &node, &git)?;
     }
     let key = authorization_key(&run_id, &node_id);
@@ -453,10 +485,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .map_err(from_core)?
     };
 
-    if orphan && !auth.force {
-        // A clean non-force authorization cannot cover files added after Git
-        // lost registration. A separate durable, target-bound force upgrade
-        // makes that new destructive choice explicit without rewriting history.
+    if args.force && !auth.force {
+        // Keep the original receipt immutable. The separate upgrade references
+        // its exact target/OID pins and records the operator's stronger choice.
         let key = format!("discard-force:{run_id}:{node_id}");
         let expected = json!({"authorization_seq":seq,"reason":auth.reason,"actor":format!("uid:{}", unsafe { libc::geteuid() })});
         if let Some(old) =
@@ -492,21 +523,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .worktree_path
             .as_deref()
             .expect("present worktree has path");
-        let removed = if orphan {
+        let failure = if orphan {
             // The inode and source Git identity were just checked; refuse any
             // registered checkout and never follow a replacement/symlink.
-            remove_orphan(&auth, &manifest, &node, &git)
+            (!remove_orphan(&auth, &manifest, &node, &git))
+                .then(|| "orphaned directory removal failed".to_string())
         } else {
             if auth.identity.is_some() {
                 verify_registered(&auth, &manifest, &node, &git)?;
             }
-            git.worktree_remove(repo, path, force_required)
+            git.worktree_remove_detail(repo, path, args.force)
         };
-        if !removed {
+        if let Some(detail) = failure {
             return Err(CliError::system(
                 "discard_partial_cleanup",
                 format!(
-                    "discard authorization event {seq} is durable, but worktree {path:?} was not removed; retry with the same reason and force inputs"
+                    "discard authorization event {seq} is durable, but worktree {path:?} was not removed: {detail}; retry with the same reason and force inputs; if Git requires force, explicitly authorize --force after a dry-run"
                 ),
             ));
         }
@@ -683,15 +715,21 @@ fn force_upgrade_recorded(
     }
 }
 
-fn orphan_retry_allowed(
+fn force_retry_allowed(
     auth: &Authorization,
     observation: Option<&RetainedObservation>,
     force: bool,
+    populated_submodules: bool,
 ) -> bool {
     force
         && !auth.force
         && auth.identity.is_some()
-        && observation.is_some_and(|o| o.view.worktree_present && !o.verified_for_discard())
+        && !prior_auth_missing_oid(auth)
+        && observation.is_some_and(|o| {
+            o.view.worktree_present
+                && (!o.verified_for_discard()
+                    || (populated_submodules && o.view.cleanliness == "clean"))
+        })
 }
 
 fn prior_auth_missing_oid(auth: &Authorization) -> bool {

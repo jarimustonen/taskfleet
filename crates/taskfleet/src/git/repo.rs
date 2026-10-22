@@ -244,6 +244,40 @@ impl Git {
         }
     }
 
+    /// A populated gitlink prevents Git's non-force worktree removal even when
+    /// status is clean. Inspect the NUL-delimited index, not `.gitmodules` text
+    /// or localized stderr. Nonempty gitlink directories conservatively require
+    /// explicit force; unreadable index/paths fail closed.
+    pub fn worktree_has_populated_submodules(&self, dir: &str) -> Option<bool> {
+        let out = self
+            .at(dir)
+            .args(["ls-files", "--stage", "-z"])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        for entry in out.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+            let (header, path) = entry.split_at(entry.iter().position(|b| *b == b'\t')?);
+            if !header.starts_with(b"160000 ") {
+                continue;
+            }
+            use std::os::unix::ffi::OsStrExt;
+            let path = std::path::Path::new(dir).join(std::ffi::OsStr::from_bytes(&path[1..]));
+            match std::fs::read_dir(path) {
+                Ok(mut entries) => match entries.next() {
+                    Some(Ok(_)) => return Some(true),
+                    Some(Err(_)) => return None,
+                    None => {}
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
+            }
+        }
+        Some(false)
+    }
+
     /// Every registered worktree, including its checked-out local branch.
     /// `None` means Git could not provide a trustworthy registration list.
     pub fn worktree_registrations(&self, repo: &str) -> Option<Vec<WorktreeRegistration>> {
@@ -351,14 +385,24 @@ impl Git {
     /// worktree (removal fails, dir absent) from a genuine refusal (removal fails,
     /// dir present).
     pub fn worktree_remove(&self, repo: &str, worktree_path: &str, force: bool) -> bool {
+        self.worktree_remove_detail(repo, worktree_path, force)
+            .is_none()
+    }
+
+    /// Removal failure detail for operator-facing partial-discard errors.
+    pub fn worktree_remove_detail(
+        &self,
+        repo: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Option<String> {
         let mut cmd = self.at(repo);
+        cmd.args(["worktree", "remove"]);
         if force {
-            cmd.args(["worktree", "remove", "--force", worktree_path]);
-            run_lenient(cmd, &format!("git worktree remove --force {worktree_path}"))
-        } else {
-            cmd.args(["worktree", "remove", worktree_path]);
-            run_lenient(cmd, &format!("git worktree remove {worktree_path}"))
+            cmd.arg("--force");
         }
+        cmd.arg(worktree_path);
+        run_lenient_detail(cmd, &format!("git worktree remove {worktree_path}"))
     }
 
     /// Delete an exact local ref only if its tip still equals the audited OID.
@@ -413,20 +457,8 @@ impl Git {
     }
 }
 
-/// Run a best-effort git command, logging its outcome through `tracing`.
-/// Printing to stderr here would corrupt the CLI's single JSON error envelope.
-/// Returns `true` only when the command exited successfully; a non-zero exit or
-/// spawn error is logged at `warn`, swallowed, and reported as `false` — cleanup
-/// is best-effort by contract, but the boolean lets a caller fall back rather
-/// than leak. Mirrors the tmux-side lenient runner in [`crate::multiplexer`];
-/// git ops live here so the git module owns its own execution.
-fn run_lenient(cmd: Command, label: &str) -> bool {
-    run_lenient_detail(cmd, label).is_none()
-}
-
-/// Like [`run_lenient`] but returns the captured failure detail on a non-zero
-/// exit or spawn error (`None` on success), so a caller can record it in an
-/// audit event (e.g. `cleanup.branch_remove_failed`). Logging is identical.
+/// Run a best-effort Git command, capturing failure detail without printing to
+/// stderr (which would corrupt the CLI's single JSON error envelope).
 fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     match cmd.output() {

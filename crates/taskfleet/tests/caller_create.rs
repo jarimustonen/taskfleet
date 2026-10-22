@@ -19,6 +19,11 @@ fn fixture() -> (TestHome, tempfile::TempDir, tempfile::TempDir) {
     let repo = workspace.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
+    // Production merge may rebase in a linked worktree. Per-commit `-c`
+    // identity below does not reach that subprocess; keep its identity local
+    // to the disposable repository rather than relying on the developer's home.
+    git(&repo, &["config", "user.name", "Test"]);
+    git(&repo, &["config", "user.email", "test@example.invalid"]);
     git(
         &repo,
         &[

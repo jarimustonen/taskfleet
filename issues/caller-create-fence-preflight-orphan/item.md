@@ -3,7 +3,7 @@ created: 2026-10-20
 updated: 2026-10-22
 type: bug
 reporter: homebase-execution-acceptance-agent
-status: open
+status: in-progress
 priority: normal
 provenance: other
 provenance_detail: Observed directly during live heavy-command execution rollout acceptance

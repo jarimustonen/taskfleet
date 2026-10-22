@@ -1,6 +1,6 @@
 ---
 created: 2026-10-21
-updated: 2026-10-21
+updated: 2026-10-22
 type: feature
 reporter: jari
 status: untriaged
@@ -32,3 +32,9 @@ Scope limits are explicit: only Taskfleet-launched Pi workers with the adapter a
 
 Verification was read-only: installed CLI help, implementation, and commit history were inspected. Existing unit tests cover matching acknowledgements, wrong identities, and stale sockets; they were not rerun, and no live worker was messaged. No issue status or scheduling decision is changed by this analysis.
 <!-- intakectl:analysis:end job:6ff0e458-1812-44fa-8f57-e910e15135db generation:0 -->
+
+## Comments
+
+### 2026-10-22T14:28:05Z · @pi-conductor
+
+Observed during the approved six-issue Taskfleet stint on 2026-10-22 against installed 0.16.0: run message to Pi runs 01m5hqx3k2pzywqsb6mka4wr19 (triage-discard) and 01m5hqx4m9tv0wktjfdxgrhmmb (triage-handoff) returned worker_not_active. Immediate run show for both reported status pending, harness pi, live supervisor, no report and no attention/awaiting-input. Both subsequently completed and merged successfully, so these were not dead workers. The attempted messages were optional progress updates, not decisions; no deliverable was blocked. Current message.rs rejects node status other than Running; investigate the distinction between a genuinely inactive worker and a live native worker whose node remains Pending before calling this intake obsolete based only on CLI presence. No harness-control workaround or extra fix was attempted; this newly arrived item remains untriaged outside the six approved outcomes.

@@ -3,12 +3,14 @@ created: 2026-10-20
 updated: 2026-10-22
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-wrapup-20261020-idle-prompt
 lane: signals
 lane_seq: 10
+closed: 2026-10-22
+closed_by: pi-worker
 ---
 
 # claude-hook reports idle_prompt (awaiting input) while a Claude worker …
@@ -38,3 +40,9 @@ Expected: an idle prompt while the Claude session has running background shells 
 
 **Validation needed for a fix:** a session emitting `idle_prompt` while background work remains outstanding must not trigger human-attention settlement after the grace, and later autonomous progress must remain possible. Preserve permission-prompt escalation, manual/mixed request ownership, and stale-session/attempt fencing. Test both background completion and failure, plus a genuinely idle session, so suppressing this false positive does not silently claim all idle sessions are healthy. Until then, inspect an idle-only notification; `run wait --terminal --check-in 30m` is the documented way to continue bounded observation without treating it as completion.
 <!-- intakectl:analysis:end job:634fe380-81a0-4652-8943-ff9ad5adbba1 generation:0 -->
+
+## Resolution
+
+### 2026-10-22T12:21:20Z · @pi-worker
+
+Bare Claude idle_prompt is ignored at hook ingestion and omitted from new notification matchers; permission prompts and explicit manual/mixed requests retain their authority and fences. Deterministic generated-hook regression checks idle-only wait after grace, permission settlement, manual/mixed ownership and legacy recovery with stripped PATH. Full scripts/validate-local-release.sh passed on 9ee8797e4abd5c0629ce6d601447f261a9965a85: 1249 release tests passed, 1 skipped, doctests and all release checks passed. Focused self-review and logs: /var/tmp/taskfleet-idle-fwfkz7syjx/. Two isolated gate fixture omissions repaired without weakening assertions: repo-local Git identity and explicit Linux manager stub.

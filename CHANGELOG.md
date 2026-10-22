@@ -9,9 +9,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.17.0] - 2026-10-22
+
+### Added
+
 - Discover exact worker displays in `run show` and `run create`, validate with
   `run attach --json`, and open a read-only viewer with `run attach <full-run-id>`
   from a terminal outside tmux. Linux workers keep their private manager-owned server.
+
+- Worker windows are invisible in the user's tmux: they live on Taskfleet… (`intake-feature-taskfleet-c93b20ad894a`).
 
 ### Changed
 
@@ -30,7 +41,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Git work. Older ambiguous partial creations remain preserved for manual recovery.
 - Bare Claude idle notifications no longer falsely request human attention
   while background work may still be running; permission prompts remain explicit.
-<!-- oss-changelog:unreleased-end -->
+
+- Caller-owned create leaves a manifest-less reservation after writer-fence preflight failure (`caller-create-fence-preflight-orphan`).
+- Discard of clean initialized-submodule worktree gets stuck behind its non-force authorization (`discard-clean-submodule-worktree-stuck`).
+- claude-hook reports idle_prompt (awaiting input) while a Claude worker … (`intake-bug-taskfleet-886957d18498`).
+- run message cannot reach headless Claude workers, so awaiting_input can… (`intake-bug-taskfleet-cb8af2c4655f`).
+- stint-handoff skips independent wrap-up when retained-resource cleanup … (`intake-bug-taskfleet-759e7b3e8367`).
 
 ## [0.16.0] - 2026-10-17
 

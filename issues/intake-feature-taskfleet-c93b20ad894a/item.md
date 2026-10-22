@@ -3,12 +3,14 @@ created: 2026-10-17
 updated: 2026-10-22
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-conductor-2026-10-17-worker-visibility
 lane: resources
 lane_seq: 30
+closed: 2026-10-22
+closed_by: pi-worker
 ---
 
 # Worker windows are invisible in the user's tmux: they live on Taskfleet…

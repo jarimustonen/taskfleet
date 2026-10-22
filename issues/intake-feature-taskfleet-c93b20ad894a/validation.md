@@ -86,3 +86,14 @@ ambiguous artifacts remain preserved/manual), bare-idle false-positive removal,
 independent handoff preservation, and reply-capability-aware decision guidance.
 No Claude reply transport is claimed. Existing version entries, versions and tags
 are untouched. This worker does not cut, publish, push or install anything.
+
+### Recorded gate result
+
+The complete gate passed on implementation `eeebe3a631308fa353a16e060834876febb6929a`:
+1273 release nextest tests passed (one intentionally skipped), doctests/rustdoc,
+all release fixtures, package archives, current-stable real Shipshape held-tag
+protocol, distribution topology and approved contract checks passed. Log:
+`/var/tmp/taskfleet-attach-build/gate-implementation.log`.
+The closing stamp changed only the implementation commit message. The final clean
+closure commit is gated again; its final SHA, gate result and native smoke result
+are recorded in the terminal worker report and `gate-final.log` in that directory.

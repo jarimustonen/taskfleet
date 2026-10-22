@@ -150,9 +150,10 @@ its own launch. Autonomous runs accept pi with the `worker-v1` telemetry adapter
 interactive runs accept pi or Claude. Claude's headless launcher adds `--print`
 and archives only its final pane and terminal report, not a Pi transcript.
 New Claude launchers also own `--session-id` and invocation-local `--settings`
-hooks (`src/claude_hooks.rs`, `docs/CLAUDE-PROMPT-SIGNALS.md`). Native permission/
-idle notifications feed awaiting-input without ordinary telemetry; no pane
-inference or permission decision is involved. Tool progress clears idle input,
+hooks (`src/claude_hooks.rs`, `docs/CLAUDE-PROMPT-SIGNALS.md`). Native permission
+notifications feed awaiting-input without ordinary telemetry; bare idle is ignored
+because background-shell waits need not require a human. No pane inference or
+permission decision is involved. Tool progress clears legacy hook-owned idle input,
 not parallel permission prompts; only main turn boundaries clear the latter.
 Mixed/manual requests remain explicitly resolved. Missing hooks are unknown,
 not health; parents can use `run wait --check-in 30m` (outcome check-in, exit 4).

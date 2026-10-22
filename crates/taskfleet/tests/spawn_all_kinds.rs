@@ -499,6 +499,10 @@ fn claude_generated_hooks_detect_and_recover_without_worker_telemetry() {
     let get = |flag| argv[argv.iter().position(|s| s == flag).unwrap() + 1].clone();
     let session = get("--session-id");
     let settings: Value = serde_json::from_str(&get("--settings")).unwrap();
+    assert_eq!(
+        settings["hooks"]["Notification"][0]["matcher"],
+        "permission_prompt"
+    );
     let hook = settings["hooks"]["Notification"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
@@ -538,6 +542,35 @@ fn claude_generated_hooks_detect_and_recover_without_worker_telemetry() {
                 .args(["--json", "run", "show", run]),
         )
     };
+    let wait = || {
+        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+            .env("TASKFLEET_HOME", home.path())
+            .env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0")
+            .env("PATH", "")
+            .args([
+                "--json",
+                "run",
+                "wait",
+                run,
+                "--check-in",
+                "1s",
+                "--timeout",
+                "2s",
+                "--fail-on-error",
+            ])
+            .output()
+            .unwrap()
+    };
+    // Idle is not a human request, even after the propagation grace. The hook
+    // cannot tell a background-shell wait (success or failure) from genuine
+    // idleness and deliberately makes no health or background-state inference.
+    call(hook, notify("idle_prompt"));
+    assert_eq!(show()["data"]["awaiting_input"], false);
+    let idle_wait = wait();
+    assert_eq!(idle_wait.status.code(), Some(4));
+    let idle: Value = serde_json::from_slice(&idle_wait.stdout).unwrap();
+    assert_eq!(idle["data"]["outcome"], "check-in");
+    assert_eq!(idle["data"]["runs"][0]["awaiting_input"], false);
     call(
         hook,
         json!({"session_id":session,"hook_event_name":"PostToolUse","tool_response":"x".repeat(70 * 1024)}),
@@ -569,23 +602,7 @@ fn claude_generated_hooks_detect_and_recover_without_worker_telemetry() {
         json!({"session_id":session,"hook_event_name":"UserPromptSubmit"}),
     );
     assert_eq!(show()["data"]["awaiting_input"], true);
-    let waited = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
-        .env("TASKFLEET_HOME", home.path())
-        .env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0")
-        .env("PATH", "")
-        .args([
-            "--json",
-            "run",
-            "wait",
-            run,
-            "--check-in",
-            "1s",
-            "--timeout",
-            "2s",
-            "--fail-on-error",
-        ])
-        .output()
-        .unwrap();
+    let waited = wait();
     assert_eq!(waited.status.code(), Some(3));
     let v: Value = serde_json::from_slice(&waited.stdout).unwrap();
     assert_eq!(v["data"]["outcome"], "condition-met");
@@ -607,27 +624,33 @@ fn claude_generated_hooks_detect_and_recover_without_worker_telemetry() {
         json!({"session_id":session,"hook_event_name":"Stop"}),
     );
     assert_eq!(show()["data"]["awaiting_input"], false);
-    call(hook, notify("idle_prompt"));
+    call(hook, notify("permission_prompt"));
     assert_eq!(show()["data"]["awaiting_input"], true);
     // Coexistence: a manual request appended to the generation must survive.
-    let data = scratch.path().join("manual.json");
-    std::fs::write(&data, json!({"discussion_items":[{"topic":"Human fork","options":["Wait"],"recommended_default":"Wait"}]}).to_string()).unwrap();
-    run_ok(
-        Command::new(env!("CARGO_BIN_EXE_taskfleet"))
-            .env("TASKFLEET_HOME", home.path())
-            .args([
-                "--json",
-                "event",
-                "create",
-                run,
-                "--kind",
-                "node.awaiting_input",
-                "--node-id",
-                "n-0001",
-                "--from-file",
-                data.to_str().unwrap(),
-            ]),
-    );
+    let event = |kind: &str, payload: Value| {
+        let data = scratch.path().join("event.json");
+        std::fs::write(&data, payload.to_string()).unwrap();
+        run_ok(
+            Command::new(env!("CARGO_BIN_EXE_taskfleet"))
+                .env("TASKFLEET_HOME", home.path())
+                .env("PATH", "")
+                .args([
+                    "--json",
+                    "event",
+                    "create",
+                    run,
+                    "--kind",
+                    kind,
+                    "--node-id",
+                    "n-0001",
+                    "--from-file",
+                    data.to_str().unwrap(),
+                ]),
+        );
+    };
+    let manual = json!({"discussion_items":[{"topic":"Human fork","options":["Wait"],"recommended_default":"Wait"}]});
+    event("node.awaiting_input", manual.clone());
+    call(hook, notify("idle_prompt"));
     call(
         recovery,
         json!({"session_id":session,"hook_event_name":"UserPromptSubmit"}),
@@ -636,6 +659,44 @@ fn claude_generated_hooks_detect_and_recover_without_worker_telemetry() {
         show()["data"]["awaiting_input_detail"]["open_discussion_count"],
         2
     );
+    assert_eq!(wait().status.code(), Some(3));
+    event(
+        "node.input_resolved",
+        json!({"event_seq": show()["data"]["awaiting_input_detail"]["event_seq"]}),
+    );
+    // Manual-only requests are equally authoritative, and idle neither appends
+    // to them nor lets progress clear them.
+    event("node.awaiting_input", manual);
+    let manual_seq = show()["data"]["awaiting_input_detail"]["event_seq"].clone();
+    call(hook, notify("idle_prompt"));
+    call(
+        recovery,
+        json!({"session_id":session,"hook_event_name":"Stop"}),
+    );
+    assert_eq!(
+        show()["data"]["awaiting_input_detail"]["event_seq"],
+        manual_seq
+    );
+    assert_eq!(
+        show()["data"]["awaiting_input_detail"]["open_discussion_count"],
+        1
+    );
+    assert_eq!(wait().status.code(), Some(3));
+    event("node.input_resolved", json!({"event_seq": manual_seq}));
+    // A request persisted by an older launcher can still recover on progress.
+    event(
+        "node.awaiting_input",
+        json!({"discussion_items":[{
+            "topic":"Legacy idle", "options":["Inspect worker"],
+            "recommended_default":"Inspect worker", "source":"claude-notification-v1",
+            "session_id":session, "notification_type":"idle_prompt"
+        }]}),
+    );
+    call(
+        recovery,
+        json!({"session_id":session,"hook_event_name":"PostToolUseFailure"}),
+    );
+    assert_eq!(show()["data"]["awaiting_input"], false);
     // Explicit cancellation is still the only operator transition here.
     run_ok(
         Command::new(env!("CARGO_BIN_EXE_taskfleet"))

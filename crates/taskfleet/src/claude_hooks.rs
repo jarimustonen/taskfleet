@@ -5,6 +5,8 @@
 //! payloads cannot select a run or execute a decision. No stdout is emitted:
 //! in particular we never return a Claude permission decision or a blocking code.
 //! Awaiting-input ingestion uses the existing event store and grace/notify path.
+//! Bare idle notifications are ignored: background work can leave Claude idle
+//! without requiring a human decision. No background-state inference is needed.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -77,7 +79,7 @@ pub fn settings(
     hooks.insert(
         "Notification".into(),
         json!([{
-            "matcher": "permission_prompt|idle_prompt", "hooks": [hook.clone()]
+            "matcher": "permission_prompt", "hooks": [hook.clone()]
         }]),
     );
     for event in RECOVERY {
@@ -89,7 +91,6 @@ pub fn settings(
 #[derive(Debug, PartialEq, Eq)]
 enum Signal {
     Permission,
-    Idle,
     Progress { turn_boundary: bool },
     Ignore,
 }
@@ -112,7 +113,6 @@ fn parse(bytes: &[u8], session: &str) -> Result<Signal, CliError> {
     Ok(if event == "Notification" {
         match v.get("notification_type").and_then(Value::as_str) {
             Some("permission_prompt") => Signal::Permission,
-            Some("idle_prompt") => Signal::Idle,
             _ => Signal::Ignore,
         }
     } else if RECOVERY.contains(&event) {
@@ -191,7 +191,7 @@ fn ingest(args: &HookArgs, signal: Signal) -> Result<(), CliError> {
             .and_then(Value::as_str)
             == Some("permission_prompt");
         // Other tools may finish while a parallel tool is still in a modal.
-        // Tool progress can clear idle input, but permission needs a turn boundary.
+        // Tool progress can clear legacy idle input, but permission needs a turn boundary.
         let resolves = matches!(
             signal,
             Signal::Progress {
@@ -216,10 +216,6 @@ fn ingest(args: &HookArgs, signal: Signal) -> Result<(), CliError> {
             "Claude reported a permission prompt; inspect the worker before deciding",
             "permission_prompt",
         ),
-        Signal::Idle => (
-            "Claude reported idle input; inspect the worker and supply direction",
-            "idle_prompt",
-        ),
         Signal::Progress { .. } | Signal::Ignore => return Ok(()),
     };
     append_and_apply_unlocked(
@@ -243,7 +239,7 @@ mod tests {
     #[test]
     fn parser_uses_protocol_not_message_or_pane_text() {
         assert_eq!(parse(br#"{"session_id":"s","hook_event_name":"Notification","notification_type":"permission_prompt"}"#, "s").unwrap(), Signal::Permission);
-        assert_eq!(parse(br#"{"session_id":"s","hook_event_name":"Notification","notification_type":"idle_prompt","message":"anything"}"#, "s").unwrap(), Signal::Idle);
+        assert_eq!(parse(br#"{"session_id":"s","hook_event_name":"Notification","notification_type":"idle_prompt","message":"anything"}"#, "s").unwrap(), Signal::Ignore);
         assert_eq!(
             parse(br#"{"session_id":"s","hook_event_name":"PreToolUse"}"#, "s").unwrap(),
             Signal::Progress {

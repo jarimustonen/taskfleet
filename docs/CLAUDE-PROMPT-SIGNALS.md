@@ -8,9 +8,13 @@ profile argv, including permission policy, remain user-owned.
 
 ## Signals and recovery
 
-Claude `Notification` hooks with `notification_type: permission_prompt` or
-`idle_prompt` open the existing durable `node.awaiting_input` request. The hook
-is a subprocess of the harness: the agent need not be able to issue a tool call
+Claude `Notification` hooks with `notification_type: permission_prompt` open the
+existing durable `node.awaiting_input` request. Bare `idle_prompt` notifications
+are ignored, including from older launchers: Claude can be waiting on background
+shells or their completion notices without needing a human decision. Idle alone
+cannot settle ordinary waits or page a conductor, and is not proof of health.
+Workers can still explicitly request a human decision with `node.awaiting_input`.
+The hook is a subprocess of the harness: the agent need not be able to issue a tool call
 while its modal is open. It emits no permission decision, never answers the
 prompt and never changes status or authorizes teardown. No CPU, worktree mtime,
 pane text, or git-idleness inference is performed.
@@ -24,10 +28,11 @@ ordinary `run wait` settles and an enabled supervisor `--notify` hook pages once
 per generation. `--terminal` still waits strictly for terminal status.
 
 `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` and `Stop`
-clear a solely hook-owned idle request, using its exact event sequence under the
-run lock. Permission requests clear only on `UserPromptSubmit` or `Stop`:
+clear a solely hook-owned legacy idle request, using its exact event sequence
+under the run lock. Permission requests clear only on `UserPromptSubmit` or `Stop`:
 a different parallel tool finishing cannot prove its sibling's modal closed.
-After approval, attention may remain until that turn ends. A manual or mixed request is never automatically cleared. Stale attempts,
+After approval, attention may remain until that turn ends. A manual or mixed
+request is never automatically cleared. Stale attempts,
 foreign sessions, subagent hooks, terminal runs and exited workers are ignored.
 Progress does not itself prove completion. If resolution evidence is missed,
 attention can remain stale; inspect the worker and explicitly resolve the recorded
@@ -45,14 +50,15 @@ The supported route is Claude's command-hook protocol, not rendered modal text.
 Permission notification may be delayed by Claude before Taskfleet's own grace.
 An interactive safety check routed through the ordinary permission ask UI uses
 that notification path even when ordinary worker telemetry is absent. Idle input
-after denial uses `idle_prompt`. In print mode Claude may instead deny/exit;
+after denial uses `idle_prompt`, which is not an authoritative attention signal.
+In print mode Claude may instead deny/exit;
 the existing told worker-exit rules still apply.
 
 Existing running launchers are not changed. Wrappers/managed settings that disable
 hooks, authentication or trust prompts before session initialization, unsupported
 harnesses and new modal classes without these native notifications may supply no
 signal. Existing `elicitation_dialog`, `elicitation_url_dialog` and remote-worker
-notification classes are outside this permission/idle matcher. In particular,
+notification classes are outside this permission matcher. In particular,
 `CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS` suppresses the SDK permission
 timer in the inspected version, not its separate interactive dialog cue.
 Taskfleet does not override that user-owned switch.
@@ -90,8 +96,9 @@ without tmux or a particular host background-process extension.
 
 The disposable Claude-compatible harness fixture captures the real generated
 settings, invokes the hook subprocess with native JSON and tests detection with
-absent telemetry, wrong sessions, stale attempts, duplicate notifications, recovery,
-manual coexistence and terminal fencing with an empty PATH. Parser and wait tests
+absent telemetry, ignored idle notifications after grace, wrong sessions, stale
+attempts, duplicate notifications, legacy recovery, manual/mixed ownership and
+terminal fencing with an empty PATH. Parser and wait tests
 cover malformed/bounded input, interval timing and precedence. Existing awaiting-input
 tests cover durable grace/notify deduplication.
 

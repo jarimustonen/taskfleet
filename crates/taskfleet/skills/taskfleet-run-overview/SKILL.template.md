@@ -173,7 +173,8 @@ each has a different remedy:
   and a stall shape, attention wins and the stall flags are cleared, because
   the manual finish is the right fix.
 - `awaiting_input` — a durable human-decision request from the worker or a
-  Claude harness permission/idle notification (not proof of process liveness).
+  Claude harness permission notification (not proof of process liveness). Bare
+  Claude idle notifications are ignored: background work may still be running.
   `awaiting_input_detail.discussion_items[]` holds the questions with their
   options and recommended defaults. This is the one stuck shape whose answer
   belongs to a person, not to a command. New Claude launchers install local

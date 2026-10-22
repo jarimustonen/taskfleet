@@ -3,12 +3,14 @@ created: 2026-10-21
 updated: 2026-10-22
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:homebase-wrapup-20261020-handoff-cleanup-coupling
 lane: skills
 lane_seq: 10
+closed: 2026-10-22
+closed_by: pi-worker
 ---
 
 # stint-handoff skips independent wrap-up when retained-resource cleanup …

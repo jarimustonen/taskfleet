@@ -1059,14 +1059,14 @@ fn populate_submodule(f: &Fixture) {
     assert_eq!(git(&f.worktree, &["status", "--porcelain"]), "");
 }
 
-/// Capture the exact production receipt without deleting the target by making
-/// only the final removal fail. The caller uses a Git executable pinned below;
-/// every observation and authorization check still runs real Git.
+/// Emulate an older release's missing modules-storage preflight, then fail
+/// removal to retain its production-generated inode/repository/OID receipt.
+/// All retained-resource and identity checks still run real Git.
 fn record_nonforce_receipt(f: &Fixture) {
     use std::os::unix::fs::PermissionsExt;
     let real_git = git_binary();
     let stub = f.home.path().join("git-refuse-remove");
-    std::fs::write(&stub, format!("#!/bin/sh\nif [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then echo 'fixture removal refusal' >&2; exit 1; fi\nexec '{}' \"$@\"\n", real_git.display())).unwrap();
+    std::fs::write(&stub, format!("#!/bin/sh\nif [ \"$3\" = rev-parse ] && [ \"$5\" = --git-path ]; then printf '%s\\n' '{}/absent-modules'; exit 0; fi\nif [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then echo 'fixture removal refusal' >&2; exit 1; fi\nexec '{}' \"$@\"\n", f.home.path().display(), real_git.display())).unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
         .env("TASKFLEET_HOME", f.home.path())
@@ -1152,9 +1152,8 @@ fn populated_submodule_discard_previews_and_requires_explicit_force() {
 fn existing_nonforce_submodule_receipt_supports_audited_force_upgrade() {
     let f = Fixture::failed();
     populate_submodule(&f);
-    // Simulate the older release's receipt by suppressing only the new probe.
-    // Production creates the original pinned receipt before module population;
-    // restore the identical index/HEAD after recording it.
+    // Deinit leaves empty gitlink directories but retains module storage.
+    // The stub emulates the old release's missing storage preflight.
     git(&f.worktree, &["submodule", "deinit", "-f", "--all"]);
     record_nonforce_receipt(&f);
     git(
@@ -1301,4 +1300,73 @@ fn submodule_force_upgrade_resumes_branch_only_after_ref_lock_refusal() {
             .count(),
         1
     );
+}
+
+#[test]
+fn deinitialized_submodule_storage_still_requires_force_before_receipt() {
+    let f = Fixture::failed();
+    populate_submodule(&f);
+    git(&f.worktree, &["submodule", "deinit", "-f", "--all"]);
+    assert_eq!(
+        std::fs::read_dir(f.worktree.join("module space"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert!(Path::new(&git(
+        &f.worktree,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "modules"
+        ]
+    ))
+    .is_dir());
+    let raw = Command::new("git")
+        .arg("-C")
+        .arg(f.source.path())
+        .args(["worktree", "remove"])
+        .arg(&f.worktree)
+        .output()
+        .unwrap();
+    assert!(!raw.status.success());
+    let before = std::fs::read(f.paths.events()).unwrap();
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--dry-run"]), true)["data"]["force_required"],
+        true
+    );
+    assert_eq!(
+        envelope(&isolated_discard(&f, &[]), false)["error"]["code"],
+        "force_required"
+    );
+    assert_eq!(std::fs::read(f.paths.events()).unwrap(), before);
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--force"]), true)["data"]["discarded"],
+        true
+    );
+}
+
+#[test]
+fn detached_absent_branch_orphan_keeps_force_upgrade_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::failed();
+    git(&f.worktree, &["checkout", "--detach", "-q"]);
+    git(f.source.path(), &["branch", "-D", "wt/retained"]);
+    let readonly = f.worktree.join("readonly");
+    std::fs::create_dir(&readonly).unwrap();
+    std::fs::write(readonly.join("tracked"), "initial").unwrap();
+    git(&f.worktree, &["add", "readonly/tracked"]);
+    git(&f.worktree, &["commit", "-qm", "detached work"]);
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert_eq!(
+        envelope(&isolated_discard(&f, &[]), false)["error"]["code"],
+        "discard_partial_cleanup"
+    );
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        envelope(&isolated_discard(&f, &["--force"]), true)["data"]["discarded"],
+        true
+    );
+    assert!(!f.worktree.exists());
 }

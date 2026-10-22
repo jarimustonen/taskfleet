@@ -244,11 +244,35 @@ impl Git {
         }
     }
 
-    /// A populated gitlink prevents Git's non-force worktree removal even when
-    /// status is clean. Inspect the NUL-delimited index, not `.gitmodules` text
-    /// or localized stderr. Nonempty gitlink directories conservatively require
-    /// explicit force; unreadable index/paths fail closed.
+    /// Git refuses non-force removal for worktree-private `modules/` storage
+    /// (even after deinit), or populated gitlinks. Mirror both checks without
+    /// parsing `.gitmodules` or localized stderr; unreadable state fails closed.
     pub fn worktree_has_populated_submodules(&self, dir: &str) -> Option<bool> {
+        use std::os::unix::ffi::OsStrExt;
+        let out = self
+            .at(dir)
+            .args([
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "modules",
+            ])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let modules = out.stdout.strip_suffix(b"\n")?;
+        if modules.is_empty() {
+            return None;
+        }
+        match std::fs::metadata(std::ffi::OsStr::from_bytes(modules)) {
+            Ok(meta) if meta.is_dir() => return Some(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
         let out = self
             .at(dir)
             .args(["ls-files", "--stage", "-z"])
@@ -263,7 +287,6 @@ impl Git {
             if !header.starts_with(b"160000 ") {
                 continue;
             }
-            use std::os::unix::ffi::OsStrExt;
             let path = std::path::Path::new(dir).join(std::ffi::OsStr::from_bytes(&path[1..]));
             match std::fs::read_dir(path) {
                 Ok(mut entries) => match entries.next() {

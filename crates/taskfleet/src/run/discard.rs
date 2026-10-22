@@ -724,7 +724,6 @@ fn force_retry_allowed(
     force
         && !auth.force
         && auth.identity.is_some()
-        && !prior_auth_missing_oid(auth)
         && observation.is_some_and(|o| {
             o.view.worktree_present
                 && (!o.verified_for_discard()

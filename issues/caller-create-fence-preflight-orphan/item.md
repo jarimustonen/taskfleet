@@ -3,13 +3,15 @@ created: 2026-10-20
 updated: 2026-10-22
 type: bug
 reporter: homebase-execution-acceptance-agent
-status: in-progress
+status: fixed
 priority: normal
 provenance: other
 provenance_detail: Observed directly during live heavy-command execution rollout acceptance
 source_ref: homebase:hb-exec-acceptance:2026-10-20:caller-create-fence-preflight
 lane: resources
 lane_seq: 20
+closed: 2026-10-22
+closed_by: pi-worker
 ---
 
 # Caller-owned create leaves a manifest-less reservation after writer-fence preflight failure
@@ -48,3 +50,16 @@ taskfleet run discard 01m5ch0zbz0qn6hbv5cevcqhpj --force \
 Returned `invalid_settlement_key`: `--settlement-key is only for caller-owned runs`, although the reservation was created by caller-owned create. The manifest-less worktree and reservation were preserved rather than guessing at state mutations.
 
 Expected: check writer-fence prerequisites before creating Git resources, or expose an unambiguous supported recover/abandon path for this partial creation. Preserve uncertain user work; do not classify the missing-manifest reservation as a normal run for settlement validation. The retained fixture identity above is available for investigation and cleanup; no live process belongs to it.
+
+## Resolution
+
+### 2026-10-22T12:48:11Z · @pi-worker
+
+Preflight now verifies all private writer-fence parent directories before admission, reservation, or Git effects; missing tool-owned directories are created privately without chmodding existing state. Same-key retries succeed after sandbox permission repair. Ambiguous legacy staging remains preserved and is explicitly diagnosed as a partial creation requiring inspection, backup, and exact manual reconciliation, not normal-run discard. Production-path coverage includes 0775 state/staging/publication parents, symlink refusal, permissive umask, no reservation/branch/worktree on refusal, and manifest-less preservation. Complete scripts/validate-local-release.sh passed on clean integrated 333d57df; release build and explicit built CLI invocation passed. Independent llm-review plus assessment resolved one diagnostic issue; verifier found no remaining actionable defect. Evidence: /var/tmp/taskfleet-h9zmdpshcz/evidence/.
+
+## Acceptance Criteria
+
+- [x] Existing nonprivate state root, staging parents, and publication parent fail before key reservation and Git resources, without chmodding existing directories.
+- [x] Repairing sandbox directory permissions permits successful same-key retry; missing tool-owned directories are created privately.
+- [x] Ambiguous manifest-less staging remains untouched and receives an explicit partial-creation/manual-reconciliation diagnostic.
+- [x] Production-path release regressions, complete local release gate, and focused independent review plus assessment pass.

@@ -92,7 +92,7 @@ impl Fixture {
     fn refused(&self, code: &str, reason: &str) {
         let out = self.message();
         assert!(!out.status.success());
-        assert!(out.stdout.is_empty());
+        assert_eq!(out.stdout, [] as [u8; 0]);
         let error: Value = serde_json::from_slice(&out.stderr).unwrap();
         assert_eq!(error["error"]["code"], code, "{error}");
         assert!(

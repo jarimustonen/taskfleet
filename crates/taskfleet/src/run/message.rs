@@ -170,13 +170,25 @@ pub fn run(
         {
             return Err(CliError::user("message_unsupported", "only Taskfleet-launched Pi workers with the bundled message adapter support delivery"));
         }
-        if manifest.status.is_terminal()
-            || node_data.status != Status::Running
-            || node_data.worker_exit.is_some()
-        {
+        if manifest.status.is_terminal() || node_data.status.is_terminal() {
             return Err(CliError::user(
                 "worker_not_active",
-                format!("node {node} is not an active worker"),
+                format!("node {node} belongs to a terminal run or is terminal"),
+            ));
+        }
+        if node_data.worker_exit.is_some() {
+            return Err(CliError::user(
+                "worker_not_active",
+                format!("node {node} has a recorded worker exit"),
+            ));
+        }
+        // Native workers start Pending, with their session already recorded.
+        // Running is not a liveness signal: the attempt-specific adapter below
+        // must acknowledge delivery for either eligible lifecycle state.
+        if !matches!(node_data.status, Status::Pending | Status::Running) {
+            return Err(CliError::user(
+                "worker_not_active",
+                format!("node {node} is neither pending nor running"),
             ));
         }
         let evidence = node_data.evidence.as_ref().ok_or_else(|| {

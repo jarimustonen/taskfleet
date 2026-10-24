@@ -101,3 +101,21 @@ attempt was intentionally stopped during compilation to incorporate the reviewed
 error-classification fix before validating a fresh exact commit. The final
 `scripts/validate-local-release.sh` result is recorded in the issue's closing
 comment; closing/merging is contingent on that complete gate passing.
+
+### Final results
+
+Complete local gate passed for exact clean commit
+`68854558e01c25b52bcdeb5c08313fd772e1ca75`: 1,278 release-mode nextest tests
+passed (one existing skipped test), doctests, fmt/Clippy/rustdoc, dependency
+policy, identity/version snapshots, shell release fixtures, package archives,
+Shipshape contract/audit and cargo-dist topology all passed. Local log:
+`history/message-release-gate-final.log`.
+
+After that gate, `cargo build --release` and the real-Pi smoke were rerun against
+the final source. Run `01m5qmxfcds99d9bp8a3n470bs` again started Pending with the
+unchanged `capable` profile. Message `bbc134a9-65ce-4d02-ae00-44dbcb85b43a` was
+accepted at attempt_seq 4; the separate marker action was verified; message
+attempt/result events were seq 4/5. Cancellation and force discard removed the
+worktree and branch (authorization seq 13), and no fixture tmux server remained.
+Local log: `history/message-live-proof-final.log`. Only issue/evidence metadata
+is added after the code gate; no runtime code is changed.

@@ -3,11 +3,13 @@ created: 2026-10-23
 updated: 2026-10-24
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-2026-10-23-run-message
 lane: messaging
+closed: 2026-10-24
+closed_by: agent
 ---
 
 # run message refuses live workers idle at their prompt (worker_not_activ…
@@ -41,3 +43,16 @@ Expected: `run message` delivers to a live worker that is idle at its prompt (th
 ### 2026-10-24T18:44:14Z · @jari
 
 Jari 2026-10-24: live workers must be able to receive run messages. Accepted for immediate fix.
+
+## Acceptance Criteria
+
+- [x] Pending and Running Taskfleet Pi workers reach the acknowledged adapter; terminal/exited and unsupported owners/harnesses are refused.
+- [x] Bundled adapter wiring is verified with real native Pi launches, receipt and separate tool action, followed by cancel/discard in a disposable repository.
+- [x] Focused self-review and targeted external review are complete, including independent verification and resolution of the readiness-error finding.
+- [x] Complete local release gate passes; installed binaries and skills remain unchanged. Evidence and release handoff are in [validation.md](validation.md).
+
+## Resolution
+
+### 2026-10-24T19:07:06Z · @agent
+
+Verified Pending/Running acknowledged Pi steering, terminal/exited refusals and unsupported workers. Complete local release gate passed at 68854558e01c25b52bcdeb5c08313fd772e1ca75 (1278 release tests passed); final native Pi proof 01m5qmxfcds99d9bp8a3n470bs acknowledged and acted, then cancelled/discarded. Self-review plus claude-fable-5-1 finder and gpt-6-astra verifier completed. See validation.md for evidence, recovered fixture/lint failures and conductor patch-release/fleet upgrade handoff. No installed binary or skills changed; no release cut.

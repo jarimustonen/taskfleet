@@ -1,12 +1,13 @@
 ---
 created: 2026-10-23
-updated: 2026-10-23
+updated: 2026-10-24
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-2026-10-23-run-message
+lane: messaging
 ---
 
 # run message refuses live workers idle at their prompt (worker_not_activ…
@@ -34,3 +35,9 @@ Expected: `run message` delivers to a live worker that is idle at its prompt (th
 
 **Fix sketch:** align message eligibility with the native worker lifecycle so eligible Pending workers can reach the existing adapter, while retaining terminal/exited, ownership, harness, session/attempt and adapter checks. Do not synthesize Running from spinner, tmux or idle signals. Add regression coverage for Pending and Running Pi workers receiving matching acknowledgements, terminal/exited refusals, unsupported harnesses and missing/stale adapters, plus an end-to-end native-launch case before any status update. Preserve the distinction between adapter acceptance and a read receipt.
 <!-- intakectl:analysis:end job:d2d0c2f5-6288-4d21-a559-0125943c1c25 generation:0 -->
+
+## Decisions
+
+### 2026-10-24T18:44:14Z · @jari
+
+Jari 2026-10-24: live workers must be able to receive run messages. Accepted for immediate fix.

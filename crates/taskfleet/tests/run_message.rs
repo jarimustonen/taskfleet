@@ -185,9 +185,25 @@ fn caller_owned_and_non_pi_workers_remain_unsupported() {
 }
 
 #[test]
-fn missing_and_wrong_attempt_adapters_are_unsupported() {
+fn missing_and_wrong_attempt_sockets_are_undeliverable_not_unsupported() {
     let f = Fixture::new("taskfleet", "pi");
-    f.refused("message_unsupported", "no reachable acknowledged");
+    f.refused(
+        "message_undeliverable",
+        "current-attempt Pi adapter is unavailable",
+    );
     let _old_attempt = UnixListener::bind(f.socket(1)).unwrap();
-    f.refused("message_unsupported", "no reachable acknowledged");
+    f.refused("message_undeliverable", "no message sent");
+}
+
+#[test]
+fn older_worker_without_bundled_extension_is_unsupported() {
+    let f = Fixture::new("taskfleet", "pi");
+    std::fs::remove_file(
+        f.home
+            .path()
+            .join(format!(".creating/message-{}.ts", f.paths.run_id)),
+    )
+    .unwrap();
+    let _socket = UnixListener::bind(f.socket(2)).unwrap();
+    f.refused("message_unsupported", "no bundled Pi message adapter");
 }

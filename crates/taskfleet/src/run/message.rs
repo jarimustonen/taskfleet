@@ -204,8 +204,17 @@ pub fn run(
         let extension = root
             .join(".creating")
             .join(format!("message-{}.ts", paths.run_id));
-        if !extension.is_file() || !socket.exists() {
-            return Err(CliError::user("message_unsupported", "this worker has no reachable acknowledged Pi message adapter (older runs are unsupported)"));
+        if !extension.is_file() {
+            return Err(CliError::user(
+                "message_unsupported",
+                "this worker has no bundled Pi message adapter (older runs are unsupported)",
+            ));
+        }
+        if !socket.exists() {
+            return Err(CliError::user(
+                "message_undeliverable",
+                "current-attempt Pi adapter is unavailable; it may still be starting or already shut down (no message sent)",
+            ));
         }
         let seq = append_and_apply_unlocked(&witness, &paths, "worker.message.attempted", Some(&node_id), Some(&id), json!({"message_id":id,"sender":whoami(),"sender_uid":unsafe { libc::geteuid() },"adapter":"pi-extension-v1","bytes":text.len(),"attempt":evidence.attempt})).map_err(from_core)?;
         (evidence.session_id.clone(), evidence.attempt, seq)

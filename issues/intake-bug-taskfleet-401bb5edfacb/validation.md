@@ -76,3 +76,28 @@ publishes taskfleet-core then the exact-pinned CLI to crates.io, plus GitHub
 binaries and the canonical Homebrew tap. Fleet units subsequently upgrade via
 Homebase's declared distribution/convergence path. This worker does not cut a
 release or install the resulting tool.
+
+## Targeted review and gate
+
+Focused self-review plus `/llm-review` completed: finder `claude-fable-5-1`,
+then verifier `gpt-6-astra` for the surviving process-boundary finding. The
+review identified one informative-error defect: a bundled adapter whose socket
+has not bound yet was called unsupported/old. Missing extension now remains
+`message_unsupported`; absent current-attempt socket is `message_undeliverable`,
+explicitly startup/shutdown unknown and no message sent. Tests cover those
+separately, including refusing a different attempt's socket. The suite now has
+five integration tests.
+
+Two smoke findings were checked and dropped against current code: Linux cleanup
+already targeted the state-home-derived socket, and initial readiness already
+parsed exact assistant `MESSAGE_READY` text. These repairs preceded the successful
+proof and the completed review. No unresolved actionable findings or follow-up
+issues remain. Local review artifacts are `history/review-live-message.md` and
+`history/assessment-live-message.{json,md}`; this summary stands without them.
+
+The first full-gate attempt stopped on Clippy's `assert_is_empty` lint in the new
+test; the assertion now prints unexpected stdout via `assert_eq!`. A second
+attempt was intentionally stopped during compilation to incorporate the reviewed
+error-classification fix before validating a fresh exact commit. The final
+`scripts/validate-local-release.sh` result is recorded in the issue's closing
+comment; closing/merging is contingent on that complete gate passing.

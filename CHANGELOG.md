@@ -14,6 +14,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
 
+## [0.17.1] - 2026-10-25
+
+### Added
+
+- Send a message to a live worker run (run message / node message) (`intake-feature-taskfleet-b8748b48ddd0`).
+
+### Changed
+
+- Add worker admission interlock for safe upgrades (`worker-admission-upgrade-lock`).
+- Environment-neutral bundled skills; issuectl conditional per repository (`environment-neutral-skills`).
+- Guarantee terminal run history survives teardown (`terminal-run-history-contract`).
+
+### Fixed
+
+- Release bump fails on version-bearing snapshots (`release-bump-version-snapshots`).
+- run message refuses live workers idle at their prompt (worker_not_activ… (`intake-bug-taskfleet-401bb5edfacb`).
+
 ## [0.17.0] - 2026-10-22
 
 ### Added

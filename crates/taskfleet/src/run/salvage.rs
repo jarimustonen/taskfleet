@@ -141,9 +141,21 @@ fn fence_worker(pid: u32, expected_start: &watchdog::RecordedStart) -> Result<()
     // recycle window. A gone/recycled pid means the original is already dead.
     match expected_start.matches(pid) {
         Some(true) => {}
-        // Recycled (mismatch) or gone (None while previously alive): do NOT
-        // signal an unrelated/absent process. The original worker is gone.
-        _ => return Ok(()),
+        // Recycled (mismatch) or gone: do NOT signal an unrelated/absent
+        // process. The original worker is gone.
+        Some(false) => return Ok(()),
+        None if !pid_file::pid_alive(pid) => return Ok(()),
+        // Still alive but its identity cannot be read now: neither signal a
+        // process we cannot identify nor merge under a writer that may live.
+        None => {
+            return Err(CliError::system(
+                "fence_failed",
+                format!(
+                    "worker pid {pid} is alive but its start identity is unreadable; \
+                     refusing to signal or merge"
+                ),
+            ))
+        }
     }
     // SAFETY: `pid_t` is range-checked (never 0/negative → no group/broadcast
     // target), and SIGTERM is a routine cooperative-termination signal.

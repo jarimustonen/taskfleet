@@ -178,11 +178,11 @@ pub fn claim_pid_atomic(paths: &RunPaths, our_pid: u32) -> Result<(), CliError> 
             // operator hit by an upgrade-then-pid-reuse lockout knows to
             // remove the file, rather than reading "is alive" and assuming a
             // healthy supervisor.
-            let hint = if !start.is_recorded() {
+            let hint = if start.is_recorded() {
+                " (kill it or use `run reattach`)"
+            } else {
                 "; this is a legacy pid file with no identity, so a recycled \
                  pid cannot be ruled out — remove supervisor.pid if it is stale"
-            } else {
-                " (kill it or use `run reattach`)"
             };
             return Err(CliError::system(
                 "supervisor_already_running",

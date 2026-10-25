@@ -2,12 +2,14 @@
 created: 2026-10-25
 updated: 2026-10-25
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m5rgq5gdrzaebwv70kmbr1nx/brief
 originating_run: 01m5rgq5gdrzaebwv70kmbr1nx
 originating_run_kind: spinoff
+closed: 2026-10-25
+closed_by: agent
 ---
 
 # Release bump fails on version-bearing snapshots
@@ -28,6 +30,12 @@ Run the release bump hook after bumping the workspace version, lockfile and exac
 
 ## Acceptance Criteria
 
-- [ ] The hook regenerates the five version-bearing snapshots in its own checkout using stable Cargo, independent of the host offload wrapper.
-- [ ] A disposable clone bumped to 0.17.1 passes the bump hook and release-mode workspace tests.
-- [ ] The real tree passes scripts/validate-local-release.sh; no installed taskfleet binary or skills are changed and no release is cut.
+- [x] The hook regenerates the five version-bearing snapshots in its own checkout using stable Cargo, independent of the host offload wrapper.
+- [x] A disposable clone bumped to 0.17.1 passes the bump hook and release-mode workspace tests.
+- [x] The real tree passes scripts/validate-local-release.sh; no installed taskfleet binary or skills are changed and no release is cut.
+
+## Comments
+
+### 2026-10-25T03:34:17Z · @agent
+
+Verified: full scripts/validate-local-release.sh passed at 3e8714ae60e7858aa303afbde4722d03b2787ccd (gate-final.log); 1278 release tests passed, 1 skipped, doctests passed. Disposable 0.17.1 clone passed hook + release workspace suite; byte-checked all diffs as version-only. Focused self-review complete. Logs and recovery commands: validation.md and /var/tmp/agent-keep/release-bump-version-snapshots/. First gate exposed missing rustup in the stripped-PATH protocol fixture; strict lookup-only stub fixed it and the full rerun passed.

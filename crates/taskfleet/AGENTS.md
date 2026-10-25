@@ -96,8 +96,12 @@ catch (`tests/envelope_snapshots.rs` asserts a few invariants structurally as
 a backstop, not a substitute). Five snapshots bake in the literal crate
 version, so a version bump stales them like any other surface change;
 `scripts/check-version-snapshots.sh` exists because that once surfaced only
-on `main` after a tag. The release gate also refuses to run with any
-`.snap.new` left in the tree.
+on `main` after a tag. The release bump hook regenerates those five fixtures
+using stable's real Cargo in its own checkout: an ambient offload wrapper can
+drop `INSTA_UPDATE` and leave regenerated files in a remote sandbox (the
+0.17.1 bump failure, `release-bump-version-snapshots`). Keep its isolated
+protocol fixture's lookup-only rustup stub aligned with that tool selection.
+The release gate also refuses to run with any `.snap.new` left in the tree.
 
 Tests that exercise the real `run create` path spawn a real supervisor. On
 Linux, `common::configure_linux_units` provides an explicit user-manager stub

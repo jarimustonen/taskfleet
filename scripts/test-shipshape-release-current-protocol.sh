@@ -62,13 +62,25 @@ for tool in bash jq sed awk grep mktemp rm mkdir chmod mv dirname pwd sleep tar 
   ln -s "$tool_path" "$tmp/bin/$tool"
 done
 # Never put rustup proxies in the isolated PATH: with an isolated HOME they can
-# select/update a global toolchain. Pin this test to the already-installed active
+# select/update a global toolchain. Pin this test to the already-installed stable
 # toolchain's real binaries instead.
-toolchain_bin="$(dirname "$(rustup which cargo)")"
+toolchain_bin="$(dirname "$(rustup which --toolchain stable cargo)")"
 for tool in cargo rustc rustdoc; do
   test -x "$toolchain_bin/$tool" || { echo "active toolchain is missing $tool" >&2; exit 1; }
   ln -s "$toolchain_bin/$tool" "$tmp/bin/$tool"
 done
+# The bump hook resolves stable Cargo itself to avoid ambient offload wrappers.
+# Support that read-only lookup without giving the fixture a real rustup proxy.
+cat >"$tmp/bin/rustup" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == 'which --toolchain stable cargo' ]] || {
+  echo "rustup fixture: unexpected arguments: $*" >&2
+  exit 96
+}
+printf '%s\n' "$FIXTURE_STABLE_CARGO"
+STUB
+chmod +x "$tmp/bin/rustup"
 ln -s "$real_shipshape" "$tmp/bin/shipshape"
 cat >"$tmp/bin/dist" <<'STUB'
 #!/usr/bin/env bash
@@ -244,6 +256,7 @@ run_env=(
   env -i
   HOME="$tmp/home"
   CARGO_HOME="$tmp/cargo"
+  FIXTURE_STABLE_CARGO="$tmp/bin/cargo"
   TMPDIR="$tmp"
   PATH="$tmp/bin:/usr/bin:/bin"
   REAL_GIT="$real_git"

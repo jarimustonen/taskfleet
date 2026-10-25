@@ -98,15 +98,16 @@ pub fn dispatch(args: WorkerHandshakeArgs) -> Result<(), CliError> {
             format!("cannot read start time for worker PID {}", args.pid),
         )
     })?;
-    let start_identity = process_start_identity(args.pid).ok_or_else(|| {
-        CliError::system(
-            "worker_handshake_identity_unavailable",
-            format!(
-                "cannot read precise start identity for worker PID {}",
-                args.pid
-            ),
-        )
-    })?;
+    let start_identity =
+        crate::supervise::watchdog::pid_start_identity(args.pid).ok_or_else(|| {
+            CliError::system(
+                "worker_handshake_identity_unavailable",
+                format!(
+                    "cannot read precise start identity for worker PID {}",
+                    args.pid
+                ),
+            )
+        })?;
     let parent = args.path.parent().ok_or_else(|| {
         CliError::system(
             "worker_handshake_path_invalid",
@@ -352,34 +353,6 @@ fn prepare_pi_session(
             })?
             .to_string(),
     )))
-}
-
-pub fn process_start_identity(pid: u32) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-        let read = unsafe {
-            libc::proc_pidinfo(
-                pid as i32,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                (&raw mut info).cast(),
-                size,
-            )
-        };
-        return (read == size)
-            .then(|| format!("macos:{}:{}", info.pbi_start_tvsec, info.pbi_start_tvusec));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let rest = stat.rsplit_once(") ")?.1;
-        let ticks = rest.split_whitespace().nth(19)?;
-        return Some(format!("linux:{ticks}"));
-    }
-    #[allow(unreachable_code)]
-    crate::supervise::watchdog::pid_start_time(pid).map(|v| format!("seconds:{v}"))
 }
 
 fn write_durable_json(path: &Path, value: &WorkerHandshake) -> Result<(), CliError> {

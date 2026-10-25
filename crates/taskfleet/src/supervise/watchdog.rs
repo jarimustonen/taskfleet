@@ -1,15 +1,21 @@
 //! Agent liveness watchdog (design.md §7.5).
 //!
-//! Dual polling: PID liveness via `kill(pid, 0)` + start-time identity
-//! defense (so a recycled PID is not mistaken for the original agent) +
-//! tmux window presence via `tmux list-windows`.
+//! Dual polling: PID liveness via `kill(pid, 0)` + start identity defense (so a
+//! recycled PID is not mistaken for the original agent) + tmux window presence
+//! via `tmux list-windows`.
 //!
-//! Start-time is queried via the cross-platform `sysinfo` crate. The
-//! crate exposes `Process::start_time()` as a Unix timestamp on every
-//! supported platform; this avoids the macOS/Linux `sysctl` /
-//! `/proc/<pid>/stat` split that the design originally specified. If
-//! `sysinfo` ever drops `start_time` we'll switch to direct `libc`
-//! probes; tracked in `validation.md`.
+//! Two start values are recorded for a process. [`pid_start_identity`] is the
+//! kernel's own immutable record of when the process started: on Linux the
+//! `starttime` clock-tick count since boot (`/proc/<pid>/stat` field 22), on
+//! macOS the kernel's `pbi_start_tvsec:pbi_start_tvusec`. Recycling is decided
+//! from it by exact equality. [`pid_start_time`] is the sysinfo Unix-seconds
+//! value, kept for display and for records that predate the identity. On Linux
+//! sysinfo computes it as `btime + starttime / HZ`, and `btime` (`/proc/stat`)
+//! is wall clock minus boot clock, so it shifts every time NTP steps the clock.
+//! On a guest whose clock runs slow it moved about 2 s per hour, and a ±1 s
+//! seconds comparison then declared live workers recycled after 30–60 minutes
+//! (issue `supervisor-false-pid-recycled`). Seconds are therefore only a
+//! fallback for a record with no identity.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::process::Command;
@@ -48,7 +54,8 @@ impl Liveness {
 
 /// Read the process `start_time` (Unix seconds) for `pid`. Returns `None`
 /// if the process does not exist or the platform sysinfo backend
-/// declines to populate the value.
+/// declines to populate the value. Drifts with wall-clock steps on Linux (see
+/// the module doc); identity decisions use [`pid_start_identity`].
 pub fn pid_start_time(pid: u32) -> Option<u64> {
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -58,6 +65,105 @@ pub fn pid_start_time(pid: u32) -> Option<u64> {
     );
     sys.process(Pid::from_u32(pid))
         .map(sysinfo::Process::start_time)
+}
+
+/// The kernel's immutable start identity of `pid`, or `None` when the process
+/// is gone or the value cannot be read. Compared by exact equality; it never
+/// changes for the life of a process and no wall-clock adjustment touches it.
+pub fn pid_start_identity(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&raw mut info).cast(),
+                size,
+            )
+        };
+        return (read == size)
+            .then(|| format!("macos:{}:{}", info.pbi_start_tvsec, info.pbi_start_tvusec));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        return linux_start_identity(&stat);
+    }
+    #[allow(unreachable_code)]
+    pid_start_time(pid).map(|v| format!("seconds:{v}"))
+}
+
+/// Parse `starttime` (field 22) out of a `/proc/<pid>/stat` line. The command
+/// name (field 2) may contain spaces and parentheses, so fields are counted
+/// from the last `") "`.
+#[cfg(any(target_os = "linux", test))]
+fn linux_start_identity(stat: &str) -> Option<String> {
+    let rest = stat.rsplit_once(") ")?.1;
+    let ticks = rest.split_whitespace().nth(19)?;
+    ticks.parse::<u64>().ok()?;
+    Some(format!("linux:{ticks}"))
+}
+
+/// What was recorded about a process's start, to tell the original process
+/// from an unrelated one that later reused its PID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordedStart {
+    /// sysinfo Unix seconds ([`pid_start_time`]). Only consulted when no
+    /// `identity` was recorded, since it drifts with wall-clock steps.
+    pub secs: Option<u64>,
+    /// Kernel start identity ([`pid_start_identity`]); authoritative.
+    pub identity: Option<String>,
+}
+
+impl RecordedStart {
+    /// Capture both values for a live `pid`.
+    pub fn capture(pid: u32) -> Self {
+        Self {
+            secs: pid_start_time(pid),
+            identity: pid_start_identity(pid),
+        }
+    }
+
+    /// A record from a seconds value and an optional identity; an empty
+    /// identity string (an unreadable value some producers default to) counts
+    /// as absent.
+    pub fn new(secs: Option<u64>, identity: Option<&str>) -> Self {
+        Self {
+            secs,
+            identity: identity.filter(|s| !s.is_empty()).map(str::to_string),
+        }
+    }
+
+    /// What a node recorded about its agent process at spawn.
+    pub fn of_agent(node: &taskfleet_core::Node) -> Self {
+        Self::new(
+            node.agent_pid_start_time
+                .map(|t| u64::try_from(t.timestamp()).unwrap_or(0)),
+            node.agent_pid_start_identity.as_deref(),
+        )
+    }
+
+    /// Whether anything was recorded that can rule out PID reuse.
+    pub fn is_recorded(&self) -> bool {
+        self.secs.is_some() || self.identity.is_some()
+    }
+
+    /// Whether the process now at `pid` is the recorded one: `Some(true)` when
+    /// it matches, `Some(false)` when it provably differs (recycled or gone),
+    /// `None` when nothing was recorded or the current value cannot be read.
+    /// It does not check liveness itself.
+    pub fn matches(&self, pid: u32) -> Option<bool> {
+        if let Some(recorded) = self.identity.as_deref() {
+            return pid_start_identity(pid).map(|actual| actual == recorded);
+        }
+        let recorded = self.secs?;
+        // Legacy seconds-only record: the old 1 s tolerance. This record kind
+        // cannot survive a wall-clock step; new records carry an identity.
+        pid_start_time(pid).map(|actual| recorded.abs_diff(actual) <= 1)
+    }
 }
 
 /// Outcome of a tmux window probe.
@@ -330,11 +436,10 @@ fn trim_ascii(b: &[u8]) -> &[u8] {
 #[derive(Debug, Clone)]
 pub struct AgentProbe {
     pub pid: u32,
-    /// Start-time captured at spawn (Unix seconds). `None` means the
-    /// supervisor could not read `start_time` on this platform — we then
-    /// fall back to PID-only liveness and accept the tiny risk of a
-    /// reused PID being mistaken for the agent.
-    pub start_time: Option<u64>,
+    /// Start identity captured at spawn. When nothing was recorded the
+    /// supervisor falls back to PID-only liveness and accepts the tiny risk of
+    /// a reused PID being mistaken for the agent.
+    pub start: RecordedStart,
     pub tmux_window: Option<String>,
     /// Fully-qualified tmux identity captured at spawn. When `Some`, the tmux
     /// probe matches the stable `window_id` on the recorded socket (precise);
@@ -412,15 +517,8 @@ pub fn check_liveness(probe: &AgentProbe, tmux: &WatchdogTmuxSnapshot) -> Livene
     if !pid_file::pid_alive(probe.pid) {
         return Liveness::Dead;
     }
-    if let Some(expected) = probe.start_time {
-        if let Some(actual) = pid_start_time(probe.pid) {
-            // Allow a 1-second tolerance: some platforms round
-            // start_time to whole seconds while sysinfo's first probe
-            // may report fractional ticks differently than the second.
-            if expected.abs_diff(actual) > 1 {
-                return Liveness::Recycled;
-            }
-        }
+    if probe.start.matches(probe.pid) == Some(false) {
+        return Liveness::Recycled;
     }
     if !probe.skip_tmux_check {
         let probe_result = match probe.tmux_identity.as_ref() {
@@ -538,12 +636,13 @@ mod tests {
     }
 
     #[test]
-    fn own_pid_has_start_time_and_is_alive() {
+    fn own_pid_has_start_identity_and_is_alive() {
         let pid = std::process::id();
-        let st = pid_start_time(pid).expect("self start_time");
+        let start = RecordedStart::capture(pid);
+        assert!(start.secs.is_some() && start.identity.is_some());
         let probe = AgentProbe {
             pid,
-            start_time: Some(st),
+            start,
             tmux_window: None,
             tmux_identity: None,
             skip_tmux_check: true,
@@ -551,12 +650,80 @@ mod tests {
         assert_eq!(check_liveness(&probe, &empty_snapshot()), Liveness::Alive);
     }
 
+    /// Regression for `supervisor-false-pid-recycled`: the recorded sysinfo
+    /// seconds of a live worker drifted by the NTP-induced `btime` shift (4 s
+    /// after an hour on Trude). With the kernel identity recorded, the seconds
+    /// no longer decide recycling, so the live worker stays `Alive`.
+    #[test]
+    fn drifted_seconds_with_matching_identity_is_alive() {
+        let pid = std::process::id();
+        let current = RecordedStart::capture(pid);
+        for drift in [2_u64, 4, 3600] {
+            let probe = AgentProbe {
+                pid,
+                start: RecordedStart {
+                    secs: current.secs.map(|s| s - drift),
+                    identity: current.identity.clone(),
+                },
+                tmux_window: None,
+                tmux_identity: None,
+                skip_tmux_check: true,
+            };
+            assert_eq!(
+                check_liveness(&probe, &empty_snapshot()),
+                Liveness::Alive,
+                "a {drift}s wall-clock drift must not read as recycling"
+            );
+        }
+    }
+
+    /// A different kernel identity is recycling even when the seconds agree.
+    #[test]
+    fn mismatched_identity_detects_recycled_pid() {
+        let pid = std::process::id();
+        let probe = AgentProbe {
+            pid,
+            start: RecordedStart {
+                secs: pid_start_time(pid),
+                identity: Some("linux:1".into()),
+            },
+            tmux_window: None,
+            tmux_identity: None,
+            skip_tmux_check: true,
+        };
+        assert_eq!(
+            check_liveness(&probe, &empty_snapshot()),
+            Liveness::Recycled
+        );
+    }
+
+    #[test]
+    fn empty_identity_counts_as_absent() {
+        let start = RecordedStart::new(Some(7), Some(""));
+        assert_eq!(start.identity, None);
+        assert!(start.is_recorded());
+        assert!(!RecordedStart::new(None, None).is_recorded());
+    }
+
+    #[test]
+    fn linux_start_identity_parses_field_22_past_a_hostile_comm() {
+        // comm "a) b (c" contains spaces and parentheses; starttime is 4938194.
+        let stat = "1330785 (a) b (c) S 1 1330785 1330785 0 -1 4194304 1 0 0 0 \
+                    0 0 0 0 20 0 1 0 4938194 1000 10 18446744073709551615";
+        assert_eq!(linux_start_identity(stat).as_deref(), Some("linux:4938194"));
+        assert_eq!(linux_start_identity("12 (x) S 1 2"), None);
+        assert_eq!(
+            linux_start_identity("1 (x) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 notanumber 1"),
+            None
+        );
+    }
+
     #[test]
     fn dead_pid_is_dead() {
         // PID 0 is never a real process; treat as dead.
         let probe = AgentProbe {
             pid: 0,
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: None,
             tmux_identity: None,
             skip_tmux_check: true,
@@ -569,7 +736,7 @@ mod tests {
         let pid = std::process::id();
         let probe = AgentProbe {
             pid,
-            start_time: Some(1), // 1970-ish: cannot match a live process
+            start: RecordedStart::new(Some(1), None), // 1970-ish: cannot match a live process
             tmux_window: None,
             tmux_identity: None,
             skip_tmux_check: true,
@@ -817,7 +984,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@99|other"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(Some("/tmp/sock"), "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -833,7 +1000,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -852,7 +1019,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server"], 1));
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(Some("/tmp/dead-sock"), "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -870,7 +1037,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@3|legacy-win"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("legacy-win".to_string()),
             tmux_identity: None,
             skip_tmux_check: false,
@@ -905,7 +1072,7 @@ mod tests {
         for n in 1..=5 {
             let probe = AgentProbe {
                 pid: std::process::id(),
-                start_time: None,
+                start: RecordedStart::default(),
                 tmux_window: None,
                 tmux_identity: Some(id(Some(sock), "taskfleet", &format!("@{n}"))),
                 skip_tmux_check: false,
@@ -944,7 +1111,7 @@ mod tests {
 
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(Some("/tmp/wedged"), "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -971,7 +1138,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
             pid: DEAD_PID,
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -1004,7 +1171,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@99|other"], 0));
         let probe = AgentProbe {
             pid: DEAD_PID,
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -1028,7 +1195,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server"], 1));
         let probe = AgentProbe {
             pid: DEAD_PID,
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(Some("/tmp/dead-sock"), "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -1049,7 +1216,7 @@ mod tests {
     fn interactive_without_window_falls_back_to_pid() {
         let probe = AgentProbe {
             pid: DEAD_PID,
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: None,
             tmux_identity: None,
             skip_tmux_check: true,
@@ -1071,7 +1238,7 @@ mod tests {
     fn interactive_dead_pid_no_window_signal_keeps_pid_verdict() {
         let probe = AgentProbe {
             pid: DEAD_PID,
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: None,
             tmux_identity: None,
             // Deliberately inconsistent shape: says "check tmux" but gives nothing.
@@ -1098,7 +1265,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: Some(1), // 1970: cannot match a live process → Recycled
+            start: RecordedStart::new(Some(1), None), // 1970: cannot match a live process → Recycled
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
@@ -1126,7 +1293,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
-            start_time: None,
+            start: RecordedStart::default(),
             tmux_window: Some("🚀 wt/x".to_string()),
             tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,

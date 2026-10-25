@@ -127,8 +127,8 @@ impl SupervisorView {
     /// decision.
     pub fn probe(paths: &RunPaths) -> Self {
         match pid_file::classify_pid_record(&paths.supervisor_pid()) {
-            pid_file::PidRecord::Present { pid, start_time } => {
-                let state = if pid_file::pid_live_with_identity(pid, start_time) {
+            pid_file::PidRecord::Present { pid, start } => {
+                let state = if pid_file::pid_live_with_identity(pid, &start) {
                     SupervisorState::Alive
                 } else {
                     SupervisorState::Dead

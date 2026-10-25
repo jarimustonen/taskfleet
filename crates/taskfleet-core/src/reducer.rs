@@ -674,6 +674,16 @@ fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
     })
 }
 
+/// The agent's kernel start identity from spawn event data. Absent, empty, or
+/// non-string values (events written before the field existed) yield `None`,
+/// which keeps the seconds-only legacy comparison for that node.
+fn start_identity_from_data(d: &Value) -> Option<String> {
+    d.get("agent_pid_start_identity")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn worker_evidence_from_spawn_data(
     events_path: &Path,
     ev: &Event,
@@ -823,6 +833,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         retention_unavailable: None,
         agent_pid: optional_i32(d, "agent_pid", &events_path, ev)?,
         agent_pid_start_time: optional_ts(d, "agent_pid_start_time", &events_path, ev)?,
+        agent_pid_start_identity: start_identity_from_data(d),
         supervisor_pid: optional_i32(d, "supervisor_pid", &events_path, ev)?,
         children: Vec::new(),
         started_at: Some(ev.ts),
@@ -1113,6 +1124,7 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
     n.retention_unavailable = None;
     n.agent_pid = optional_i32(d, "agent_pid", &events_path, ev)?;
     n.agent_pid_start_time = optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
+    n.agent_pid_start_identity = start_identity_from_data(d);
     n.status = Status::Pending;
     n.started_at = Some(ev.ts);
     n.updated_at = ev.ts;

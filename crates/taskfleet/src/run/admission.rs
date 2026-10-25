@@ -361,8 +361,7 @@ fn quiescent(root: &Path) -> Result<usize, CliError> {
                 .is_some_and(|pid| {
                     crate::supervise::pid_file::pid_live_with_identity(
                         pid,
-                        node.agent_pid_start_time
-                            .and_then(|at| u64::try_from(at.timestamp()).ok()),
+                        &crate::supervise::watchdog::RecordedStart::of_agent(&node),
                     )
                 });
             node_busy |= agent_live || node.pending_merge.is_some();
@@ -370,7 +369,7 @@ fn quiescent(root: &Path) -> Result<usize, CliError> {
         let pid_path = paths.supervisor_pid();
         let supervisor_live =
             crate::supervise::pid_file::read_pid_record(&pid_path).is_some_and(|(pid, start)| {
-                crate::supervise::pid_file::pid_live_with_identity(pid, start)
+                crate::supervise::pid_file::pid_live_with_identity(pid, &start)
             });
         let pid_unverifiable =
             pid_path.exists() && crate::supervise::pid_file::read_pid_record(&pid_path).is_none();

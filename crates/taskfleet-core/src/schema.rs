@@ -1075,8 +1075,14 @@ pub struct Node {
     pub retention_unavailable: Option<String>,
     /// PID of the running agent process, if live.
     pub agent_pid: Option<i32>,
-    /// Start time of the agent process, used to detect PID reuse.
+    /// Start time of the agent process (wall-clock seconds). Detects PID reuse
+    /// only for a node recorded without `agent_pid_start_identity`.
     pub agent_pid_start_time: Option<DateTime<Utc>>,
+    /// Kernel start identity of the agent process (`linux:<starttime ticks>`
+    /// or `macos:<sec>:<usec>`), compared exactly to detect PID reuse. Unlike
+    /// the seconds value it does not move when the wall clock is stepped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pid_start_identity: Option<String>,
     /// PID of the supervisor watching this node, if live.
     pub supervisor_pid: Option<i32>,
     /// Children this node has spawned.
@@ -1245,9 +1251,16 @@ pub struct MergeTxn {
     /// Start time of `driver_pid` in Unix seconds (the same representation the
     /// pid-file liveness check records), guarding against PID reuse the way the
     /// agent/supervisor liveness checks do — a recycled PID must not look alive.
-    /// `None` when the platform could not read it.
+    /// `None` when the platform could not read it. Decides PID reuse only when
+    /// `driver_pid_start_identity` is absent.
     #[serde(default)]
     pub driver_pid_start_secs: Option<u64>,
+    /// Kernel start identity of `driver_pid` (the same token the agent and
+    /// supervisor identity checks compare exactly). Unlike the seconds value it
+    /// does not move when the wall clock is stepped. Absent on transactions
+    /// recorded before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_pid_start_identity: Option<String>,
     /// Caller-only provenance tying the transaction to the sticky intent and
     /// the exact writer inode held by the merge driver. Absent on normal merges.
     #[serde(default, skip_serializing_if = "Option::is_none")]

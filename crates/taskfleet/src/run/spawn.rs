@@ -527,12 +527,11 @@ pub fn verify_identity(pid: u32, start_time: u64, start_identity: &str) -> Resul
             format!("worker handshake contained invalid PID {pid}"),
         ));
     }
-    let observed = crate::supervise::watchdog::pid_start_time(pid);
-    let observed_identity = crate::worker_handshake::process_start_identity(pid);
-    if observed != Some(start_time)
-        || observed_identity.as_deref() != Some(start_identity)
-        || !crate::supervise::pid_file::pid_alive(pid)
-    {
+    // The kernel identity decides; the seconds value can move with a
+    // wall-clock step between the handshake and this check.
+    let recorded =
+        crate::supervise::watchdog::RecordedStart::new(Some(start_time), Some(start_identity));
+    if recorded.matches(pid) != Some(true) || !crate::supervise::pid_file::pid_alive(pid) {
         return Err(CliError::system(
             "worker_handshake_identity_mismatch",
             format!("worker PID {pid} exited or its start identity changed before publication"),
@@ -609,7 +608,7 @@ fn test_script_materialize(req: &SpawnRequest<'_>) -> Option<Result<SpawnOutcome
                     u32::try_from(o.agent_pid_hint).unwrap_or_default(),
                 )
                 .unwrap_or_default(),
-                agent_start_identity: crate::worker_handshake::process_start_identity(
+                agent_start_identity: crate::supervise::watchdog::pid_start_identity(
                     u32::try_from(o.agent_pid_hint).unwrap_or_default(),
                 )
                 .unwrap_or_default(),
@@ -1263,7 +1262,7 @@ pub(crate) mod tests {
             token: launcher.token.clone(),
             pid,
             start_time: crate::supervise::watchdog::pid_start_time(pid).unwrap(),
-            start_identity: crate::worker_handshake::process_start_identity(pid).unwrap(),
+            start_identity: crate::supervise::watchdog::pid_start_identity(pid).unwrap(),
             tmux_pane_id: "%7".into(),
             pi_session_id: None,
             pi_session_path: None,
@@ -1475,8 +1474,13 @@ pub(crate) mod tests {
     fn handshake_rejects_pid_start_identity_mismatch_and_timeout() {
         let dir = tempfile::TempDir::new().unwrap();
         let launcher = launcher(dir.path());
+        // Seconds drift with wall-clock steps and do not decide identity
+        // (`supervisor-false-pid-recycled`); the kernel identity does.
+        let live = record(&launcher);
+        verify_identity(live.pid, live.start_time - 4, &live.start_identity)
+            .expect("drifted seconds with the live identity are the same process");
         let mut stale = record(&launcher);
-        stale.start_time = stale.start_time.saturating_add(1);
+        stale.start_identity.push('0');
         std::fs::write(
             &launcher.handshake_path,
             serde_json::to_vec(&stale).unwrap(),

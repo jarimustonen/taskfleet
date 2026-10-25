@@ -1431,6 +1431,7 @@ fn record_merge_start(
         base_sha: node.base_sha.clone(),
         driver_pid: Some(pid as i32),
         driver_pid_start_secs: crate::supervise::watchdog::pid_start_time(pid),
+        driver_pid_start_identity: crate::supervise::watchdog::pid_start_identity(pid),
         started_at: Utc::now(),
         caller_authority: caller.map(|c| CallerMergeLink {
             intent_seq: c.intent.seq,

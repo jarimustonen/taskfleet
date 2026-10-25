@@ -12,6 +12,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 ### Fixed
+
+- Stop reaping live workers as `agent-pid-recycled` after a wall-clock step: PID-reuse checks for agents, supervisors, and merge drivers compare the kernel start identity instead of drifting wall-clock seconds (`supervisor-false-pid-recycled`).
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.17.1] - 2026-10-25

@@ -12,7 +12,7 @@ pub(crate) enum WorkerState {
     Exited,
     NoPid,
     Gone,
-    Live { pid: u32, start_time: u64 },
+    Live { pid: u32 },
     Unverifiable { pid: u32 },
 }
 
@@ -33,13 +33,15 @@ impl WorkerState {
 /// PID whose actual start identity cannot be read is unverifiable, while an
 /// actual identity mismatch proves that the recorded worker is gone.
 pub(crate) fn classify_worker(node: &Node) -> WorkerState {
-    classify_worker_with(node, pid_file::pid_alive, watchdog::pid_start_time)
+    classify_worker_with(node, pid_file::pid_alive, |pid| {
+        watchdog::RecordedStart::of_agent(node).matches(pid)
+    })
 }
 
 fn classify_worker_with(
     node: &Node,
     alive: impl Fn(u32) -> bool,
-    actual_start: impl Fn(u32) -> Option<u64>,
+    same_process: impl Fn(u32) -> Option<bool>,
 ) -> WorkerState {
     let Some(pid_i) = node.agent_pid else {
         return if node.worker_exit.is_some() {
@@ -64,22 +66,16 @@ fn classify_worker_with(
         };
     }
 
-    let expected = node
-        .agent_pid_start_time
-        .map(|t| t.timestamp().max(0) as u64);
-    let actual = actual_start(pid);
-    if let (Some(expected), Some(actual)) = (expected, actual) {
-        if expected.abs_diff(actual) <= 1 {
-            return WorkerState::Live {
-                pid,
-                start_time: expected,
+    match same_process(pid) {
+        Some(true) => return WorkerState::Live { pid },
+        Some(false) => {
+            return if node.worker_exit.is_some() {
+                WorkerState::Exited
+            } else {
+                WorkerState::Gone
             };
         }
-        return if node.worker_exit.is_some() {
-            WorkerState::Exited
-        } else {
-            WorkerState::Gone
-        };
+        None => {}
     }
 
     if node.worker_exit.is_some() {
@@ -116,6 +112,7 @@ mod tests {
             retention_unavailable: None,
             agent_pid: Some(42),
             agent_pid_start_time: Some(Utc.timestamp_opt(100, 0).unwrap()),
+            agent_pid_start_identity: None,
             supervisor_pid: None,
             children: vec![],
             started_at: None,
@@ -145,7 +142,7 @@ mod tests {
     #[test]
     fn verified_mismatch_is_gone_without_told_exit() {
         assert_eq!(
-            classify_worker_with(&node(false), |_| true, |_| Some(200)),
+            classify_worker_with(&node(false), |_| true, |_| Some(false)),
             WorkerState::Gone
         );
     }
@@ -153,7 +150,7 @@ mod tests {
     #[test]
     fn positive_live_proof_overrides_told_exit() {
         assert!(matches!(
-            classify_worker_with(&node(true), |_| true, |_| Some(100)),
+            classify_worker_with(&node(true), |_| true, |_| Some(true)),
             WorkerState::Live { pid: 42, .. }
         ));
     }

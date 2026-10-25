@@ -12,6 +12,7 @@ use std::path::Path;
 use taskfleet_core::{RunLock, RunPaths};
 
 use crate::error::CliError;
+use crate::supervise::watchdog::RecordedStart;
 
 /// Reject a `supervisor.pid` whose final component is a symlink before any
 /// open follows it, mapping the refusal to a clean `pid_file_symlink_rejected`
@@ -57,12 +58,16 @@ fn read_pid_string(path: &Path) -> Option<String> {
     Some(s)
 }
 
-/// Atomically write `pid` (plus its process start-time, when readable)
+/// Atomically write `pid` (plus its process start identity, when readable)
 /// to `path` via tempfile + rename. The on-disk format is one line:
-/// `"<pid>"` or `"<pid> <start_time_secs>"`. The start-time is the §7.5
-/// PID-identity defense (§7.6): a later stale-check can tell a recycled
-/// PID from the original supervisor. Mirrors `taskfleet_core::atomic` without
-/// pulling in the JSON layer.
+/// `"<pid>"`, `"<pid> <start_time_secs>"`, or
+/// `"<pid> <start_time_secs|-> <start_identity>"`. The start identity is the
+/// §7.5 PID-identity defense (§7.6): a later stale-check can tell a recycled
+/// PID from the original supervisor. The kernel identity token decides when
+/// present (see [`watchdog::RecordedStart`](crate::supervise::watchdog::RecordedStart));
+/// the seconds token stays second so a reader that only knows the two-token
+/// format still parses it. Mirrors `taskfleet_core::atomic` without pulling in
+/// the JSON layer.
 pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
     let parent = path.parent().ok_or_else(|| {
         CliError::system(
@@ -76,8 +81,15 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
     // (rename does not follow the leaf, but the reject keeps the failure mode a
     // clean `pid_file_symlink_rejected` rather than silently clobbering the link).
     reject_pid_symlink(path)?;
-    let contents = if let Some(st) = crate::supervise::watchdog::pid_start_time(pid) {
-        format!("{pid} {st}")
+    let start = crate::supervise::watchdog::RecordedStart::capture(pid);
+    let contents = if start.is_recorded() {
+        let secs = start
+            .secs
+            .map_or_else(|| "-".to_string(), |st| st.to_string());
+        match start.identity {
+            Some(identity) => format!("{pid} {secs} {identity}"),
+            None => format!("{pid} {secs}"),
+        }
     } else {
         // Degrade to the legacy bare-integer format (a later
         // stale-check falls back to plain liveness). This loses the
@@ -159,14 +171,14 @@ pub fn claim_pid_atomic(paths: &RunPaths, our_pid: u32) -> Result<(), CliError> 
     let _guard = RunLock::acquire(&paths.lock())
         .map_err(|e| CliError::system("lock_error", format!("acquire run lock: {e}")))?;
     let pid_path = paths.supervisor_pid();
-    if let Some((existing, start_time)) = read_pid_record(&pid_path) {
-        if pid_live_with_identity(existing, start_time) {
+    if let Some((existing, start)) = read_pid_record(&pid_path) {
+        if pid_live_with_identity(existing, &start) {
             // A legacy (no recorded start-time) file cannot distinguish the
             // real owner from a recycled pid — say so explicitly so an
             // operator hit by an upgrade-then-pid-reuse lockout knows to
             // remove the file, rather than reading "is alive" and assuming a
             // healthy supervisor.
-            let hint = if start_time.is_none() {
+            let hint = if !start.is_recorded() {
                 "; this is a legacy pid file with no identity, so a recycled \
                  pid cannot be ruled out — remove supervisor.pid if it is stale"
             } else {
@@ -214,18 +226,25 @@ pub fn read_pid(path: &Path) -> Option<u32> {
     to_pid_t(pid).map(|_| pid)
 }
 
-/// Read `(pid, start_time)` from `path`. `start_time` is `None` for a
-/// legacy single-integer file (written before §7.6 identity landed) or
-/// when the start-time could not be captured at write time.
-pub fn read_pid_record(path: &Path) -> Option<(u32, Option<u64>)> {
+/// Read `(pid, start)` from `path`. `start` records nothing for a legacy
+/// single-integer file (written before §7.6 identity landed) or when the start
+/// could not be captured at write time, and only seconds for a file written
+/// before the kernel identity token.
+pub fn read_pid_record(path: &Path) -> Option<(u32, RecordedStart)> {
     let s = read_pid_string(path)?;
     let mut it = s.split_whitespace();
     let pid = it.next()?.parse::<u32>().ok()?;
     // Reject an out-of-range pid (see `to_pid_t`) before it can reach any
     // `kill()` cast downstream.
     to_pid_t(pid)?;
-    let start_time = it.next().and_then(|t| t.parse::<u64>().ok());
-    Some((pid, start_time))
+    Some((pid, parse_start(it)))
+}
+
+/// The start tokens after the pid: seconds (`-` when unreadable), then the
+/// optional kernel identity.
+fn parse_start<'a>(mut tokens: impl Iterator<Item = &'a str>) -> RecordedStart {
+    let secs = tokens.next().and_then(|t| t.parse::<u64>().ok());
+    RecordedStart::new(secs, tokens.next())
 }
 
 /// The three ways reading a supervisor pid file can resolve, classified from a
@@ -245,9 +264,9 @@ pub enum PidRecord {
     /// valid in-range pid. Distinct from `Absent`: something is present, we
     /// just cannot trust it.
     Unreadable,
-    /// A valid record: `(pid, start_time)`, with `start_time` `None` for a
+    /// A valid record: `(pid, start)`, with nothing recorded in `start` for a
     /// legacy single-integer file. Same parse rules as [`read_pid_record`].
-    Present { pid: u32, start_time: Option<u64> },
+    Present { pid: u32, start: RecordedStart },
 }
 
 /// Classify `<run-dir>/supervisor.pid` from one `open()`. See [`PidRecord`] for
@@ -278,28 +297,19 @@ pub fn classify_pid_record(path: &Path) -> PidRecord {
     if to_pid_t(pid).is_none() {
         return PidRecord::Unreadable;
     }
-    let start_time = it.next().and_then(|t| t.parse::<u64>().ok());
-    PidRecord::Present { pid, start_time }
+    PidRecord::Present {
+        pid,
+        start: parse_start(it),
+    }
 }
 
-/// Liveness check for a recorded supervisor PID that additionally
-/// defends against PID reuse via the §7.5 start-time identity check
-/// (§7.6). A recycled PID (alive, but start-time disagrees) is reported
-/// `false` (stale) so reattach is not blocked forever. A legacy record
-/// with no recorded start-time, or a platform that cannot read it, falls
-/// back to plain liveness.
-pub fn pid_live_with_identity(pid: u32, recorded_start_time: Option<u64>) -> bool {
-    if !pid_alive(pid) {
-        return false;
-    }
-    match recorded_start_time {
-        Some(recorded) => match crate::supervise::watchdog::pid_start_time(pid) {
-            // 1s tolerance mirrors the watchdog's recycle check.
-            Some(actual) => recorded.abs_diff(actual) <= 1,
-            None => true,
-        },
-        None => true,
-    }
+/// Liveness check for a recorded PID that additionally defends against PID
+/// reuse via the §7.5 start identity check (§7.6). A recycled PID (alive, but
+/// its start identity disagrees) is reported `false` (stale) so reattach is
+/// not blocked forever. A legacy record with no recorded start, or a platform
+/// that cannot read it, falls back to plain liveness.
+pub fn pid_live_with_identity(pid: u32, recorded: &RecordedStart) -> bool {
+    pid_alive(pid) && recorded.matches(pid) != Some(false)
 }
 
 /// Remove the PID file if it still records `expected_pid`. Mismatch is
@@ -485,7 +495,10 @@ mod tests {
         // Legacy format: a single bare integer, no start-time token, for a
         // guaranteed-dead pid (so the claim is not blocked by a live owner).
         std::fs::write(&pid_path, "2147483646").unwrap();
-        assert_eq!(read_pid_record(&pid_path), Some((2_147_483_646, None)));
+        assert_eq!(
+            read_pid_record(&pid_path),
+            Some((2_147_483_646, RecordedStart::default()))
+        );
 
         let our_pid = std::process::id();
         claim_pid_atomic(&paths, our_pid).expect("claim over a dead legacy pid succeeds");
@@ -494,8 +507,47 @@ mod tests {
         let (pid, start) = read_pid_record(&pid_path).unwrap();
         assert_eq!(pid, our_pid);
         assert!(
-            start.is_some(),
-            "claim must upgrade the legacy file to carry a start-time"
+            start.secs.is_some() && start.identity.is_some(),
+            "claim must upgrade the legacy file to carry a start identity"
         );
+    }
+
+    /// Regression for `supervisor-false-pid-recycled`: a live supervisor whose
+    /// recorded seconds drifted with a wall-clock step is still live, because
+    /// the kernel identity token decides. A two-token file from an older
+    /// writer keeps the seconds comparison, and a different identity is stale.
+    #[test]
+    fn identity_token_decides_supervisor_liveness() {
+        let dir = TempDir::new().unwrap();
+        let pid_path = dir.path().join("supervisor.pid");
+        let our_pid = std::process::id();
+        write_pid(&pid_path, our_pid).unwrap();
+        let (pid, start) = read_pid_record(&pid_path).unwrap();
+        assert_eq!(pid, our_pid);
+        let secs = start.secs.unwrap();
+        let identity = start.identity.clone().unwrap();
+        assert!(pid_live_with_identity(pid, &start));
+
+        std::fs::write(&pid_path, format!("{our_pid} {} {identity}", secs - 4)).unwrap();
+        let (_, drifted) = read_pid_record(&pid_path).unwrap();
+        assert!(pid_live_with_identity(our_pid, &drifted));
+        assert!(matches!(
+            classify_pid_record(&pid_path),
+            PidRecord::Present { start, .. } if start == drifted
+        ));
+
+        std::fs::write(&pid_path, format!("{our_pid} - {identity}")).unwrap();
+        let (_, no_secs) = read_pid_record(&pid_path).unwrap();
+        assert_eq!(no_secs.secs, None);
+        assert!(pid_live_with_identity(our_pid, &no_secs));
+
+        std::fs::write(&pid_path, format!("{our_pid} {secs} linux:1")).unwrap();
+        let (_, other) = read_pid_record(&pid_path).unwrap();
+        assert!(!pid_live_with_identity(our_pid, &other));
+
+        std::fs::write(&pid_path, format!("{our_pid} {}", secs - 4)).unwrap();
+        let (_, legacy) = read_pid_record(&pid_path).unwrap();
+        assert_eq!(legacy.identity, None);
+        assert!(!pid_live_with_identity(our_pid, &legacy));
     }
 }

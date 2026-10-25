@@ -432,7 +432,7 @@ pub(super) fn run(args: &Args<'_>) -> Result<(), CliError> {
         None
     } else if let Some(pid) = supervisor_spawn::read_live_recorded_pid(&public) {
         let start = crate::supervise::pid_file::read_pid_record(&public.supervisor_pid())
-            .and_then(|(recorded, start)| (recorded == pid).then_some(start).flatten());
+            .and_then(|(recorded, start)| (recorded == pid).then_some(start.secs).flatten());
         let ready = RunLock::with_shared_lock(&public.lock(), || {
             taskfleet_core::read_all_events(&public.events())
         })

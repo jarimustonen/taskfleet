@@ -263,13 +263,8 @@ fn quiesce_worker(node: &Node) -> Result<(), String> {
     if !crate::supervise::pid_file::pid_alive(pid) {
         return Ok(());
     }
-    if let Some(expected) = node.agent_pid_start_time {
-        if let Some(actual) = crate::supervise::watchdog::pid_start_time(pid) {
-            let expected = expected.timestamp().max(0) as u64;
-            if expected.abs_diff(actual) > 1 {
-                return Ok(());
-            }
-        }
+    if crate::supervise::watchdog::RecordedStart::of_agent(node).matches(pid) == Some(false) {
+        return Ok(());
     }
     // Stop the exact writer without destroying its tmux pane. This breaks the
     // cancellation cycle: final pane history remains capturable, while no Pi
@@ -826,6 +821,7 @@ mod tests {
         node.agent_pid = Some(pid as i32);
         node.agent_pid_start_time = crate::supervise::watchdog::pid_start_time(pid)
             .and_then(|seconds| chrono::DateTime::from_timestamp(seconds as i64, 0));
+        node.agent_pid_start_identity = crate::supervise::watchdog::pid_start_identity(pid);
         std::thread::sleep(std::time::Duration::from_millis(30));
         let tmux = tmux_script(&tmp, "printf 'FINAL AFTER TERM\\n'");
 

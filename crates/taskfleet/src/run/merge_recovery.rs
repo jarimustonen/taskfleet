@@ -646,10 +646,14 @@ fn driver_is_alive(txn: &MergeTxn) -> bool {
     let Some(pid) = txn.driver_pid else {
         return false;
     };
-    if pid <= 0 || !pid_live_with_identity(pid as u32, txn.driver_pid_start_secs) {
+    let start = crate::supervise::watchdog::RecordedStart::new(
+        txn.driver_pid_start_secs,
+        txn.driver_pid_start_identity.as_deref(),
+    );
+    if pid <= 0 || !pid_live_with_identity(pid as u32, &start) {
         return false;
     }
-    if txn.driver_pid_start_secs.is_some() {
+    if start.is_recorded() {
         // Authoritative identity: a recycled PID would have a different start-time
         // and already failed `pid_live_with_identity`.
         return true;
@@ -1220,7 +1224,9 @@ mod tests {
         let repo = repo_dir.path();
         let home = tempfile::TempDir::new().unwrap();
         let paths = fresh_run(&home, repo);
-        // Record with OUR pid as the driver — very much alive.
+        // Record with OUR pid as the driver — very much alive. The seconds are
+        // deliberately 4 s off (a wall-clock step since `run merge` recorded
+        // them, `supervisor-false-pid-recycled`); the kernel identity decides.
         let pid = std::process::id();
         let txn = json!({
             "op_id": "01jxop00000000000000000000",
@@ -1230,7 +1236,8 @@ mod tests {
             "worker_oid": worker_tip,
             "base_sha": base,
             "driver_pid": pid as i32,
-            "driver_pid_start_secs": crate::supervise::watchdog::pid_start_time(pid),
+            "driver_pid_start_secs": crate::supervise::watchdog::pid_start_time(pid).map(|s| s - 4),
+            "driver_pid_start_identity": crate::supervise::watchdog::pid_start_identity(pid),
             "started_at": "2026-08-15T00:00:00Z",
         });
         append_and_apply_event(

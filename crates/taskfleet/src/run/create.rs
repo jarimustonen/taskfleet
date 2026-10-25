@@ -1030,6 +1030,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             i64::try_from(outcome.agent_start_time).unwrap_or(i64::MAX),
             0,
         ),
+        "agent_pid_start_identity": outcome.agent_start_identity,
         "task": args.task,
         "parent_node_id": parent_node_id,
     });
@@ -1123,7 +1124,10 @@ fn classify_existing_reservation(
     now: chrono::DateTime<Utc>,
 ) -> Result<ExistingReservation, CliError> {
     classify_existing_reservation_with(root, record, now, |pid, start| {
-        crate::supervise::pid_file::pid_live_with_identity(pid, start)
+        crate::supervise::pid_file::pid_live_with_identity(
+            pid,
+            &crate::supervise::watchdog::RecordedStart::new(start, None),
+        )
     })
 }
 

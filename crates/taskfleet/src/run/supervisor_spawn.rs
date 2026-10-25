@@ -311,8 +311,8 @@ pub fn spawn_and_reap(cmd: &mut Command, run_id: &str) -> Result<(), CliError> {
 /// parent supervisor's tick — and is content with "pid not yet confirmed"
 /// (the child writes its own pid file as the durable source of truth).
 pub fn read_live_recorded_pid(paths: &RunPaths) -> Option<u32> {
-    let (pid, start_time) = pid_file::read_pid_record(&paths.supervisor_pid())?;
-    pid_file::pid_live_with_identity(pid, start_time).then_some(pid)
+    let (pid, start) = pid_file::read_pid_record(&paths.supervisor_pid())?;
+    pid_file::pid_live_with_identity(pid, &start).then_some(pid)
 }
 
 /// Poll `<run-dir>/supervisor.pid` for up to [`PID_FILE_WAIT`] and return the

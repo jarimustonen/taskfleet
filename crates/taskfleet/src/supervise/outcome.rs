@@ -330,6 +330,7 @@ mod tests {
             retention_unavailable: None,
             agent_pid: None,
             agent_pid_start_time: None,
+            agent_pid_start_identity: None,
             supervisor_pid: None,
             children: vec![],
             started_at: None,

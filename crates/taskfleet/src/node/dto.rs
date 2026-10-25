@@ -149,6 +149,7 @@ mod tests {
             retention_unavailable: None,
             agent_pid: Some(4242),
             agent_pid_start_time: None,
+            agent_pid_start_identity: None,
             supervisor_pid: None,
             children: Vec::new(),
             started_at: Some(ts()),

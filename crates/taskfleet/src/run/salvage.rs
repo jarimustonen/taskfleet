@@ -122,13 +122,13 @@ pub struct Args<'a> {
 /// `Ok(())` once the process is gone, or a `fence_failed` error if it survives
 /// the grace (so salvage refuses rather than merge out from under a live writer).
 ///
-/// `expected_start` is the worker's verified start-time. It is **re-checked
+/// `expected_start` is the worker's recorded start identity. It is **re-checked
 /// immediately before the signal**: a pid can be recycled in the window between
 /// [`classify_worker`] and here, and signalling a recycled pid would hit an
 /// unrelated process. If identity no longer holds (recycled, or the process is
 /// already gone), the original worker is confirmed gone and there is nothing to
 /// fence — return `Ok(())` and let the merge proceed on the preserved worktree.
-fn fence_worker(pid: u32, expected_start: u64) -> Result<(), CliError> {
+fn fence_worker(pid: u32, expected_start: &watchdog::RecordedStart) -> Result<(), CliError> {
     let Some(pid_t) = pid_file::to_pid_t(pid) else {
         // Defensive range guard: `to_pid_t` rejects 0 / out-of-`pid_t`-range so a
         // corrupt pid can never cast to a negative (group/broadcast) kill target.
@@ -139,8 +139,8 @@ fn fence_worker(pid: u32, expected_start: u64) -> Result<(), CliError> {
     };
     // Re-verify identity right before the kill — closes the classify→signal
     // recycle window. A gone/recycled pid means the original is already dead.
-    match watchdog::pid_start_time(pid) {
-        Some(actual) if expected_start.abs_diff(actual) <= 1 => {}
+    match expected_start.matches(pid) {
+        Some(true) => {}
         // Recycled (mismatch) or gone (None while previously alive): do NOT
         // signal an unrelated/absent process. The original worker is gone.
         _ => return Ok(()),
@@ -478,8 +478,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the worktree's git state.
     let mut base_warnings: Vec<String> = args.warnings.to_vec();
     let fenced = if needs_fence {
-        if let WorkerState::Live { pid, start_time } = worker {
-            fence_worker(pid, start_time)?;
+        if let WorkerState::Live { pid } = worker {
+            fence_worker(pid, &watchdog::RecordedStart::of_agent(&node))?;
             base_warnings.push(format!(
                 "fenced worker pid {pid} (SIGTERM) before finishing the run"
             ));
@@ -609,6 +609,7 @@ mod tests {
             retention_unavailable: None,
             agent_pid,
             agent_pid_start_time: start_time,
+            agent_pid_start_identity: None,
             supervisor_pid: None,
             children: vec![],
             started_at: None,
@@ -667,10 +668,7 @@ mod tests {
         let n = node(Some(pid as i32), Some(recorded), Some(exit));
         assert_eq!(
             classify_worker(&n),
-            WorkerState::Live {
-                pid,
-                start_time: st
-            },
+            WorkerState::Live { pid },
             "OS proof of a live original worker must override a stale told exit"
         );
         let _ = child.kill();
@@ -714,10 +712,7 @@ mod tests {
 
         assert_eq!(
             classify_worker(&node(Some(pid as i32), Some(recorded), None)),
-            WorkerState::Live {
-                pid,
-                start_time: st
-            }
+            WorkerState::Live { pid }
         );
         assert_eq!(
             classify_worker(&node(Some(pid as i32), None, None)),
@@ -732,6 +727,35 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// A recorded kernel identity decides even when the recorded seconds drifted
+    /// with a wall-clock step (`supervisor-false-pid-recycled`): the live worker
+    /// stays `Live`, and a fence re-check with the same record still signals it.
+    #[test]
+    fn identity_survives_drifted_seconds_for_classify_and_fence() {
+        let mut child = spawn_sleeper();
+        let pid = child.id();
+        let st = watchdog::pid_start_time(pid).expect("read child start_time");
+        let drifted = DateTime::from_timestamp(st as i64 - 4, 0).unwrap();
+        let mut n = node(Some(pid as i32), Some(drifted), None);
+        n.agent_pid_start_identity = watchdog::pid_start_identity(pid);
+        assert!(n.agent_pid_start_identity.is_some());
+        assert_eq!(classify_worker(&n), WorkerState::Live { pid });
+
+        n.agent_pid_start_identity = Some("linux:1".into());
+        assert_eq!(classify_worker(&n), WorkerState::Gone);
+
+        let record = watchdog::RecordedStart {
+            secs: Some(st - 4),
+            identity: watchdog::pid_start_identity(pid),
+        };
+        let reaper = std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        fence_worker(pid, &record).expect("fence succeeds");
+        reaper.join().unwrap();
+        assert!(!pid_file::pid_alive(pid), "worker must be dead after fence");
     }
 
     /// `fence_worker` SIGTERMs a live process and returns once it is gone.
@@ -749,7 +773,7 @@ mod tests {
         let reaper = std::thread::spawn(move || {
             let _ = child.wait();
         });
-        fence_worker(pid, st).expect("fence succeeds");
+        fence_worker(pid, &watchdog::RecordedStart::new(Some(st), None)).expect("fence succeeds");
         reaper.join().unwrap();
         assert!(!pid_file::pid_alive(pid), "worker must be dead after fence");
     }
@@ -762,7 +786,8 @@ mod tests {
         let mut child = spawn_sleeper();
         let pid = child.id();
         // A start-time that cannot match the live child (1970).
-        fence_worker(pid, 1).expect("mismatched identity is a benign no-op");
+        fence_worker(pid, &watchdog::RecordedStart::new(Some(1), None))
+            .expect("mismatched identity is a benign no-op");
         assert!(
             pid_file::pid_alive(pid),
             "an identity-mismatched pid must be left untouched"

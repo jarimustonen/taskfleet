@@ -1537,8 +1537,7 @@ fn signal_children_term<'a>(root: &Path, child_run_ids: impl Iterator<Item = &'a
         // case worth signalling — still has a live run dir and a readable
         // record. If the whole child run dir vanished too, there is no record
         // and nothing to signal (that child self-terminates like we did).
-        let Some((pid, start_time)) = pid_file::read_pid_record(&child_paths.supervisor_pid())
-        else {
+        let Some((pid, start)) = pid_file::read_pid_record(&child_paths.supervisor_pid()) else {
             continue;
         };
         // `read_pid_record` already rejects out-of-range pids; re-narrow here
@@ -1546,7 +1545,7 @@ fn signal_children_term<'a>(root: &Path, child_run_ids: impl Iterator<Item = &'a
         let Some(pid_t) = pid_file::to_pid_t(pid) else {
             continue;
         };
-        if !pid_file::pid_live_with_identity(pid, start_time) {
+        if !pid_file::pid_live_with_identity(pid, &start) {
             continue;
         }
         // SAFETY: `kill` with a real signal to a range-checked pid whose
@@ -2569,6 +2568,7 @@ fn reconcile_agent_retries(
             "pi_session_cwd": spawn.pi_session_cwd,
             "agent_pid": spawn.agent_pid,
             "agent_pid_start_time": spawn.agent_pid_start_time,
+            "agent_pid_start_identity": spawn.agent_pid_start_identity,
         });
         let lock = guard.witness();
         if let Err(e) =
@@ -2707,6 +2707,7 @@ struct RespawnOutcome {
     pi_session_cwd: Option<String>,
     agent_pid: i64,
     agent_pid_start_time: Option<DateTime<Utc>>,
+    agent_pid_start_identity: String,
     materialization: Option<crate::run::spawn::SpawnOutcome>,
 }
 
@@ -2839,6 +2840,7 @@ fn respawn_agent(
             i64::try_from(outcome.agent_start_time).unwrap_or(i64::MAX),
             0,
         ),
+        agent_pid_start_identity: outcome.agent_start_identity.clone(),
         materialization: Some(outcome),
     })
 }
@@ -3407,7 +3409,7 @@ fn watchdog_tick(
             let Some(pid) = n.agent_pid else { continue };
             let probe = watchdog::AgentProbe {
                 pid: pid as u32,
-                start_time: n.agent_pid_start_time.map(|t| t.timestamp().max(0) as u64),
+                start: watchdog::RecordedStart::of_agent(&n),
                 tmux_window: n.tmux_window.clone(),
                 tmux_identity: n.tmux_identity.as_deref().cloned(),
                 // Skip the tmux probe only when there is neither a qualified
@@ -3821,6 +3823,7 @@ mod tests {
             retention_unavailable: None,
             agent_pid: Some(4242),
             agent_pid_start_time: None,
+            agent_pid_start_identity: None,
             supervisor_pid: None,
             children: Vec::new(),
             started_at: None,

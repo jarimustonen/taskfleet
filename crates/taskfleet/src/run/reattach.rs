@@ -85,8 +85,8 @@ pub fn spawn_supervisor(
     let root = crate::home::root_dir()?;
     let _admission = super::admission::admit(&root)?;
     let pid_path = paths.supervisor_pid();
-    if let Some((existing, start_time)) = pid_file::read_pid_record(&pid_path) {
-        if pid_file::pid_live_with_identity(existing, start_time) {
+    if let Some((existing, start)) = pid_file::read_pid_record(&pid_path) {
+        if pid_file::pid_live_with_identity(existing, &start) {
             return Err(CliError::system(
                 "supervisor_already_running",
                 format!("supervisor pid {existing} for run {run_id} is alive (no reattach needed)"),
@@ -97,7 +97,7 @@ pub fn spawn_supervisor(
         // retried recovery (e.g. `run merge` re-invoked several times while the
         // supervisor stays dead) collapses to a single `supervisor.exited`
         // instead of storming the log with one per attempt.
-        let exited_key = match start_time {
+        let exited_key = match start.secs {
             Some(st) => format!("stale-on-reattach:{existing}:{st}"),
             None => format!("stale-on-reattach:{existing}"),
         };

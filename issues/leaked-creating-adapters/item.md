@@ -5,6 +5,9 @@ type: bug
 reporter: agent
 status: open
 priority: high
+lane: worker-messaging
+lane_seq: 1
+collision: [crates/taskfleet/src/run/spawn.rs, supervise-cleanup]
 ---
 
 # terminal runs leak creating message adapters

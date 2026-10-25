@@ -1,12 +1,15 @@
 ---
 created: 2026-10-21
-updated: 2026-10-22
+updated: 2026-10-25
 type: feature
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent:homebase-wrapup
 source_ref: agent:homebase-wrapup/reporter:jari/id:oh-wrapup-20261021-tf-message
+lane: worker-messaging
+lane_seq: 2
+collision: [crates/taskfleet/src/run/spawn.rs, crates/taskfleet/src/run/message.rs]
 ---
 
 # Send a message to a live worker run (run message / node message)
@@ -38,3 +41,9 @@ Verification was read-only: installed CLI help, implementation, and commit histo
 ### 2026-10-22T14:28:05Z · @pi-conductor
 
 Observed during the approved six-issue Taskfleet stint on 2026-10-22 against installed 0.16.0: run message to Pi runs 01m5hqx3k2pzywqsb6mka4wr19 (triage-discard) and 01m5hqx4m9tv0wktjfdxgrhmmb (triage-handoff) returned worker_not_active. Immediate run show for both reported status pending, harness pi, live supervisor, no report and no attention/awaiting-input. Both subsequently completed and merged successfully, so these were not dead workers. The attempted messages were optional progress updates, not decisions; no deliverable was blocked. Current message.rs rejects node status other than Running; investigate the distinction between a genuinely inactive worker and a live native worker whose node remains Pending before calling this intake obsolete based only on CLI presence. No harness-control workaround or extra fix was attempted; this newly arrived item remains untriaged outside the six approved outcomes.
+
+## Decisions
+
+### 2026-10-25T09:40:27Z · @jari
+
+Accepted 2026-10-25: harvest Claude steering from preserved run 01m5maedhkbayn3g7js0g0t9ep (branch wt/7js0g0t9ep-run-message-idle-workers, gate passed on 2eabf667) onto current main after 0.17.1; Pi steering already landed separately.

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-29
-updated: 2026-09-29
+updated: 2026-10-25
 type: task
 reporter: jari
 status: done
@@ -21,6 +21,10 @@ Homebase latest-stable Taskfleet promotion cannot use a run-list snapshot: run c
 ### 2026-09-29T05:47:12Z · @agent
 
 2026-09-29: Worker run 01m3nrx25hv44m48xnc23e7env preserved a reviewed admission gate (release-mode nextest 1128 pass), but required scripts/validate-local-release.sh did not complete: cargo-deny was missing. Conductor provisioned disposable cargo-deny 0.20.2 and checksum-verified cargo-dist 0.33.0 under /var/tmp/taskfleet-release-tools; further preflight reveals scripts/shipshape-release.sh rejects installed/published Shipshape 0.12.4 and still allows only 0.12.3 while Homebrew stable is 0.12.4. Release wrapper admission is a separate existing untriaged intake item @surprisingly-full-need; do not bypass the required gate, fake public tap state or merge until policy and gate are reconciled.
+
+### 2026-10-25T03:26:10Z · @agent
+
+Legacy scratch retirement (2026-10-25): the eligible closed-issue paths cited here have been copied to hauis:/Volumes/JARI-EXT/backup/haapa-var-tmp-retirement-20261025/<same-basename>, with a clean rsync checksum verification. Source-to-backup mapping and retained exceptions: Homebase issues/haapa-root-disk-growth/retirement-20261025.md. Local removal is guarded by a final live-run/open-file/reference/age recheck; the action log is /var/tmp/agent-keep/haapa-root-disk-growth/retirement-20261025/actions.jsonl.
 
 ## Resolution
 

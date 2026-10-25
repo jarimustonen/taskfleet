@@ -1,6 +1,6 @@
 ---
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-25
 type: task
 reporter: jari
 status: done
@@ -94,3 +94,7 @@ supplies report/landing/preserved work; the current report has origin.worker_oid
 reads. This unit does not validate browser integration or real service-parent
 restart survival; Linux lifetime has separate smoke evidence. Initial fixture
 and Clippy failures were corrected before the passing complete gate.
+
+### 2026-10-25T03:26:10Z · @agent
+
+Legacy scratch retirement (2026-10-25): the eligible closed-issue paths cited here have been copied to hauis:/Volumes/JARI-EXT/backup/haapa-var-tmp-retirement-20261025/<same-basename>, with a clean rsync checksum verification. Source-to-backup mapping and retained exceptions: Homebase issues/haapa-root-disk-growth/retirement-20261025.md. Local removal is guarded by a final live-run/open-file/reference/age recheck; the action log is /var/tmp/agent-keep/haapa-root-disk-growth/retirement-20261025/actions.jsonl.

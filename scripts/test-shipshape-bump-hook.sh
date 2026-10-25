@@ -61,7 +61,7 @@ EOF
 
 make_fixture() {
   local fixture="$1" mode="$2"
-  mkdir -p "$fixture/scripts" "$fixture/$snap_dir" "$fixture/bin"
+  mkdir -p "$fixture/scripts" "$fixture/$snap_dir" "$fixture/bin" "$fixture/toolchain/bin"
   cp "$repo_root/scripts/shipshape-bump-hook.sh" "$fixture/scripts/"
   cp "$repo_root/scripts/check-version-snapshots.sh" "$fixture/scripts/"
   if [[ "$mode" == unchanged-valid ]]; then
@@ -77,10 +77,24 @@ members = []
 version = "0.5.0"
 EOF
   printf 'unchanged\n' >"$fixture/tracked.txt"
+  # Ambient Cargo deliberately fails: the hook must use stable's local tools,
+  # not a host offload shim that can drop INSTA_UPDATE and snapshot writes.
   cat >"$fixture/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
+echo 'ambient cargo wrapper must not run' >&2
+exit 94
+STUB
+  cat >"$fixture/bin/rustup" <<'STUB'
+#!/usr/bin/env bash
 set -euo pipefail
-[[ "$*" == "test --locked -p taskfleet --test envelope_snapshots" ]] || {
+[[ "$*" == 'which --toolchain stable cargo' ]] || exit 95
+printf '%s/toolchain/bin/cargo\n' "$PWD"
+STUB
+  cat >"$fixture/toolchain/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${RUSTUP_TOOLCHAIN:-}" == stable ]] || exit 96
+[[ "$*" == "test --locked --release -p taskfleet --test envelope_snapshots" ]] || {
   echo "cargo stub: unexpected arguments: $*" >&2
   exit 90
 }
@@ -134,7 +148,7 @@ case "$HOOK_TEST_MODE" in
   *) echo "cargo stub: unknown HOOK_TEST_MODE=$HOOK_TEST_MODE" >&2; exit 91 ;;
 esac
 STUB
-  chmod +x "$fixture/bin/cargo" "$fixture/scripts/"*.sh
+  chmod +x "$fixture/bin/"* "$fixture/toolchain/bin/cargo" "$fixture/scripts/"*.sh
   (
     cd "$fixture"
     export HOME="$tmp/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
@@ -154,7 +168,7 @@ run_case() {
   (
     cd "$fixture"
     env -i HOME="$tmp/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-      HOOK_TEST_MODE="$mode" PATH="$fixture/bin:$tmp/system-bin:/usr/bin:/bin" \
+      TMPDIR="$tmp" HOOK_TEST_MODE="$mode" PATH="$fixture/bin:$tmp/system-bin:/usr/bin:/bin" \
       ./scripts/shipshape-bump-hook.sh
   ) >"$stdout" 2>"$stderr"
   local status=$?

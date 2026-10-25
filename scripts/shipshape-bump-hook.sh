@@ -38,7 +38,15 @@ done
 git diff --binary HEAD -- . "${exclude_args[@]}" >"$state_dir/before.diff"
 git ls-files --others --exclude-standard -z >"$state_dir/before.untracked"
 
-INSTA_UPDATE=always cargo test --locked -p taskfleet --test envelope_snapshots
+# Snapshot updates must execute in this checkout. An ambient Cargo wrapper may
+# offload tests without INSTA_UPDATE or return writes only in a remote sandbox.
+# Select stable's real tools, as the exact-commit release gate does, rather than
+# relying on wrapper-specific environment forwarding or artifact copy-back.
+(
+  stable_cargo="$(rustup which --toolchain stable cargo)"
+  export PATH="$(dirname "$stable_cargo"):$PATH" RUSTUP_TOOLCHAIN=stable
+  INSTA_UPDATE=always cargo test --locked --release -p taskfleet --test envelope_snapshots
+)
 
 snap_new="$(find . \( -path ./target -o -path ./.git \) -prune -o -name '*.snap.new' -print -quit)"
 if [ -n "$snap_new" ]; then

@@ -2,12 +2,13 @@
 created: 2026-10-27
 updated: 2026-10-27
 type: feature
-status: open
+status: done
 priority: normal
 provenance: chat
 source_ref: taskfleet:01m5yjwkbgynhfd72zk1enhvpn/brief
 originating_run: 01m5yjwkbgynhfd72zk1enhvpn
 originating_run_kind: spinoff
+closed: 2026-10-27
 ---
 
 # run upgrade-lock: operator overrides for live runs and stale creations

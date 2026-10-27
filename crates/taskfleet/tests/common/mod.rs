@@ -76,6 +76,7 @@ impl NativeSpawnTools {
             r#"#!/bin/sh
 # This is a complete private fake server: its socket and inventory live only
 # under NativeSpawnTools' cryptographically unique TempDir.
+if [ "$1" = "-u" ]; then shift; fi
 if [ "$1" = "-N" ]; then shift; fi
 if [ "$1" = "-S" ]; then shift 2; fi
 case "$1" in

@@ -233,7 +233,7 @@ fn setup_pipe_pane(tmux: &str, identity: &TmuxIdentity, log_path: &Path, node_id
 /// semantics. Pure so a test can assert the exact argv without a live tmux
 /// server.
 fn pipe_pane_command(tmux: &str, identity: &TmuxIdentity, log_path: &Path) -> Command {
-    let mut cmd = Command::new(tmux);
+    let mut cmd = crate::multiplexer::tmux::command(tmux);
     if let Some(socket) = identity.socket.as_deref() {
         cmd.args(["-S", socket]);
     }
@@ -342,6 +342,7 @@ mod tests {
         assert_eq!(
             argv(&cmd),
             vec![
+                "-u".to_string(),
                 "-S".to_string(),
                 "/private/tmp/tmux-501/default".to_string(),
                 "pipe-pane".to_string(),
@@ -363,12 +364,13 @@ mod tests {
         let cmd = pipe_pane_command("tmux", &identity, &log);
         let args = argv(&cmd);
         assert!(!args.iter().any(|a| a == "-S"), "no -S flag: {args:?}");
-        assert_eq!(args[0], "pipe-pane");
-        assert_eq!(args[1], "-O");
-        assert_eq!(args[2], "-t");
-        assert_eq!(args[3], "@7");
+        assert_eq!(args[0], "-u");
+        assert_eq!(args[1], "pipe-pane");
+        assert_eq!(args[2], "-O");
+        assert_eq!(args[3], "-t");
+        assert_eq!(args[4], "@7");
         assert_eq!(
-            args[4],
+            args[5],
             format!("head -c {CAPTURE_MAX_BYTES} >> '/runs/z/agent.log'")
         );
     }
@@ -382,8 +384,8 @@ mod tests {
         let log = PathBuf::from("/runs/z/agent.log");
         let cmd = pipe_pane_command("tmux", &identity, &log);
         let args = argv(&cmd);
-        assert_eq!(args[2], "-t");
-        assert_eq!(args[3], "%7", "targets pane_id, not window_id: {args:?}");
+        assert_eq!(args[3], "-t");
+        assert_eq!(args[4], "%7", "targets pane_id, not window_id: {args:?}");
         assert!(
             !args.iter().any(|a| a == "@42"),
             "window_id must not appear as the target when a pane_id is recorded: {args:?}"
@@ -397,8 +399,8 @@ mod tests {
         let identity = id(None, "@9");
         let cmd = pipe_pane_command("tmux", &identity, &PathBuf::from("/runs/z/agent.log"));
         let args = argv(&cmd);
-        assert_eq!(args[2], "-t");
-        assert_eq!(args[3], "@9", "falls back to window_id: {args:?}");
+        assert_eq!(args[3], "-t");
+        assert_eq!(args[4], "@9", "falls back to window_id: {args:?}");
     }
 
     #[test]

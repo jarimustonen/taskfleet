@@ -34,6 +34,26 @@ pub fn tmux_bin() -> String {
     std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_string())
 }
 
+/// The tmux client flag every taskfleet invocation passes first.
+///
+/// tmux treats a client as UTF-8 only when `$TMUX` is set or the first of
+/// `LC_ALL`, `LC_CTYPE`, `LANG` names a UTF-8 locale. Any other client gets
+/// sanitized command output: every non-printable byte, including the tab our
+/// `-F` formats use as a field separator, becomes `_`, and every non-ASCII
+/// character (the emoji prefix of a `wt-*` window name) becomes underscores.
+/// A detached supervisor on Linux commonly has neither, so `-F` parsing failed
+/// and window-name lookups missed. `-u` declares the client UTF-8 regardless of
+/// the locale, which keeps both intact.
+pub const UTF8_CLIENT_FLAG: &str = "-u";
+
+/// A `Command` for the tmux binary `bin` with [`UTF8_CLIENT_FLAG`] already
+/// applied. Every taskfleet tmux client invocation goes through this.
+pub fn command(bin: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.arg(UTF8_CLIENT_FLAG);
+    cmd
+}
+
 /// Scope for a `list-windows` query: one session (`-t <session>`) or every
 /// window on the server (`-a`).
 pub enum WindowScope<'a> {
@@ -130,6 +150,7 @@ impl Tmux {
         if let Some(script) = &self.script {
             cmd.arg(script);
         }
+        cmd.arg(UTF8_CLIENT_FLAG);
         if let Some(s) = socket {
             cmd.args(["-S", s]);
         }
@@ -555,6 +576,84 @@ mod tests {
         assert!(
             !log_of(tmp.path()).contains("set-window-option"),
             "must not target an empty pane id"
+        );
+    }
+
+    /// Regression for `tmux-format-tab-separator-ubuntu`, against the installed
+    /// tmux. A client whose locale is not UTF-8 and that has no `$TMUX` gets
+    /// sanitized output (tmux 3.4 prints the `-F` tab separator as `_` and an
+    /// emoji as underscores), which is what a detached Linux supervisor sees.
+    /// The wrapper forces exactly that environment onto every tmux client the
+    /// production parsers start, so this fails without [`UTF8_CLIENT_FLAG`].
+    #[test]
+    fn real_tmux_formats_parse_under_a_non_utf8_detached_client() {
+        let available = Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if !available {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        struct Server(String);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let _ = Command::new("tmux")
+                    .args(["-S", &self.0, "kill-server"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        let cwd_s = cwd.to_str().unwrap();
+        let socket = cwd.join("s").to_str().unwrap().to_string();
+        let wrapper = cwd.join("hostile-locale-tmux");
+        std::fs::write(
+            &wrapper,
+            "exec env -u TMUX -u LANG -u LC_CTYPE LC_ALL=C tmux -f /dev/null \"$@\"\n",
+        )
+        .unwrap();
+        let mux = Tmux::with_script(wrapper.to_str().unwrap());
+        let _server = Server(socket.clone());
+
+        let pane = mux
+            .new_session(&NewSession {
+                session: "tf",
+                cwd: cwd_s,
+                window_name: Some("🎬 wt/x"),
+                socket: Some(&socket),
+            })
+            .unwrap();
+        assert!(pane.starts_with('%'), "pane id: {pane:?}");
+
+        let (attached, names) = mux.list_session_windows(Some(&socket), "tf").unwrap();
+        assert!(!attached);
+        assert_eq!(names, vec!["🎬 wt/x".to_string()]);
+        let window = mux
+            .find_window_by_path(Some(&socket), Some("tf"), cwd_s)
+            .expect("window found by its pane path");
+        assert!(window.starts_with('@'), "window id: {window:?}");
+
+        // The multi-field shape the session-retention scanner parses.
+        let out = mux
+            .base(Some(&socket))
+            .args([
+                "list-panes",
+                "-t",
+                &window,
+                "-F",
+                "#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_current_path}",
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let text = String::from_utf8(out.stdout).unwrap();
+        let fields: Vec<&str> = text.trim_end().split('\t').collect();
+        assert_eq!(
+            fields,
+            vec![window.as_str(), pane.as_str(), "🎬 wt/x", cwd_s]
         );
     }
 }

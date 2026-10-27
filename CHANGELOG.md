@@ -12,6 +12,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 ### Fixed
+
+- Parse tmux output correctly on Linux hosts whose detached processes have no UTF-8 locale and no `$TMUX` (Ubuntu 24.04, tmux 3.4): every tmux client now runs with `-u`, so `-F` tab separators and emoji window names are no longer sanitized to `_`, which had broken session retention, window lookups, and managed-session teardown (`tmux-format-tab-separator-ubuntu`).
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.17.2] - 2026-10-27

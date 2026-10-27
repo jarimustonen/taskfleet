@@ -120,6 +120,8 @@ impl Fixture {
     fn stub(&self) {
         let script = r#"#!/bin/sh
 printf '%s\n' "$@" >> "$CALLS"
+[ "$1" = -u ] || exit 79
+shift
 [ "$1" = -N ] || exit 80
 [ "$2" = -S ] && [ "$3" = "$SOCKET" ] || exit 81
 shift 3

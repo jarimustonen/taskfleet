@@ -234,7 +234,7 @@ pub(crate) fn start_tmux(cwd: &Path) -> Result<TmuxBootstrap, CliError> {
     cmd.arg(format!("--working-directory={}", cwd.display()))
         .arg("--")
         .arg(bin)
-        .args(["-D", "-S"])
+        .args([crate::multiplexer::tmux::UTF8_CLIENT_FLAG, "-D", "-S"])
         .arg(socket);
     run_service(&mut cmd)?;
     Ok(TmuxBootstrap {
@@ -275,8 +275,9 @@ pub(crate) fn tmux_client_dir() -> Result<tempfile::TempDir, CliError> {
         .map_err(|e| CliError::system("io_error", e.to_string()))?;
     let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
     let body = format!(
-        "#!/bin/sh\nexec {} -N -S {} \"$@\"\n",
+        "#!/bin/sh\nexec {} {} -N -S {} \"$@\"\n",
         quote(&resolve_tmux()?),
+        crate::multiplexer::tmux::UTF8_CLIENT_FLAG,
         quote(&tmux_socket()?)
     );
     let mut file = tempfile::NamedTempFile::new_in(dir.path())

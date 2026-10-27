@@ -195,6 +195,7 @@ fn server_disappearing_after_probe_is_bootstrapped_once_through_manager() {
         &tmux,
         format!(
             r#"#!/bin/sh
+if [ "$1" = "-u" ]; then shift; fi
 if [ "$1" = "-N" ]; then shift; fi
 if [ "$1" = "-S" ]; then shift 2; fi
 if [ "$1" = "-D" ]; then echo boot >> '{}'; exit 0; fi

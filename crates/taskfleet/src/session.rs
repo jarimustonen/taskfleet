@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -1315,7 +1314,7 @@ fn tmux_exec_for(bin: &str, socket: Option<&str>, args: &[&str], timeout: Durati
     if timeout.is_zero() {
         return TmuxExec::TimedOut;
     }
-    let mut command = Command::new(bin);
+    let mut command = crate::multiplexer::tmux::command(bin);
     command.arg("-N"); // Inspection/maintenance must never start a replacement server.
     if let Some(socket) = socket {
         command.args(["-S", socket]);
@@ -1406,7 +1405,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     fn tmux_available() -> bool {
-        Command::new("tmux")
+        crate::multiplexer::tmux::command("tmux")
             .arg("-V")
             .output()
             .is_ok_and(|out| out.status.success())
@@ -1416,7 +1415,7 @@ mod tests {
 
     impl Drop for PrivateTmuxServer {
         fn drop(&mut self) {
-            let _ = Command::new("tmux")
+            let _ = crate::multiplexer::tmux::command("tmux")
                 .arg("-S")
                 .arg(&self.0)
                 .arg("kill-server")
@@ -1439,7 +1438,7 @@ mod tests {
     }
 
     fn process_is_stopped(pid: u32) -> bool {
-        Command::new("ps")
+        std::process::Command::new("ps")
             .args(["-o", "state=", "-p", &pid.to_string()])
             .output()
             .is_ok_and(|out| {
@@ -1480,7 +1479,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .env_remove("HOMEBASE_TMUX_OWNER")
             .args([
                 "-f",
@@ -1497,7 +1496,7 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket_s,
@@ -1521,7 +1520,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let made = Command::new("tmux")
+        let made = crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket_s,
@@ -1566,7 +1565,7 @@ mod tests {
         let fields: Vec<&str> = made.trim().split('\t').collect();
         let (window, pane) = (fields[0], fields[1]);
         let marker = format!("taskfleet:{}:{}:0", paths.run_id, node_id);
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket_s,
@@ -1579,7 +1578,7 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket_s,
@@ -1678,7 +1677,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let socket = temp.path().join("tmux.sock");
         let socket_s = socket.to_str().unwrap();
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .env_remove("HOMEBASE_TMUX_OWNER")
             .args([
                 "-f",
@@ -1711,7 +1710,7 @@ mod tests {
         let (original_window, original_pane) = (fields[0], fields[1]);
         let original_pid = fields[2].parse::<u32>().unwrap();
         let server_pid = fields[3].parse::<u32>().unwrap();
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket_s,
@@ -1724,7 +1723,7 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket_s,
@@ -1831,7 +1830,7 @@ mod tests {
             std::fs::read_to_string(evidence_dir.join("final-pane.log")).unwrap(),
             "full archived pane\n"
         );
-        let _ = Command::new("tmux")
+        let _ = crate::multiplexer::tmux::command("tmux")
             .args(["-S", socket_s, "kill-server"])
             .status();
     }
@@ -1863,7 +1862,7 @@ mod tests {
         )
         .unwrap();
         let id = NodeId::parse_str("n-0001").unwrap();
-        let made = Command::new("tmux")
+        let made = crate::multiplexer::tmux::command("tmux")
             .env_remove("HOMEBASE_TMUX_OWNER")
             .args([
                 "-f",
@@ -1889,12 +1888,12 @@ mod tests {
         let made = String::from_utf8(made.stdout).unwrap();
         let fields: Vec<_> = made.trim().split('\t').collect();
         let (window, worker, pid) = (fields[0], fields[1], fields[2].parse::<u32>().unwrap());
-        assert!(Command::new("tmux")
+        assert!(crate::multiplexer::tmux::command("tmux")
             .args(["-S", socket, "set-option", "-g", "default-shell", "/bin/sh"])
             .status()
             .unwrap()
             .success());
-        let split = Command::new("tmux")
+        let split = crate::multiplexer::tmux::command("tmux")
             .args([
                 "-S",
                 socket,

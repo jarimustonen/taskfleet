@@ -190,7 +190,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     let mut client = native_command(identity, &viewer)
         .spawn()
         .map_err(|e| CliError::system("tmux_attach_failed", format!("start tmux viewer: {e}")))?;
-    let mut ready = Command::new(crate::multiplexer::tmux::tmux_bin());
+    let mut ready = crate::multiplexer::tmux::command(crate::multiplexer::tmux::tmux_bin());
     ready.env_remove("TMUX").args([
         "-N",
         "-S",
@@ -224,7 +224,7 @@ fn native_command(identity: &TmuxIdentity, viewer: &str) -> Command {
     let pane = identity.pane_id.as_deref().expect("validated pane");
     let pid = identity.server_pid.expect("validated pid");
     let guard = format!("#{{&&:#{{==:#{{pid}},{pid}}},#{{&&:#{{==:#{{window_id}},{}}},#{{&&:#{{==:#{{pane_id}},{pane}}},#{{||:#{{==:#{{window_zoomed_flag}},0}},#{{==:#{{pane_active}},1}}}}}}}}}}", identity.window_id);
-    let mut command = Command::new(crate::multiplexer::tmux::tmux_bin());
+    let mut command = crate::multiplexer::tmux::command(crate::multiplexer::tmux::tmux_bin());
     // Empty-command new-session creates an inert placeholder, not a shell.
     // link-window replaces only that placeholder with the recorded owned
     // window. It does NOT group sessions or change any source selection.

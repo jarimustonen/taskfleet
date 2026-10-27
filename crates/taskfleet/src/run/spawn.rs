@@ -829,7 +829,7 @@ pub(crate) fn current_tmux_session_name() -> Result<String, CliError> {
         ));
     }
     let bin = std::env::var_os("TMUX_BIN").unwrap_or_else(|| "tmux".into());
-    let out = Command::new(bin)
+    let out = crate::multiplexer::tmux::command(bin)
         .args(["display-message", "-p", "#{session_name}"])
         .output()
         .map_err(|e| CliError::system("no_tmux_session", e.to_string()))?;
@@ -1160,7 +1160,11 @@ fn command_output(
     if matches!(bin, "tmux" | "workmux") {
         let socket = crate::linux_lifetime::tmux_socket()?;
         if bin == "tmux" {
-            command.arg("-N").arg("-S").arg(&socket);
+            command
+                .arg(crate::multiplexer::tmux::UTF8_CLIENT_FLAG)
+                .arg("-N")
+                .arg("-S")
+                .arg(&socket);
         }
         command.env("TMUX", format!("{},0,0", socket.display()));
         if bin == "workmux" {

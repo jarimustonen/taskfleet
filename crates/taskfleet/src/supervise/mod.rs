@@ -2652,7 +2652,7 @@ fn teardown_respawn_outcome(
     // does not thread `spawn.tmux_socket`, a latent default-server-only limitation
     // preserved from before this change (out of scope for the vendoring swap).
     if !spawn.tmux_window.is_empty() {
-        let _ = Command::new(tmux)
+        let _ = crate::multiplexer::tmux::command(tmux)
             .args(["kill-window", "-t", &spawn.tmux_window])
             .stdout(Stdio::null())
             .stderr(Stdio::null())

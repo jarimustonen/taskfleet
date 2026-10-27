@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -153,7 +152,7 @@ fn archive_claude(paths: &RunPaths, node: &Node, tmux: &str) -> bool {
             .last_report
             .as_ref()
             .ok_or("terminal node has no report")?;
-        let mut command = Command::new(tmux);
+        let mut command = crate::multiplexer::tmux::command(tmux);
         if let Some(socket) = identity.socket.as_deref() {
             command.args(["-S", socket]);
         }
@@ -320,7 +319,7 @@ fn capture(paths: &RunPaths, node: &Node, tmux: &str) -> Result<Value, String> {
         .tmux_identity
         .as_ref()
         .ok_or("terminal worker has no qualified tmux identity")?;
-    let mut command = Command::new(tmux);
+    let mut command = crate::multiplexer::tmux::command(tmux);
     if let Some(socket) = identity.socket.as_deref() {
         command.args(["-S", socket]);
     }

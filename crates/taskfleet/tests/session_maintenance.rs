@@ -144,6 +144,8 @@ fn display_expiry_keeps_durable_history_and_evidence() {
             &stub,
             format!(
                 r#"#!/bin/sh
+[ "$1" = -u ] || exit 88
+shift
 [ "$1" = -N ] || exit 89
 shift
 [ "$1" = -S ] && [ "$2" = /fixture/socket ] || exit 90

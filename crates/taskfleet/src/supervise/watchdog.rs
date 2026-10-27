@@ -326,7 +326,7 @@ impl WatchdogTmuxSnapshot {
 /// subprocess. `window_id` (`@NNNN`) never contains `|`, so splitting each line
 /// on the FIRST `|` cleanly separates the id from a name that may contain `|`.
 fn probe_socket(bin: &str, socket: Option<&str>, timeout: Duration) -> SocketWindows {
-    let mut cmd = Command::new(bin);
+    let mut cmd = crate::multiplexer::tmux::command(bin);
     if let Some(s) = socket {
         cmd.args(["-S", s]);
     }

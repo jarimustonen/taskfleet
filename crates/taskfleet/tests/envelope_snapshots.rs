@@ -76,6 +76,10 @@ fn bin(home: &TempDir) -> Command {
     c.env_remove("TASKFLEET_LOG");
     c.env_remove("NO_COLOR");
     c.env_remove("CLICOLOR");
+    // Creator attribution is ambient too: a run created from inside a Pi agent
+    // records `created_by_session` from this variable, which would leak the
+    // caller's session into `run show` / `event tail` snapshots.
+    c.env_remove("TASKFLEET_CREATOR_SESSION");
     // A snapshot test must fail, never wedge CI — guard the streaming
     // verb (`event tail`) against a future default-follow regression.
     c.timeout(Duration::from_secs(30));

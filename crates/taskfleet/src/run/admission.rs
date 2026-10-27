@@ -16,11 +16,12 @@ use std::time::{Duration, Instant};
 
 use fs4::{FileExt, TryLockError};
 use serde::Serialize;
-use taskfleet_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Shared};
+use taskfleet_core::STATE_SCHEMA_VERSION;
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::from_core;
+use crate::run::upgrade_survey::{self, Abandoned, LiveRun, Survey, RECEIPT_DIR};
 
 const FILE: &str = ".worker-admission.lock";
 const DEFAULT_WAIT: u64 = 10;
@@ -136,29 +137,174 @@ fn clear_inhibit(root: &Path) -> Result<(), CliError> {
     sync_root(root)
 }
 
+/// Operator inputs to [`upgrade`]; each override flag is a separate, explicit
+/// acceptance (see `upgrade_survey` for what each one may accept). The bools
+/// mirror independent CLI flags.
+#[allow(clippy::struct_excessive_bools)]
+pub(super) struct UpgradeArgs {
+    pub wait_secs: u64,
+    pub command_timeout_secs: u64,
+    pub argv: Vec<String>,
+    pub recover: bool,
+    pub confirm_quiescent: bool,
+    pub allow_live_runs: bool,
+    pub target_state_schema: Option<u32>,
+    pub abandon_stale_creations: bool,
+}
+
 #[derive(Serialize)]
 struct UpgradeResult {
+    /// True only when nothing was overridden: no live run accepted and no
+    /// creation abandoned.
     quiescent: bool,
     checked_runs: usize,
     command_exit: i32,
+    recovered: bool,
+    state_schema_version: u32,
+    accepted_live_runs: Vec<LiveRun>,
+    abandoned_creations: Vec<Abandoned>,
+    /// Override receipt under `<root>/upgrade-receipts/`; null when no
+    /// override accepted anything.
+    receipt: Option<String>,
+    /// The executable that ran this gate. Accepted live runs keep calling
+    /// their recorded predecessor path (worker launchers and Claude hooks), so
+    /// the activation must leave it in place or replace it in place.
+    predecessor_executable: Option<PredecessorExecutable>,
+}
+
+#[derive(Clone, Serialize)]
+struct PredecessorExecutable {
+    path: String,
+    present_after_activation: bool,
+}
+
+#[derive(Serialize)]
+struct Receipt<'a> {
+    receipt_id: &'a str,
+    created_at: chrono::DateTime<chrono::Utc>,
+    taskfleet_version: &'static str,
+    mode: &'static str,
+    activation_program: &'a str,
+    state_schema_version: u32,
+    target_state_schema: Option<u32>,
+    accepted_live_runs: &'a [LiveRun],
+    abandoned_creations: &'a [Abandoned],
+    outcome: &'a str,
+}
+
+fn write_receipt(root: &Path, receipt: &Receipt<'_>) -> Result<String, CliError> {
+    let dir = root.join(RECEIPT_DIR);
+    upgrade_survey::private_dir(&dir)?;
+    let path = dir.join(format!("{}.json", receipt.receipt_id));
+    taskfleet_core::atomic::write_json_atomic(&path, receipt).map_err(from_core)?;
+    Ok(path.display().to_string())
+}
+
+/// Decide, before any mutation, what the survey allows. Every refusal leaves
+/// admission and state exactly as they were.
+fn accept(
+    root: &Path,
+    survey: &Survey,
+    args: &UpgradeArgs,
+) -> Result<Vec<(String, Vec<String>)>, CliError> {
+    let creation_ids: Vec<&String> = survey.creations.keys().collect();
+    if !creation_ids.is_empty() && !args.abandon_stale_creations {
+        let (id, creation) = survey.creations.iter().next().expect("nonempty");
+        let path = creation
+            .staging_dir
+            .clone()
+            .or_else(|| creation.control_files.first().cloned())
+            .unwrap_or_else(|| root.join(".creating"));
+        return Err(CliError::system(
+            "upgrade_state_unverifiable",
+            format!(
+                "unpublished creation state at {} (creation {id}); inspect it, or pass --abandon-stale-creations to move provably abandoned creations aside",
+                path.display()
+            ),
+        )
+        .with_details(serde_json::json!({"creation_ids": creation_ids})));
+    }
+    let blockers: Vec<&String> = survey.live.iter().map(|r| &r.run_id).collect();
+    if !args.allow_live_runs && (!blockers.is_empty() || !survey.unverifiable_runs.is_empty()) {
+        let blockers: Vec<&String> = blockers
+            .into_iter()
+            .chain(&survey.unverifiable_runs)
+            .collect();
+        return Err(CliError::system(
+            "upgrade_not_quiescent",
+            format!(
+                "{} live, awaiting-input, or recoverable runs block activation: {}; --allow-live-runs --target-state-schema <N> accepts them when the target release keeps this state schema",
+                blockers.len(),
+                blockers.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+        )
+        .with_details(serde_json::json!({
+            "run_ids": blockers,
+            "checked_runs": survey.checked_runs,
+            "runs": survey.live,
+        })));
+    }
+    if !survey.unverifiable_runs.is_empty() {
+        return Err(CliError::system(
+            "upgrade_state_unverifiable",
+            format!(
+                "unreadable supervisor pid record in runs {}; no override accepts an unclassifiable run",
+                survey.unverifiable_runs.join(", ")
+            ),
+        )
+        .with_details(serde_json::json!({"run_ids": survey.unverifiable_runs})));
+    }
+    if !blockers.is_empty() {
+        let Some(target) = args.target_state_schema else {
+            return Err(CliError::user(
+                "upgrade_target_schema_required",
+                "--allow-live-runs requires --target-state-schema",
+            ));
+        };
+        let mismatched: Vec<&String> = survey
+            .live
+            .iter()
+            .filter(|r| r.state_schemas.iter().any(|v| *v != target))
+            .map(|r| &r.run_id)
+            .collect();
+        if target != STATE_SCHEMA_VERSION || !mismatched.is_empty() {
+            return Err(CliError::system(
+                "upgrade_state_schema_incompatible",
+                format!(
+                    "live runs may only cross an upgrade within one state schema: target {target}, this binary {STATE_SCHEMA_VERSION}, mismatched runs [{}]; settle the live runs first",
+                    mismatched.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            )
+            .with_details(serde_json::json!({
+                "target_state_schema": target,
+                "state_schema_version": STATE_SCHEMA_VERSION,
+                "run_ids": blockers,
+                "mismatched_run_ids": mismatched,
+            })));
+        }
+    }
+    let mut proven = Vec::new();
+    for (id, creation) in &survey.creations {
+        let evidence = upgrade_survey::prove_abandoned(root, id, creation)?;
+        upgrade_survey::abandon_destination(root, id)?;
+        proven.push((id.clone(), evidence));
+    }
+    Ok(proven)
 }
 
 /// Hold an exclusive gate over a trusted fleet activation argv. No shell is
 /// involved. The lock fd is inherited by the immediate child, so killing the
 /// CLI parent cannot silently unlock while its activation process still runs.
 pub(super) fn upgrade(
-    wait_secs: u64,
-    command_timeout_secs: u64,
-    argv: Vec<String>,
-    recover: bool,
-    confirm_quiescent: bool,
+    args: UpgradeArgs,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
-    let gate = acquire(&root, true, wait_secs)?;
+    let gate = acquire(&root, true, args.wait_secs)?;
+    let recover = args.recover;
     if recover {
-        if !confirm_quiescent {
+        if !args.confirm_quiescent {
             return Err(CliError::system("upgrade_recovery_unconfirmed", "recovery requires --confirm-quiescent after verifying all previous activation writers have stopped"));
         }
         if root
@@ -186,12 +332,73 @@ pub(super) fn upgrade(
     } else {
         ensure_not_inhibited(&root)?;
     }
-    let checked = quiescent(&root)?;
+    let survey = upgrade_survey::survey(&root, args.wait_secs)?;
+    let proven = accept(&root, &survey, &args)?;
+    let checked = survey.checked_runs;
+    let accepted_live_runs = survey.live.clone();
+    let predecessor = (!accepted_live_runs.is_empty())
+        .then(|| crate::self_exec::executable().ok())
+        .flatten();
     if !recover {
         inhibit(&root)?;
     }
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    // Admission is now excluded (marker or prior marker plus EX). Move the
+    // proven-abandoned creations aside and record every override before the
+    // activation can change the installation.
+    let receipt_id = ulid::Ulid::new().to_string().to_lowercase();
+    let mut abandoned = Vec::new();
+    for (id, evidence) in proven {
+        let creation = &survey.creations[&id];
+        abandoned.push(upgrade_survey::move_aside(
+            &root,
+            &id,
+            creation,
+            evidence,
+            &receipt_id,
+        )?);
+    }
+    let overridden = !accepted_live_runs.is_empty() || !abandoned.is_empty();
+    let receipt_for = |outcome: &str| -> Result<Option<String>, CliError> {
+        if !overridden {
+            return Ok(None);
+        }
+        write_receipt(
+            &root,
+            &Receipt {
+                receipt_id: &receipt_id,
+                created_at: chrono::Utc::now(),
+                taskfleet_version: env!("CARGO_PKG_VERSION"),
+                mode: if recover { "recover" } else { "activate" },
+                activation_program: &args.argv[0],
+                state_schema_version: STATE_SCHEMA_VERSION,
+                target_state_schema: args.target_state_schema,
+                accepted_live_runs: &accepted_live_runs,
+                abandoned_creations: &abandoned,
+                outcome,
+            },
+        )
+        .map(Some)
+    };
+    let receipt = receipt_for("activating")?;
+    let override_details = || {
+        serde_json::json!({
+            "receipt": receipt,
+            "accepted_live_runs": accepted_live_runs.iter().map(|r| &r.run_id).collect::<Vec<_>>(),
+            "abandoned_creations": abandoned.iter().map(|a| &a.creation_id).collect::<Vec<_>>(),
+        })
+    };
+    let fail = |error: CliError, outcome: &str| -> CliError {
+        if !overridden {
+            return error;
+        }
+        // The pre-activation receipt already names every override; a failed
+        // final rewrite must not mask the activation error.
+        let _ = receipt_for(outcome);
+        error.with_details(override_details())
+    };
+    let program = &args.argv;
+    let mut cmd = Command::new(&program[0]);
+    cmd.args(&program[1..]);
     // Activation output belongs on stderr; stdout is reserved for the JSON
     // result. A trusted program may emit diagnostics without corrupting it.
     cmd.stdout(std::process::Stdio::from(std::io::stderr()));
@@ -211,17 +418,23 @@ pub(super) fn upgrade(
         }
     }
     let mut child = cmd.spawn().map_err(|e| {
-        CliError::system(
-            "upgrade_command_failed",
-            format!("start {:?}: {e}", argv[0]),
-        )
-    })?;
-    let deadline = Instant::now() + Duration::from_secs(command_timeout_secs);
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| {
+        fail(
             CliError::system(
                 "upgrade_command_failed",
-                format!("wait for activation: {e}"),
+                format!("start {:?}: {e}", program[0]),
+            ),
+            "spawn_failed",
+        )
+    })?;
+    let deadline = Instant::now() + Duration::from_secs(args.command_timeout_secs);
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| {
+            fail(
+                CliError::system(
+                    "upgrade_command_failed",
+                    format!("wait for activation: {e}"),
+                ),
+                "wait_failed",
             )
         })? {
             break status;
@@ -229,165 +442,80 @@ pub(super) fn upgrade(
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(CliError::system("upgrade_command_timeout", format!(
-                "activation exceeded {command_timeout_secs}s; admission remains inhibited; inspect detached descendants and reconcile before recovery"
-            )));
+            return Err(fail(CliError::system("upgrade_command_timeout", format!(
+                "activation exceeded {}s; admission remains inhibited; inspect detached descendants and reconcile before recovery", args.command_timeout_secs
+            )), "timeout"));
         }
         std::thread::sleep(Duration::from_millis(25));
     };
     if !status.success() {
-        return Err(CliError::system(
-            "upgrade_command_failed",
-            format!(
-                "activation exited with {status}; inspect and retry or roll back under the gate"
+        return Err(fail(
+            CliError::system(
+                "upgrade_command_failed",
+                format!(
+                    "activation exited with {status}; inspect and retry or roll back under the gate"
+                ),
             ),
+            "failed",
         ));
     }
-    clear_inhibit(&root)?;
+    clear_inhibit(&root).map_err(|e| fail(e, "marker_unclearable"))?;
+    let mut warnings = warnings.to_vec();
+    if overridden && receipt_for("completed").is_err() {
+        warnings.push(format!(
+            "override receipt {} still reads outcome=activating",
+            receipt.as_deref().unwrap_or_default()
+        ));
+    }
+    let predecessor_executable = predecessor.map(|path| {
+        let present = path.exists();
+        if !present {
+            warnings.push(format!(
+                "predecessor executable {} vanished during activation; accepted live runs that call it (worker launchers, Claude hooks) will fail until it is restored",
+                path.display()
+            ));
+        }
+        PredecessorExecutable {
+            path: path.display().to_string(),
+            present_after_activation: present,
+        }
+    });
     let result = UpgradeResult {
-        quiescent: true,
+        quiescent: !overridden,
         checked_runs: checked,
         command_exit: 0,
+        recovered: recover,
+        state_schema_version: STATE_SCHEMA_VERSION,
+        accepted_live_runs,
+        abandoned_creations: abandoned,
+        receipt,
+        predecessor_executable,
     };
     match spec.format {
-        OutputFormat::Text => println!("upgrade completed; {checked} runs checked"),
-        _ => output::emit_envelope(&result, spec, warnings)?,
+        OutputFormat::Text => {
+            println!("upgrade completed; {checked} runs checked");
+            for run in &result.accepted_live_runs {
+                println!(
+                    "accepted live run {} ({})",
+                    run.run_id,
+                    run.reasons.join(", ")
+                );
+            }
+            for creation in &result.abandoned_creations {
+                println!(
+                    "abandoned creation {} moved to {}",
+                    creation.creation_id, creation.moved_to
+                );
+            }
+            if let Some(receipt) = &result.receipt {
+                println!("override receipt: {receipt}");
+            }
+            for warning in &warnings {
+                eprintln!("warning: {warning}");
+            }
+        }
+        _ => output::emit_envelope(&result, spec, &warnings)?,
     }
     drop(gate);
     Ok(())
-}
-
-fn quiescent(root: &Path) -> Result<usize, CliError> {
-    // Unpublished native work may survive a hard creator kill. It is not in
-    // runs/ and must not disappear from the upgrade decision. pi-sessions is
-    // the private session store; all other entries need operator inspection.
-    let staging = root.join(".creating");
-    let staging_entries = match std::fs::read_dir(&staging) {
-        Ok(entries) => Some(entries),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(io_error(&staging, e)),
-    };
-    if let Some(entries) = staging_entries {
-        for entry in entries {
-            let entry = entry.map_err(|e| io_error(&staging, e))?;
-            if entry.file_name() == "pi-sessions" {
-                continue;
-            }
-            // ensure_root(.creating) makes empty runs/ and logs/ directories.
-            // An unrecognized or nonempty directory is a potential hard-killed
-            // materialization, not evidence of quiescence.
-            if (entry.file_name() == "runs" || entry.file_name() == "logs")
-                && entry.file_type().is_ok_and(|t| t.is_dir())
-                && std::fs::read_dir(entry.path()).is_ok_and(|mut d| d.next().is_none())
-            {
-                continue;
-            }
-            return Err(CliError::system(
-                "upgrade_state_unverifiable",
-                format!(
-                    "unpublished creation state at {}; inspect/recover before activation",
-                    entry.path().display()
-                ),
-            ));
-        }
-    }
-    let runs = root.join("runs");
-    let entries = match std::fs::read_dir(&runs) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(io_error(&runs, e)),
-    };
-    let mut checked = 0;
-    let mut blockers = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| io_error(&runs, e))?;
-        if !entry
-            .file_type()
-            .map_err(|e| io_error(&entry.path(), e))?
-            .is_dir()
-        {
-            return Err(CliError::system(
-                "upgrade_state_unverifiable",
-                format!("unexpected entry in runs: {}", entry.path().display()),
-            ));
-        }
-        let id = entry.file_name().to_string_lossy().to_string();
-        let paths = RunPaths::new(entry.path(), id.clone()).map_err(|e| {
-            CliError::system(
-                "upgrade_state_unverifiable",
-                format!("invalid run entry {id}: {e}"),
-            )
-        })?;
-        // Do not wait indefinitely on a busy per-run writer while holding EX.
-        let lock = RunLock::<Shared>::try_acquire_shared_existing(&paths.lock())
-            .map_err(from_core)?
-            .ok_or_else(|| {
-                CliError::system(
-                    "upgrade_state_unverifiable",
-                    format!("busy run {id}; retry"),
-                )
-            })?;
-        let manifest = read_manifest_opt(&paths)
-            .map_err(from_core)?
-            .ok_or_else(|| {
-                CliError::system(
-                    "upgrade_state_unverifiable",
-                    format!("missing manifest for run {id}"),
-                )
-            })?;
-        checked += 1;
-        // Terminal status alone is insufficient: merge recovery, live worker
-        // or supervisor teardown may still depend on this binary. Conversely,
-        // settled failed/cancelled work is preserved on disk across upgrades.
-        let mut node_busy = false;
-        for index in 1..=manifest.node_count {
-            let node_id = NodeId::parse_str(&format!("n-{index:04}")).map_err(|e| {
-                CliError::system(
-                    "upgrade_state_unverifiable",
-                    format!("run {id} node index {index}: {e}"),
-                )
-            })?;
-            let node = read_node_opt(&paths, &node_id)
-                .map_err(from_core)?
-                .ok_or_else(|| {
-                    CliError::system(
-                        "upgrade_state_unverifiable",
-                        format!("missing {node_id} in run {id}"),
-                    )
-                })?;
-            let agent_live = node
-                .agent_pid
-                .and_then(|pid| u32::try_from(pid).ok())
-                .is_some_and(|pid| {
-                    crate::supervise::pid_file::pid_live_with_identity(
-                        pid,
-                        &crate::supervise::watchdog::RecordedStart::of_agent(&node),
-                    )
-                });
-            node_busy |= agent_live || node.pending_merge.is_some();
-        }
-        let pid_path = paths.supervisor_pid();
-        let supervisor_live =
-            crate::supervise::pid_file::read_pid_record(&pid_path).is_some_and(|(pid, start)| {
-                crate::supervise::pid_file::pid_live_with_identity(pid, &start)
-            });
-        let pid_unverifiable =
-            pid_path.exists() && crate::supervise::pid_file::read_pid_record(&pid_path).is_none();
-        if !manifest.status.is_terminal() || node_busy || supervisor_live || pid_unverifiable {
-            blockers.push(id);
-        }
-        drop(lock);
-    }
-    if !blockers.is_empty() {
-        return Err(CliError::system(
-            "upgrade_not_quiescent",
-            format!(
-                "{} live, awaiting-input, or recoverable runs block activation: {}",
-                blockers.len(),
-                blockers.join(", ")
-            ),
-        )
-        .with_details(serde_json::json!({"run_ids": blockers, "checked_runs": checked})));
-    }
-    Ok(checked)
 }

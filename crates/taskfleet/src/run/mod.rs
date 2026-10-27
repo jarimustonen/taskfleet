@@ -32,6 +32,7 @@ pub mod supervisor_readiness;
 pub mod supervisor_spawn;
 pub mod telemetry;
 pub mod transcripts;
+mod upgrade_survey;
 pub mod wait;
 pub mod worker;
 mod writer_fence;
@@ -229,6 +230,23 @@ pub enum RunAction {
         /// cannot mutate the installation; not inferred from the parent PID.
         #[arg(long, requires = "recover")]
         confirm_quiescent: bool,
+        /// Accept live, awaiting-input, or merge-pending runs. Their old
+        /// supervisors and workers keep running across the activation, so this
+        /// is refused unless --target-state-schema equals this binary's state
+        /// schema and every accepted run is on disk at that schema. Each
+        /// accepted run id is reported and recorded in an override receipt.
+        #[arg(long, requires = "target_state_schema")]
+        allow_live_runs: bool,
+        /// State schema of the release being activated: `data.state_schema_version`
+        /// from the staged binary's `taskfleet version --json`.
+        #[arg(long, requires = "allow_live_runs", value_parser = clap::value_parser!(u32).range(1..))]
+        target_state_schema: Option<u32>,
+        /// Move unpublished `.creating` creations whose creator is provably gone
+        /// (staging lock free, materializer lease released, no live recorded
+        /// pid or Pi socket) to `abandoned-creations/<id>/` instead of refusing.
+        /// A creation that may still be written refuses `upgrade_creation_live`.
+        #[arg(long)]
+        abandon_stale_creations: bool,
     },
     /// List runs on disk.
     List {
@@ -599,12 +617,20 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             command,
             recover,
             confirm_quiescent,
+            allow_live_runs,
+            target_state_schema,
+            abandon_stale_creations,
         } => admission::upgrade(
-            wait_secs,
-            command_timeout_secs,
-            command,
-            recover,
-            confirm_quiescent,
+            admission::UpgradeArgs {
+                wait_secs,
+                command_timeout_secs,
+                argv: command,
+                recover,
+                confirm_quiescent,
+                allow_live_runs,
+                target_state_schema,
+                abandon_stale_creations,
+            },
             spec,
             warnings,
         ),

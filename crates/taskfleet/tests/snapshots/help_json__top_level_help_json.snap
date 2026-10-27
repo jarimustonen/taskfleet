@@ -6583,6 +6583,66 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "abandon_stale_creations",
+                "long": "abandon-stale-creations",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Move unpublished `.creating` creations whose creator is provably gone (staging lock free, materializer lease released, no live recorded pid or Pi socket) to `abandoned-creations/<id>/` instead of refusing. A creation that may still be written refuses `upgrade_creation_live`",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "allow_live_runs",
+                "long": "allow-live-runs",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Accept live, awaiting-input, or merge-pending runs. Their old supervisors and workers keep running across the activation, so this is refused unless --target-state-schema equals this binary's state schema and every accepted run is on disk at that schema. Each accepted run id is reported and recorded in an override receipt",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "target_state_schema"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "command_timeout_secs",
                 "long": "command-timeout-secs",
                 "long_aliases": [],
@@ -6762,6 +6822,37 @@ expression: value
                 "arity": {
                   "min": 0,
                   "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "target_state_schema",
+                "long": "target-state-schema",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "State schema of the release being activated: `data.state_schema_version` from the staged binary's `taskfleet version --json`",
+                "value_names": [
+                  "TARGET_STATE_SCHEMA"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "allow_live_runs"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
                   "repeated": false,
                   "multi_value": false,
                   "require_equals": false

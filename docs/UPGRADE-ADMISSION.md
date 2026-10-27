@@ -36,17 +36,26 @@ schema, read from the *staged* binary, and it must equal the gate binary's own
 schema and every manifest and node schema of every accepted run. Otherwise the
 gate refuses with `upgrade_state_schema_incompatible`; settle those runs and
 upgrade quiescently. A release that changes the on-disk format so an older
-reducer or a newer CLI would misread it must bump the state schema. A run whose
+reducer or a newer CLI would misread it must bump the state schema. Schema
+equality is a release discipline, not a field-level proof: projections are
+typed and rewritten whole, so an older supervisor that rewrites a node drops
+any optional field a newer release added within the same schema. Releases up
+to 0.17.3 did add such fields (0.17.3 added the kernel start identities of
+agent and merge-driver PIDs), so a run accepted across such a boundary falls
+back to the older behaviour for those fields until it settles. A run whose
 supervisor pid record is unreadable cannot be classified and refuses
 `upgrade_state_unverifiable` even with the flag.
 
-Accepted runs keep calling the executable path that launched them: their
-worker launchers and Claude hooks embed it. The activation must therefore
-leave the predecessor executable in place or replace it in place until those
+Accepted runs keep calling the executable path that created them: their
+worker launchers and Claude hooks embed it, for example a versioned
+`.../taskfleet/v0.17.1/taskfleet`. The activation must therefore leave each
+such predecessor executable in place, or replace it in place, until those
 runs settle (for Homebrew, avoid the automatic cleanup of the old keg, for
-example with `HOMEBREW_NO_INSTALL_CLEANUP=1`). The success envelope reports
-`data.predecessor_executable.present_after_activation` and warns when it
-vanished.
+example with `HOMEBREW_NO_INSTALL_CLEANUP=1`). The gate reads those paths from
+each accepted run's `candidate-launch-*.sh` and reports
+`data.predecessor_executables[]` (`path`, `run_ids`,
+`present_after_activation`), with a warning for any path missing after
+activation.
 
 **`--abandon-stale-creations`** handles an unpublished `.creating/runs/<id>`
 left by a creator that was killed before publication. Such a creation counts
@@ -61,17 +70,20 @@ staging tree moves to `abandoned-creations/<id>/run` with its
 `.creating/message-<id>*` files beside it and an `abandoned.json` that records
 the evidence and the original paths; restore it by renaming back while no
 Taskfleet process uses the state root. The creation's git worktree and branch,
-if the materializer got that far, are left untouched. A keyless creation's
-materializer child holds no lease, so one that outlived its killed creator is
-not visible to these probes; it would then write into a moved directory, which
-loses nothing. An unrecognized `.creating` entry is never treated as a
-creation and still refuses.
+if the materializer got that far, are left untouched. A worker launcher that
+`workmux add` started can outlive its killed creator and holds no lease. Its
+handshake fails closed once the staging path is gone, and the gate re-probes
+the moved tree right after the rename, so a handshake that landed in between
+is caught: the tree is renamed back and the gate refuses
+`upgrade_creation_live` with admission still inhibited. An unrecognized
+`.creating` entry is never treated as a creation and still refuses.
 
 Every override that accepted something writes
 `upgrade-receipts/<receipt-id>.json` before the activation starts and rewrites
 its `outcome` afterwards (`completed`, `failed`, `timeout`, ...). The JSON
 envelope carries `data.quiescent` (false when anything was overridden),
-`data.accepted_live_runs[]` (`run_id`, `reasons`, `state_schemas`),
+`data.accepted_live_runs[]` (`run_id`, `reasons`, `state_schemas`,
+`executables`),
 `data.abandoned_creations[]` (`creation_id`, `moved_to`, `moved`, `evidence`),
 `data.receipt`, and `data.recovered`. A failed or timed-out activation keeps
 the marker, and its error carries `error.details.receipt`,

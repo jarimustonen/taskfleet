@@ -166,15 +166,16 @@ struct UpgradeResult {
     /// Override receipt under `<root>/upgrade-receipts/`; null when no
     /// override accepted anything.
     receipt: Option<String>,
-    /// The executable that ran this gate. Accepted live runs keep calling
-    /// their recorded predecessor path (worker launchers and Claude hooks), so
-    /// the activation must leave it in place or replace it in place.
-    predecessor_executable: Option<PredecessorExecutable>,
+    /// Executables the accepted runs' launchers call (worker handshake,
+    /// `run-worker`, Claude hooks). The activation must leave each in place
+    /// or replace it in place while those runs live.
+    predecessor_executables: Vec<PredecessorExecutable>,
 }
 
 #[derive(Clone, Serialize)]
 struct PredecessorExecutable {
     path: String,
+    run_ids: Vec<String>,
     present_after_activation: bool,
 }
 
@@ -336,9 +337,6 @@ pub(super) fn upgrade(
     let proven = accept(&root, &survey, &args)?;
     let checked = survey.checked_runs;
     let accepted_live_runs = survey.live.clone();
-    let predecessor = (!accepted_live_runs.is_empty())
-        .then(|| crate::self_exec::executable().ok())
-        .flatten();
     if !recover {
         inhibit(&root)?;
     }
@@ -467,19 +465,29 @@ pub(super) fn upgrade(
             receipt.as_deref().unwrap_or_default()
         ));
     }
-    let predecessor_executable = predecessor.map(|path| {
-        let present = path.exists();
-        if !present {
-            warnings.push(format!(
-                "predecessor executable {} vanished during activation; accepted live runs that call it (worker launchers, Claude hooks) will fail until it is restored",
-                path.display()
-            ));
+    let mut dependents = std::collections::BTreeMap::<&str, Vec<String>>::new();
+    for run in &accepted_live_runs {
+        for exe in &run.executables {
+            dependents.entry(exe).or_default().push(run.run_id.clone());
         }
-        PredecessorExecutable {
-            path: path.display().to_string(),
-            present_after_activation: present,
-        }
-    });
+    }
+    let predecessor_executables: Vec<PredecessorExecutable> = dependents
+        .into_iter()
+        .map(|(path, run_ids)| {
+            let present = Path::new(path).is_file();
+            if !present {
+                warnings.push(format!(
+                    "predecessor executable {path} is missing after activation; accepted live runs {} call it from their launchers and Claude hooks and will fail until it is restored",
+                    run_ids.join(", ")
+                ));
+            }
+            PredecessorExecutable {
+                path: path.to_string(),
+                run_ids,
+                present_after_activation: present,
+            }
+        })
+        .collect();
     let result = UpgradeResult {
         quiescent: !overridden,
         checked_runs: checked,
@@ -489,7 +497,7 @@ pub(super) fn upgrade(
         accepted_live_runs,
         abandoned_creations: abandoned,
         receipt,
-        predecessor_executable,
+        predecessor_executables,
     };
     match spec.format {
         OutputFormat::Text => {

@@ -98,6 +98,23 @@ fn listen(path: &Path, ready: &Path) -> Child {
     child
 }
 
+/// Listen with a full accept queue and never accept, until killed.
+fn fill_backlog(path: &Path, ready: &Path) -> Child {
+    let _ = std::fs::remove_file(path);
+    let child = Command::new("python3")
+        .args([
+            "-c",
+            "import socket,sys,time\ns=socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ns.listen(0)\nc=[]\nfor _ in range(8):\n  x=socket.socket(socket.AF_UNIX); x.setblocking(False)\n  try: x.connect(sys.argv[1])\n  except OSError: pass\n  c.append(x)\nopen(sys.argv[2],'w').close()\ntime.sleep(60)",
+        ])
+        .arg(path)
+        .arg(ready)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(ready);
+    child
+}
+
 fn wait_for(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !path.exists() && Instant::now() < deadline {
@@ -123,6 +140,21 @@ fn live_runs_are_accepted_only_within_this_state_schema_and_recorded() {
             .join(".creating")
             .join(format!("message-{run_id}.ts")),
         "adapter",
+    )
+    .unwrap();
+
+    // The run's launcher calls the release that created it.
+    let old_exe = home.path().join("old-taskfleet");
+    std::fs::write(&old_exe, "").unwrap();
+    std::fs::write(
+        home.path()
+            .join("runs")
+            .join(&run_id)
+            .join("candidate-launch-n-0001-attempt-0.sh"),
+        format!(
+            "#!/bin/sh\nset -eu\n'{}' 'worker-handshake' '--pid' \"$$\"\nexec 'pi'\n",
+            old_exe.display()
+        ),
     )
     .unwrap();
 
@@ -157,9 +189,18 @@ fn live_runs_are_accepted_only_within_this_state_schema_and_recorded() {
     assert_eq!(data["quiescent"], false);
     assert_eq!(data["state_schema_version"], 1);
     assert_eq!(data["accepted_live_runs"][0]["run_id"], run_id.as_str());
-    assert!(data["predecessor_executable"]["present_after_activation"]
-        .as_bool()
-        .unwrap());
+    assert_eq!(
+        data["predecessor_executables"][0]["path"],
+        old_exe.display().to_string()
+    );
+    assert_eq!(
+        data["predecessor_executables"][0]["run_ids"][0],
+        run_id.as_str()
+    );
+    assert_eq!(
+        data["predecessor_executables"][0]["present_after_activation"],
+        true
+    );
     let receipt: Value =
         serde_json::from_slice(&std::fs::read(data["receipt"].as_str().unwrap()).unwrap()).unwrap();
     assert_eq!(receipt["outcome"], "completed");
@@ -204,6 +245,17 @@ fn live_runs_are_accepted_only_within_this_state_schema_and_recorded() {
         run_id.as_str()
     );
     assert!(!marker(&home).exists());
+
+    // An activation that removes the accepted run's executable is reported.
+    let removing = data_of(&upgrade(
+        &home,
+        &["--allow-live-runs", "--target-state-schema", "1"],
+        &format!("rm {}", old_exe.display()),
+    ));
+    assert_eq!(
+        removing["predecessor_executables"][0]["present_after_activation"],
+        false
+    );
 }
 
 #[test]
@@ -291,6 +343,15 @@ fn stale_creation_moves_aside_only_when_its_creator_is_provably_gone() {
     stop(listener);
     assert_eq!(live["code"], "upgrade_creation_live", "{live}");
     assert!(staged.is_dir());
+    // A listener that never accepts, with its backlog already full, must not
+    // wedge the gate: the probe is nonblocking and counts it as live.
+    let started = Instant::now();
+    let stuck = fill_backlog(&socket, &home.path().join("ready-4"));
+    let live = error_of(&upgrade(&home, &flag, &script));
+    stop(stuck);
+    assert_eq!(live["code"], "upgrade_creation_live", "{live}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+
     // The listener is gone; its socket file now refuses connections.
 
     let data = data_of(&upgrade(&home, &flag, &script));

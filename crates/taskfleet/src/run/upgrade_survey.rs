@@ -29,9 +29,15 @@
 //! connections. Any probe that cannot decide refuses. An abandoned creation is
 //! renamed, not deleted, to `<root>/abandoned-creations/<id>/` together with
 //! its `.creating/message-<id>*` control files and an `abandoned.json` record.
-//! Residual: a keyless creation's native materializer child holds no lease, so
-//! one that outlived a hard-killed creator is invisible to these probes; it
-//! would then write into a moved or missing directory, which loses nothing.
+//! A launcher that `workmux add` started outlives a killed creator and holds no
+//! lease; its handshake fails closed once the staging path is gone, and
+//! [`move_aside`] re-probes the moved tree so a handshake that landed between
+//! the probes and the rename is caught and the move undone.
+//!
+//! Schema equality is a release discipline, not a field-level proof: typed
+//! projections are rewritten whole, so an older same-schema writer drops
+//! optional fields a newer release added (0.17.3 added PID start identities
+//! within schema 1). `docs/UPGRADE-ADMISSION.md` states the consequence.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -71,6 +77,10 @@ pub(super) struct LiveRun {
     pub reasons: Vec<&'static str>,
     /// Every `schema_version` read from the run's manifest and nodes.
     pub state_schemas: BTreeSet<u32>,
+    /// Taskfleet executables the run's generated launchers call (worker
+    /// handshake, `run-worker`, Claude hooks): the old release's path, which
+    /// must survive the activation while the run lives.
+    pub executables: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -218,14 +228,63 @@ fn survey_runs(root: &Path, deadline: Instant) -> Result<RunSurvey, CliError> {
         .filter_map(|(hit, reason)| hit.then_some(reason))
         .collect();
         if !reasons.is_empty() {
+            let executables = launcher_executables(&entry.path())?;
             live.push(LiveRun {
                 run_id: id,
                 reasons,
                 state_schemas,
+                executables,
             });
         }
     }
     Ok((checked, live, unverifiable_runs, published))
+}
+
+/// The Taskfleet executable each generated `candidate-launch-*.sh` invokes
+/// for its worker handshake. The launcher writes that line with the creating
+/// process's exact `current_exe()` as a single-quoted shell word.
+fn launcher_executables(run_dir: &Path) -> Result<BTreeSet<String>, CliError> {
+    let mut found = BTreeSet::new();
+    for entry in std::fs::read_dir(run_dir).map_err(|e| io_error(run_dir, e))? {
+        let entry = entry.map_err(|e| io_error(run_dir, e))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !(name.starts_with("candidate-launch-")
+            && Path::new(&name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sh")))
+        {
+            continue;
+        }
+        let path = entry.path();
+        let body = std::fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        let exe = body.lines().find_map(handshake_executable).ok_or_else(|| {
+            unverifiable(format!(
+                "launcher {} names no worker-handshake executable",
+                path.display()
+            ))
+        })?;
+        found.insert(exe);
+    }
+    Ok(found)
+}
+
+/// Parse `'<exe>' 'worker-handshake' ...`, undoing the `'\''` quote escape.
+fn handshake_executable(line: &str) -> Option<String> {
+    let mut rest = line.strip_prefix('\'')?;
+    let mut word = String::new();
+    loop {
+        let end = rest.find('\'')?;
+        word.push_str(&rest[..end]);
+        rest = &rest[end + 1..];
+        match rest.strip_prefix("\\''") {
+            Some(next) => {
+                word.push('\'');
+                rest = next;
+            }
+            None => break,
+        }
+    }
+    rest.starts_with(" 'worker-handshake' ").then_some(word)
 }
 
 fn survey_staging(
@@ -296,6 +355,167 @@ fn creation_live(id: &str, why: String) -> CliError {
     .with_details(serde_json::json!({ "creation_ids": [id] }))
 }
 
+/// Probe everything recorded inside one staging tree that could still write
+/// it: its run lock, supervisor pid, recorded agents, and handshaked workers.
+fn probe_staging(dir: &Path, id: &str, evidence: &mut Vec<String>) -> Result<(), CliError> {
+    let meta = dir.symlink_metadata().map_err(|e| io_error(dir, e))?;
+    if !meta.is_dir() {
+        return Err(unverifiable(format!(
+            "staging entry {} is not a directory",
+            dir.display()
+        )));
+    }
+    let lock = dir.join(".lock");
+    if lock.symlink_metadata().is_ok() {
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true);
+        taskfleet_core::nofollow(&mut opts);
+        let file: File = opts.open(&lock).map_err(|e| io_error(&lock, e))?;
+        match FileExt::try_lock(&file) {
+            Ok(()) => {
+                let _ = FileExt::unlock(&file);
+                evidence.push("staging_lock_free".into());
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err(creation_live(id, "its staging lock is held".into()))
+            }
+            Err(TryLockError::Error(e)) => return Err(io_error(&lock, e)),
+        }
+    }
+    let paths = RunPaths::new(dir, id.to_string())
+        .map_err(|e| unverifiable(format!("invalid staging run {id}: {e}")))?;
+    let pid_path = paths.supervisor_pid();
+    if pid_path.symlink_metadata().is_ok() {
+        match crate::supervise::pid_file::read_pid_record(&pid_path) {
+            Some((pid, start))
+                if crate::supervise::pid_file::pid_live_with_identity(pid, &start) =>
+            {
+                return Err(creation_live(id, format!("supervisor pid {pid} is live")))
+            }
+            Some(_) => evidence.push("supervisor_dead".into()),
+            None => {
+                return Err(unverifiable(format!(
+                    "unreadable supervisor pid record {}",
+                    pid_path.display()
+                )))
+            }
+        }
+    }
+    let nodes = paths.nodes_dir();
+    if nodes.symlink_metadata().is_ok() {
+        for entry in std::fs::read_dir(&nodes).map_err(|e| io_error(&nodes, e))? {
+            let entry = entry.map_err(|e| io_error(&nodes, e))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let node_id = name
+                .strip_suffix(".json")
+                .and_then(|stem| NodeId::parse_str(stem).ok())
+                .ok_or_else(|| {
+                    unverifiable(format!("unexpected node file {}", entry.path().display()))
+                })?;
+            let node = read_node_opt(&paths, &node_id)
+                .map_err(from_core)?
+                .ok_or_else(|| unverifiable(format!("vanished node {node_id} in {id}")))?;
+            let live = node
+                .agent_pid
+                .and_then(|pid| u32::try_from(pid).ok())
+                .is_some_and(|pid| {
+                    crate::supervise::pid_file::pid_live_with_identity(
+                        pid,
+                        &crate::supervise::watchdog::RecordedStart::of_agent(&node),
+                    )
+                });
+            if live {
+                return Err(creation_live(id, format!("agent of {node_id} is live")));
+            }
+        }
+        evidence.push("recorded_agents_dead".into());
+    }
+    for entry in std::fs::read_dir(dir).map_err(|e| io_error(dir, e))? {
+        let entry = entry.map_err(|e| io_error(dir, e))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_json = Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+        if !(name.starts_with("worker-handshake-") && is_json) {
+            continue;
+        }
+        let path = entry.path();
+        let handshake: crate::worker_handshake::WorkerHandshake = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .ok_or_else(|| {
+                unverifiable(format!("unreadable worker handshake {}", path.display()))
+            })?;
+        let start = crate::supervise::watchdog::RecordedStart::new(
+            Some(handshake.start_time),
+            Some(&handshake.start_identity),
+        );
+        if crate::supervise::pid_file::pid_live_with_identity(handshake.pid, &start) {
+            return Err(creation_live(
+                id,
+                format!("handshaked worker pid {} is live", handshake.pid),
+            ));
+        }
+        evidence.push(format!("handshake_worker_dead:{name}"));
+    }
+    Ok(())
+}
+
+/// Whether a Unix socket has a listener. Nonblocking, so a listener with a
+/// full accept queue cannot wedge the gate while it holds admission EX; such a
+/// listener counts as live.
+fn socket_has_listener(path: &Path) -> io::Result<bool> {
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain old data; all-zero is a valid value.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.len() >= addr.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket path too long",
+        ));
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
+        *dst = *src as libc::c_char;
+    }
+    // SAFETY: plain socket(2); the result is checked before use.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a freshly created descriptor owned by nobody else.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    // SAFETY: F_GETFL/F_SETFL on the descriptor owned above.
+    let set = unsafe {
+        let flags = libc::fcntl(raw, libc::F_GETFL);
+        flags >= 0 && libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
+    };
+    if !set {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `addr` is an initialized sockaddr_un and the length matches it.
+    let rc = unsafe {
+        libc::connect(
+            raw,
+            (&raw const addr).cast::<libc::sockaddr>(),
+            libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_un>())
+                .expect("sockaddr_un fits socklen_t"),
+        )
+    };
+    if rc == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ECONNREFUSED) => Ok(false),
+        Some(code) if code == libc::EAGAIN || code == libc::EINPROGRESS => Ok(true),
+        _ => Err(error),
+    }
+}
+
 /// Collect positive evidence that nothing can still write creation `id`.
 /// Called only under admission EX (which already excludes the creator).
 pub(super) fn prove_abandoned(
@@ -305,106 +525,7 @@ pub(super) fn prove_abandoned(
 ) -> Result<Vec<String>, CliError> {
     let mut evidence = vec!["admission_exclusive_held".to_string()];
     if let Some(dir) = &creation.staging_dir {
-        let meta = dir.symlink_metadata().map_err(|e| io_error(dir, e))?;
-        if !meta.is_dir() {
-            return Err(unverifiable(format!(
-                "staging entry {} is not a directory",
-                dir.display()
-            )));
-        }
-        let lock = dir.join(".lock");
-        if lock.symlink_metadata().is_ok() {
-            let mut opts = OpenOptions::new();
-            opts.read(true).write(true);
-            taskfleet_core::nofollow(&mut opts);
-            let file: File = opts.open(&lock).map_err(|e| io_error(&lock, e))?;
-            match FileExt::try_lock(&file) {
-                Ok(()) => {
-                    let _ = FileExt::unlock(&file);
-                    evidence.push("staging_lock_free".into());
-                }
-                Err(TryLockError::WouldBlock) => {
-                    return Err(creation_live(id, "its staging lock is held".into()))
-                }
-                Err(TryLockError::Error(e)) => return Err(io_error(&lock, e)),
-            }
-        }
-        let paths = RunPaths::new(dir.clone(), id.to_string())
-            .map_err(|e| unverifiable(format!("invalid staging run {id}: {e}")))?;
-        let pid_path = paths.supervisor_pid();
-        if pid_path.symlink_metadata().is_ok() {
-            match crate::supervise::pid_file::read_pid_record(&pid_path) {
-                Some((pid, start))
-                    if crate::supervise::pid_file::pid_live_with_identity(pid, &start) =>
-                {
-                    return Err(creation_live(id, format!("supervisor pid {pid} is live")))
-                }
-                Some(_) => evidence.push("supervisor_dead".into()),
-                None => {
-                    return Err(unverifiable(format!(
-                        "unreadable supervisor pid record {}",
-                        pid_path.display()
-                    )))
-                }
-            }
-        }
-        let nodes = paths.nodes_dir();
-        if nodes.symlink_metadata().is_ok() {
-            for entry in std::fs::read_dir(&nodes).map_err(|e| io_error(&nodes, e))? {
-                let entry = entry.map_err(|e| io_error(&nodes, e))?;
-                let name = entry.file_name().to_string_lossy().to_string();
-                let node_id = name
-                    .strip_suffix(".json")
-                    .and_then(|stem| NodeId::parse_str(stem).ok())
-                    .ok_or_else(|| {
-                        unverifiable(format!("unexpected node file {}", entry.path().display()))
-                    })?;
-                let node = read_node_opt(&paths, &node_id)
-                    .map_err(from_core)?
-                    .ok_or_else(|| unverifiable(format!("vanished node {node_id} in {id}")))?;
-                let live = node
-                    .agent_pid
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .is_some_and(|pid| {
-                        crate::supervise::pid_file::pid_live_with_identity(
-                            pid,
-                            &crate::supervise::watchdog::RecordedStart::of_agent(&node),
-                        )
-                    });
-                if live {
-                    return Err(creation_live(id, format!("agent of {node_id} is live")));
-                }
-            }
-            evidence.push("recorded_agents_dead".into());
-        }
-        for entry in std::fs::read_dir(dir).map_err(|e| io_error(dir, e))? {
-            let entry = entry.map_err(|e| io_error(dir, e))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let is_json = Path::new(&name)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
-            if !(name.starts_with("worker-handshake-") && is_json) {
-                continue;
-            }
-            let path = entry.path();
-            let handshake: crate::worker_handshake::WorkerHandshake = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .ok_or_else(|| {
-                    unverifiable(format!("unreadable worker handshake {}", path.display()))
-                })?;
-            let start = crate::supervise::watchdog::RecordedStart::new(
-                Some(handshake.start_time),
-                Some(&handshake.start_identity),
-            );
-            if crate::supervise::pid_file::pid_live_with_identity(handshake.pid, &start) {
-                return Err(creation_live(
-                    id,
-                    format!("handshaked worker pid {} is live", handshake.pid),
-                ));
-            }
-            evidence.push(format!("handshake_worker_dead:{name}"));
-        }
+        probe_staging(dir, id, &mut evidence)?;
     }
     let lease = root
         .join("idempotency")
@@ -430,14 +551,14 @@ pub(super) fn prove_abandoned(
         if !file.to_string_lossy().ends_with(".sock") {
             continue;
         }
-        match std::os::unix::net::UnixStream::connect(file) {
-            Ok(_) => {
+        match socket_has_listener(file) {
+            Ok(true) => {
                 return Err(creation_live(
                     id,
                     format!("Pi message socket {} accepts connections", file.display()),
                 ))
             }
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            Ok(false) => {
                 evidence.push(format!(
                     "message_socket_refused:{}",
                     file.file_name().unwrap_or_default().to_string_lossy()
@@ -530,8 +651,22 @@ pub(super) fn move_aside(
     taskfleet_core::atomic::write_json_atomic(&dest.join("abandoned.json"), &record)
         .map_err(from_core)?;
     let mut moved = Vec::new();
-    for (from, to) in &renames {
+    for (index, (from, to)) in renames.iter().enumerate() {
         std::fs::rename(from, to).map_err(|e| io_error(from, e))?;
+        if index == 0 && creation.staging_dir.is_some() {
+            // A surviving launcher's handshake that landed between the probes
+            // and this rename is now inside the moved tree; any later one
+            // fails closed because its bound staging path no longer exists.
+            // Re-probe so neither window hides a live worker.
+            if let Err(error) = probe_staging(to, id, &mut Vec::new()) {
+                let restored = std::fs::rename(to, from).is_ok();
+                return Err(error.with_details(serde_json::json!({
+                    "creation_ids": [id],
+                    "restored": restored,
+                    "moved_to": to.display().to_string(),
+                })));
+            }
+        }
         moved.push(from.display().to_string());
         if let Some(parent) = from.parent() {
             sync_dir(parent)?;
@@ -549,6 +684,23 @@ pub(super) fn move_aside(
 #[cfg(test)]
 mod tests {
     use super::control_file_run_id;
+
+    #[test]
+    fn handshake_line_names_the_launcher_executable() {
+        use super::handshake_executable;
+        assert_eq!(
+            handshake_executable("'/opt/v0.17.1/taskfleet' 'worker-handshake' '--path' 'x'")
+                .as_deref(),
+            Some("/opt/v0.17.1/taskfleet")
+        );
+        assert_eq!(
+            handshake_executable("'/o'\\''d/taskfleet' 'worker-handshake' '--pid' \"$$\"")
+                .as_deref(),
+            Some("/o'd/taskfleet")
+        );
+        assert_eq!(handshake_executable("'/bin/pi' '--print'"), None);
+        assert_eq!(handshake_executable("exec '/x' run-worker"), None);
+    }
 
     #[test]
     fn control_files_name_their_run() {

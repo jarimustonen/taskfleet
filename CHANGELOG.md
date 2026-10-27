@@ -9,7 +9,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.18.0] - 2026-10-27
+
+### Added
+
 - `run upgrade-lock` takes explicit operator overrides: `--allow-live-runs --target-state-schema <N>` activates while runs are live, refused unless every accepted run and the target release share this binary's state schema, and `--abandon-stale-creations` moves an unpublished creation whose creator is provably gone to `abandoned-creations/<id>/` instead of refusing. Admission stays excluded during activation; each override is listed in the envelope (`accepted_live_runs`, `abandoned_creations`) and in a receipt under `upgrade-receipts/` (`upgrade-lock-operator-override`).
+
+- run upgrade-lock: operator overrides for live runs and stale creations (`upgrade-lock-operator-override`).
 
 ### Changed
 
@@ -18,7 +29,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `run upgrade-lock` no longer reads a live published Pi run's `.creating/message-<run-id>` adapter files as unpublished creation state.
-<!-- oss-changelog:unreleased-end -->
 
 ## [0.17.3] - 2026-10-27
 

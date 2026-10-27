@@ -12,9 +12,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 ### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.17.2] - 2026-10-27
+
+### Added
+
+- Send a message to a live worker run (run message / node message) (`intake-feature-taskfleet-b8748b48ddd0`).
+
+### Fixed
 
 - Stop reaping live workers as `agent-pid-recycled` after a wall-clock step: PID-reuse checks for agents, supervisors, and merge drivers compare the kernel start identity instead of drifting wall-clock seconds (`supervisor-false-pid-recycled`).
-<!-- oss-changelog:unreleased-end -->
+
+- terminal runs leak creating message adapters (`leaked-creating-adapters`).
 
 ## [0.17.1] - 2026-10-25
 

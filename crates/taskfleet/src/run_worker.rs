@@ -288,7 +288,12 @@ fn await_published_node(
             ));
         }
         match require_published_node(paths, node_id, args) {
-            Ok(()) => return Ok(()),
+            // A replacement attempt (a resident resume or a retry) launches into
+            // an existing node and is recorded only afterwards. Wait for that
+            // record, so this attempt's exit can never be appended before the
+            // node knows the attempt and be dropped as a stale attempt's.
+            Ok(()) if node_attempt(paths, node_id) >= Some(args.attempt) => return Ok(()),
+            Ok(()) => {}
             Err(error) if matches!(error.code.as_str(), "run_not_found" | "node_not_found") => {}
             Err(error) => return Err(error),
         }
@@ -303,6 +308,14 @@ fn await_published_node(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// The node's current worker attempt, read under the shared run lock.
+fn node_attempt(paths: &RunPaths, node_id: &NodeId) -> Option<u32> {
+    RunLock::with_shared_lock(&paths.lock(), || read_node_opt(paths, node_id))
+        .ok()
+        .flatten()
+        .map(|n| n.retry_attempts)
 }
 
 fn terminate_child(child: &mut std::process::Child) {

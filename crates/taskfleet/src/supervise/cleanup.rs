@@ -1030,6 +1030,10 @@ pub(crate) fn remove_landed_resident_worktree(
     {
         return Err(reason);
     }
+    // The display goes away with dormancy; keep its history for the terminal
+    // evidence a later cancel or merge captures.
+    crate::supervise::evidence::save_dormant_pane(paths, n, tmux)
+        .map_err(|_| "pane history could not be saved before releasing the display")?;
     close_tmux_window(paths, n, tmux);
     if remove_worktree(repo, worktree_path, git, false) {
         Ok(())

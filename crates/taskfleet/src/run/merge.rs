@@ -692,6 +692,18 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         });
     }
 
+    // A resident (ADR 0003) merges outside any in-flight resume, land, or idle
+    // expiry: a resume launches its worker before recording it, and a merge in
+    // that window would settle and tear down under a live, unrecorded writer.
+    let _resident_lock = if manifest.resident.is_some() {
+        Some(crate::run::resident::ResidentLock::acquire(
+            &paths,
+            Duration::from_secs(150),
+        )?)
+    } else {
+        None
+    };
+
     let git = git_bin();
 
     // Recover a prior CRASHED merge transaction for this node before starting a
@@ -747,7 +759,10 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         }
         // Rejected (prior transaction cleared), Superseded, or NothingPending: safe
         // to proceed to a fresh merge.
-        merge_recovery::Recovery::Rejected { .. }
+        // A recovered resident landing (ADR 0003) left the node live: the
+        // requested terminal merge still has to run on a fresh transaction.
+        merge_recovery::Recovery::LandingCompleted
+        | merge_recovery::Recovery::Rejected { .. }
         | merge_recovery::Recovery::Superseded
         | merge_recovery::Recovery::NothingPending => {}
     }

@@ -116,6 +116,10 @@ case "$1" in
   list-windows) [ -f "$NATIVE_TEST_TMUX_STATE" ] && printf '@77\n'; exit 0 ;;
   pipe-pane) exit 0 ;;
   capture-pane)
+    # Opt-in realism: a closed window has no pane to capture.
+    if [ -n "${NATIVE_TEST_CAPTURE_REQUIRES_WINDOW:-}" ] && [ ! -f "$NATIVE_TEST_TMUX_STATE" ]; then
+      echo "can't find pane" >&2; exit 1
+    fi
     printf 'fixture final pane\n'
     exit 0 ;;
 esac

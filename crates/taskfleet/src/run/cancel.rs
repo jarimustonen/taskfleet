@@ -74,6 +74,15 @@ pub fn run(
     // is deleted in the window between here and the lock, core's own manifest
     // read fails with a NotFound I/O error, which the matches below map back to
     // the same `run_not_found` envelope so the race can't leak an `io_error`.
+    // A resident (ADR 0003) is cancelled outside any in-flight resume, land,
+    // or idle expiry, so no worker is started after the run settles.
+    let _resident_lock = match read_manifest_opt(&paths) {
+        Ok(Some(m)) if m.resident.is_some() => Some(crate::run::resident::ResidentLock::acquire(
+            &paths,
+            std::time::Duration::from_secs(150),
+        )?),
+        _ => None,
+    };
     match read_manifest_opt(&paths).map_err(from_core)? {
         None => return Err(run_not_found(run_id)),
         // A run recorded under a removed kind is read-only (ADR §D7) — refuse

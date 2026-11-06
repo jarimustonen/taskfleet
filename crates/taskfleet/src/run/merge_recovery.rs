@@ -85,6 +85,9 @@ pub(crate) enum Recovery {
     /// The transaction was resolved by completing it — the `explicit-merge`
     /// report the crash prevented was appended (or already present).
     Completed,
+    /// A resident `run land` transaction (ADR 0003) was completed with its
+    /// non-terminal `node.round_landed`; the node is still live.
+    LandingCompleted,
     /// The transaction was resolved by rejecting it — `merge.aborted` was
     /// appended; the worker's branch and work are preserved.
     Rejected { reason: String },
@@ -395,7 +398,7 @@ pub(crate) fn recover_run(paths: &RunPaths, git: &str) {
     };
     for nid in node_ids {
         match recover_node(paths, &nid, git) {
-            Recovery::Completed => tracing::info!(
+            Recovery::Completed | Recovery::LandingCompleted => tracing::info!(
                 target: "taskfleet::supervise",
                 node_id = %nid,
                 "merge-recovery: completed a crashed merge transaction (git-verified landed)"
@@ -538,7 +541,7 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
                     |_seq| Ok(data.clone()),
                 )? {
                     AppendOutcome::Conflict { .. } => Ok(Recovery::Superseded),
-                    _ => Ok(Recovery::Completed),
+                    _ => Ok(Recovery::LandingCompleted),
                 }
             }
             Verdict::Complete => {
@@ -1264,7 +1267,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(recover_node(&paths, &nid, &git_bin()), Recovery::Completed);
+        assert_eq!(
+            recover_node(&paths, &nid, &git_bin()),
+            Recovery::LandingCompleted
+        );
         let n = read_node_opt(&paths, &nid).unwrap().unwrap();
         assert_eq!(n.status, Status::Pending, "a land never ends the run");
         assert!(n.last_report.is_none());

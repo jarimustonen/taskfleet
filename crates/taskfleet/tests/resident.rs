@@ -590,3 +590,68 @@ fn rebase_conflicts_land_nothing_and_become_the_rounds_first_task() {
     f.ok(&["run", "cancel", &id, "--json"]);
     f.end_attempt(1, 0);
 }
+
+#[test]
+fn a_dormant_resident_settles_with_its_saved_pane_as_evidence() {
+    let f = Fixture::new("pi");
+    // Make the fake tmux refuse to capture a closed window, like real tmux.
+    let id = {
+        let repo = f.tools.repo_path().to_str().unwrap().to_string();
+        let output = f
+            .cmd()
+            .env("NATIVE_TEST_CAPTURE_REQUIRES_WINDOW", "1")
+            .args([
+                "--output",
+                "json",
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--headless",
+                "--title",
+                "dormant",
+                "--task",
+                "x",
+                "--source-branch",
+                "main",
+                "--source-repo",
+                &repo,
+                "--resident",
+                "--name",
+                "sleeper",
+                "--idle-expiry",
+                "1s",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let v: Value = serde_json::from_slice(&output.stdout).unwrap();
+        v["data"]["run_id"].as_str().unwrap().to_string()
+    };
+    wait_event_count(&f.events(&id), "supervisor.started", 1);
+    // A clean round: drop the materializer's untracked handoff note.
+    std::fs::remove_dir_all(f.worktree.join("history")).unwrap();
+    f.report_round(&id, "nothing to land");
+    f.end_attempt(0, 0);
+    f.wait_exit_recorded(&id, 0);
+    wait_event_count(&f.events(&id), "node.resident_dormant", 1);
+    f.ok(&["run", "cancel", "sleeper", "--json"]);
+    wait_event_count(&f.events(&id), "supervisor.exited", 1);
+    let shown = f.show(&id);
+    assert_eq!(shown["status"], "cancelled");
+    assert_eq!(shown["evidence"]["status"], "complete", "{shown}");
+    let pane = f
+        .home
+        .path()
+        .join("runs")
+        .join(&id)
+        .join("evidence/n-0001/final-pane.log");
+    assert_eq!(
+        std::fs::read_to_string(pane).unwrap(),
+        "fixture final pane\n"
+    );
+}

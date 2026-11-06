@@ -210,6 +210,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // A completed crashed land leaves any remaining commits to the fresh
         // transaction below (re-counted by the merge driver itself).
         merge_recovery::Recovery::Completed
+        | merge_recovery::Recovery::LandingCompleted
         | merge_recovery::Recovery::Rejected { .. }
         | merge_recovery::Recovery::Superseded
         | merge_recovery::Recovery::NothingPending => {}

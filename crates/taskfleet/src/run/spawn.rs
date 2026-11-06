@@ -910,8 +910,14 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
     let session = ensure_session(Some(req.session), req.cwd)?;
     let launcher = os_string(req.launcher.path())?;
     let worktree = os_string(req.worktree)?;
+    // Reuse the previous attempt's pane only when its whole recorded identity
+    // still holds on this server: socket, session, window, and the server
+    // process itself (pid and start time). After a tmux restart pane and window
+    // ids repeat, and `respawn-pane -k` on a recycled id would kill an
+    // unrelated pane; anything unproven gets a new window instead.
     let reusable = req.recorded.and_then(|identity| {
         let pane = identity.pane_id.as_deref().filter(|p| !p.is_empty())?;
+        let recorded_pid = identity.server_pid?;
         let out = command_output(
             "tmux",
             &[
@@ -919,13 +925,26 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
                 "-p".into(),
                 "-t".into(),
                 pane.into(),
-                "#{window_id}".into(),
+                "#{socket_path}\t#{session_name}\t#{window_id}\t#{pid}".into(),
             ],
             req.cwd,
             "tmux_probe_failed",
         )
-        .ok()?;
-        (out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == identity.window_id)
+        .ok()
+        .filter(|out| out.status.success())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut fields = text.trim_end_matches(['\r', '\n']).split('\t');
+        let (socket, session, window, pid) = (
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+            fields.next()?.parse::<u32>().ok()?,
+        );
+        let same_server = pid == recorded_pid
+            && identity.server_pid_start_secs.is_some()
+            && crate::supervise::watchdog::pid_start_time(pid) == identity.server_pid_start_secs
+            && identity.socket.as_deref().is_none_or(|s| s == socket);
+        (same_server && session == identity.session && window == identity.window_id)
             .then(|| pane.to_string())
     });
     // A resumed round's worker runs as the pane's own process, so keep a dead
@@ -1001,10 +1020,44 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
             ),
         ));
     }
+    let launched_pane = reusable
+        .clone()
+        .or_else(|| Some(String::from_utf8_lossy(&started.stdout).trim().to_string()))
+        .filter(|p| p.starts_with('%'));
+    // From here on a process is running in the launched pane. Any failure must
+    // stop it before returning: an unrecorded worker would otherwise keep
+    // writing to the worktree while the node still describes the old attempt.
+    let mut handshaken: Option<WorkerHandshake> = None;
+    let result = resume_after_launch(req, &session, &worktree, &mut handshaken);
+    if result.is_err() {
+        if let Some(h) = &handshaken {
+            if verify_identity(h.pid, h.start_time, &h.start_identity).is_ok() {
+                unsafe { libc::kill(h.pid as libc::pid_t, libc::SIGTERM) };
+            }
+        }
+        if let Some(pane) = &launched_pane {
+            let _ = command_output(
+                "tmux",
+                &["kill-pane".into(), "-t".into(), pane.clone()],
+                req.cwd,
+                "resume_rollback",
+            );
+        }
+    }
+    result
+}
+
+fn resume_after_launch(
+    req: &ResumeRequest<'_>,
+    session: &str,
+    worktree: &str,
+    handshaken: &mut Option<WorkerHandshake>,
+) -> Result<SpawnOutcome, CliError> {
     let handshake = await_handshake(
         req.launcher,
         Duration::from_secs(u64::from(req.agent_startup_timeout)),
     )?;
+    *handshaken = Some(handshake.clone());
     std::thread::sleep(Duration::from_millis(100));
     verify_identity(
         handshake.pid,
@@ -1012,7 +1065,7 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
         &handshake.start_identity,
     )?;
     let pane = handshake.tmux_pane_id.clone();
-    let window = query_tmux_window(&pane, &session, req.cwd)?;
+    let window = query_tmux_window(&pane, session, req.cwd)?;
     if req.require_server_identity
         && (window.identity.socket.as_deref().is_none_or(str::is_empty)
             || window.server_pid.is_none()
@@ -1025,13 +1078,13 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
     }
     Ok(SpawnOutcome {
         branch: String::new(),
-        worktree_path: worktree,
+        worktree_path: worktree.to_string(),
         tmux_window: window.name,
         agent_pid_hint: i64::from(handshake.pid),
         agent_start_time: handshake.start_time,
         agent_start_identity: handshake.start_identity,
         tmux_socket: window.identity.socket,
-        tmux_session: Some(session),
+        tmux_session: Some(session.to_string()),
         tmux_window_id: Some(window.identity.window_id),
         tmux_pane_id: Some(pane),
         tmux_server_pid: window.server_pid,

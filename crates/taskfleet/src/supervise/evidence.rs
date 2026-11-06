@@ -152,36 +152,7 @@ fn archive_claude(paths: &RunPaths, node: &Node, tmux: &str) -> bool {
             .last_report
             .as_ref()
             .ok_or("terminal node has no report")?;
-        let mut command = crate::multiplexer::tmux::command(tmux);
-        if let Some(socket) = identity.socket.as_deref() {
-            command.args(["-S", socket]);
-        }
-        command.args([
-            "capture-pane",
-            "-p",
-            "-S",
-            "-",
-            "-E",
-            "-",
-            "-t",
-            identity.capture_target(),
-        ]);
-        let pane = match crate::proc::run_with_timeout(command, CAPTURE_TIMEOUT, MAX_PANE_BYTES) {
-            crate::proc::TimedOutcome::Exited { status, stdout, .. } if status.success() => {
-                stdout.bytes
-            }
-            crate::proc::TimedOutcome::Exited { status, stderr, .. } => {
-                return Err(format!(
-                    "tmux capture-pane exited {:?}: {}",
-                    status.code(),
-                    String::from_utf8_lossy(&stderr.bytes)
-                ))
-            }
-            crate::proc::TimedOutcome::TimedOut => return Err("tmux capture-pane timed out".into()),
-            crate::proc::TimedOutcome::SpawnErr(error) => {
-                return Err(format!("tmux capture-pane spawn failed: {error}"))
-            }
-        };
+        let pane = pane_history(paths, node, identity, tmux)?;
         let root = paths.root.join("evidence");
         ensure_private_directory(&root)?;
         ensure_private_directory(&dir)?;
@@ -319,41 +290,7 @@ fn capture(paths: &RunPaths, node: &Node, tmux: &str) -> Result<Value, String> {
         .tmux_identity
         .as_ref()
         .ok_or("terminal worker has no qualified tmux identity")?;
-    let mut command = crate::multiplexer::tmux::command(tmux);
-    if let Some(socket) = identity.socket.as_deref() {
-        command.args(["-S", socket]);
-    }
-    command.args([
-        "capture-pane",
-        "-p",
-        "-S",
-        "-",
-        "-E",
-        "-",
-        "-t",
-        identity.capture_target(),
-    ]);
-    let pane = match crate::proc::run_with_timeout(command, CAPTURE_TIMEOUT, MAX_PANE_BYTES) {
-        crate::proc::TimedOutcome::Exited {
-            status,
-            stdout,
-            stderr,
-        } if status.success() => {
-            let _ = stderr;
-            stdout.bytes
-        }
-        crate::proc::TimedOutcome::Exited { status, stderr, .. } => {
-            return Err(format!(
-                "tmux capture-pane exited {:?}: {}",
-                status.code(),
-                String::from_utf8_lossy(&stderr.bytes).trim()
-            ));
-        }
-        crate::proc::TimedOutcome::TimedOut => return Err("tmux capture-pane timed out".into()),
-        crate::proc::TimedOutcome::SpawnErr(error) => {
-            return Err(format!("tmux capture-pane spawn failed: {error}"));
-        }
-    };
+    let pane = pane_history(paths, node, identity, tmux)?;
 
     // Prove the native writer did not move while pane/report capture ran.
     let after_capture = regular_metadata(&live)?;
@@ -398,6 +335,81 @@ fn capture(paths: &RunPaths, node: &Node, tmux: &str) -> Result<Value, String> {
         "report_path": relative(paths, &report_path)?,
         "transcript_sha256": digest,
     }))
+}
+
+/// Exact final history of the worker's recorded pane.
+fn capture_pane(identity: &taskfleet_core::TmuxIdentity, tmux: &str) -> Result<Vec<u8>, String> {
+    let mut command = crate::multiplexer::tmux::command(tmux);
+    if let Some(socket) = identity.socket.as_deref() {
+        command.args(["-S", socket]);
+    }
+    command.args([
+        "capture-pane",
+        "-p",
+        "-S",
+        "-",
+        "-E",
+        "-",
+        "-t",
+        identity.capture_target(),
+    ]);
+    match crate::proc::run_with_timeout(command, CAPTURE_TIMEOUT, MAX_PANE_BYTES) {
+        crate::proc::TimedOutcome::Exited { status, stdout, .. } if status.success() => {
+            Ok(stdout.bytes)
+        }
+        crate::proc::TimedOutcome::Exited { status, stderr, .. } => Err(format!(
+            "tmux capture-pane exited {:?}: {}",
+            status.code(),
+            String::from_utf8_lossy(&stderr.bytes).trim()
+        )),
+        crate::proc::TimedOutcome::TimedOut => Err("tmux capture-pane timed out".into()),
+        crate::proc::TimedOutcome::SpawnErr(error) => {
+            Err(format!("tmux capture-pane spawn failed: {error}"))
+        }
+    }
+}
+
+const DORMANT_PANE: &str = "dormant-pane.log";
+
+/// The pane history evidence uses. A dormant resident (ADR 0003) released its
+/// display at idle expiry, which saved the history first; its terminal capture
+/// reads that saved copy instead of a pane that no longer exists.
+fn pane_history(
+    paths: &RunPaths,
+    node: &Node,
+    identity: &taskfleet_core::TmuxIdentity,
+    tmux: &str,
+) -> Result<Vec<u8>, String> {
+    if node
+        .resident
+        .as_deref()
+        .is_some_and(|s| s.dormant_since.is_some())
+    {
+        let saved = paths
+            .root
+            .join("evidence")
+            .join(node.node_id.as_str())
+            .join(DORMANT_PANE);
+        return std::fs::read(&saved)
+            .map_err(|e| format!("read saved dormant pane {}: {e}", saved.display()));
+    }
+    capture_pane(identity, tmux)
+}
+
+/// Save the final pane history of a resident before idle expiry closes its
+/// display (ADR 0003). A pane that is already gone is recorded as such, so
+/// expiry never blocks on it and terminal evidence still completes.
+pub(crate) fn save_dormant_pane(paths: &RunPaths, node: &Node, tmux: &str) -> Result<(), String> {
+    let pane = match node.tmux_identity.as_deref() {
+        Some(identity) => capture_pane(identity, tmux)
+            .unwrap_or_else(|e| format!("pane unavailable at idle expiry: {e}\n").into_bytes()),
+        None => b"pane unavailable at idle expiry: no recorded tmux identity\n".to_vec(),
+    };
+    let root = paths.root.join("evidence");
+    ensure_private_directory(&root)?;
+    let dir = root.join(node.node_id.as_str());
+    ensure_private_directory(&dir)?;
+    write_atomic(&dir.join(DORMANT_PANE), &pane)
 }
 
 fn checked_live_path(paths: &RunPaths, recorded: &str) -> Result<PathBuf, String> {

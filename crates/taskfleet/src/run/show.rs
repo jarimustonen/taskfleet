@@ -204,20 +204,17 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // don't false-flag the whole run off `n-0001` alone (design.md §2.5).
         let attention = if manifest.node_count == 1 {
             node.as_ref().and_then(|n| {
-                crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
-                    // `is_attention_required` guarantees `worker_exit` is Some+clean.
-                    .then_some(n.worker_exit.as_ref())
-                    .flatten()
-                    .map(|exit| {
-                        crate::run::attention::AttentionView::build(
-                            manifest.run_id.as_str(),
-                            now,
-                            exit,
-                            n.agent_pid,
-                            n.worktree_path.clone(),
-                            manifest.source_branch.clone(),
-                        )
-                    })
+                crate::run::attention::node_attention(n).map(|(reason, exit)| {
+                    crate::run::attention::AttentionView::build_for(
+                        reason,
+                        manifest.run_id.as_str(),
+                        now,
+                        exit,
+                        n.agent_pid,
+                        n.worktree_path.clone(),
+                        manifest.source_branch.clone(),
+                    )
+                })
             })
         } else {
             None
@@ -339,6 +336,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         ))
         .with_attention(attention)
         .with_awaiting_input(awaiting_input)
+        .with_resident(crate::run::resident::view(
+            &manifest,
+            nodes.iter().find(|n| n.node_id.as_str() == "n-0001"),
+        ))
         .with_telemetry_counts(
             crate::run::telemetry::counts(&telemetry),
             telemetry_warning.is_none(),

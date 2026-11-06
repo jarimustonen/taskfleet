@@ -354,6 +354,11 @@ pub struct RunSummary {
     /// Full question/options/default context, omitted when no request is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub awaiting_input_detail: Option<crate::run::awaiting_input::AwaitingInputView>,
+    /// Named resident round state (ADR 0003): name, `round_state`
+    /// (`working | waiting | dormant`), the latest round report and landing.
+    /// Omitted for ordinary runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resident: Option<crate::run::resident::ResidentView>,
 }
 
 impl RunSummary {
@@ -425,6 +430,13 @@ impl RunSummary {
         self
     }
 
+    /// Attach the resident round view (ADR 0003); `None` for ordinary runs.
+    #[must_use]
+    pub fn with_resident(mut self, resident: Option<crate::run::resident::ResidentView>) -> Self {
+        self.resident = resident;
+        self
+    }
+
     /// Attach bounded telemetry freshness counts. This setter has no access to
     /// any lifecycle or outcome field by design.
     #[must_use]
@@ -484,6 +496,7 @@ impl From<&Manifest> for RunSummary {
             telemetry_available: false,
             telemetry_counts: crate::run::telemetry::TelemetryCounts::default(),
             awaiting_input_detail: None,
+            resident: None,
         }
     }
 }
@@ -524,6 +537,7 @@ mod tests {
             created_by_session: None,
             parent_run_id: None,
             parent_node_id: None,
+            resident: None,
         }
     }
 

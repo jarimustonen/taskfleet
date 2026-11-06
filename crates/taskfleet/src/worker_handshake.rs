@@ -33,6 +33,10 @@ pub struct WorkerHandshakeArgs {
     pub pi_session_id: Option<String>,
     #[arg(long)]
     pub pi_session_path: Option<PathBuf>,
+    /// Resident resume (ADR 0003): verify the existing run-bound transcript
+    /// instead of creating its header.
+    #[arg(long, requires = "pi_session_path")]
+    pub pi_session_resume: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -150,6 +154,7 @@ pub fn dispatch(args: WorkerHandshakeArgs) -> Result<(), CliError> {
         parent,
         &args.state_root,
         &args.run_id,
+        args.pi_session_resume,
     )?;
     let record = WorkerHandshake {
         schema_version: 1,
@@ -240,6 +245,7 @@ fn prepare_pi_session(
     _staging_run_dir: &Path,
     state_root: &Path,
     run_id: &str,
+    resume: bool,
 ) -> Result<Option<(String, String, String)>, CliError> {
     let (Some(session_id), Some(session_path)) = (session_id, session_path) else {
         if session_id.is_some() || session_path.is_some() {
@@ -281,6 +287,58 @@ fn prepare_pi_session(
             format!("resolve worker cwd {}: {e}", cwd.display()),
         )
     })?;
+    if resume {
+        // The transcript must be the existing regular run-bound file; a
+        // missing, replaced, or symlinked path is never resumed.
+        let meta = std::fs::symlink_metadata(session_path).map_err(|e| {
+            CliError::system(
+                "worker_handshake_session_io",
+                format!("resume native Pi session {}: {e}", session_path.display()),
+            )
+        })?;
+        if !meta.file_type().is_file() {
+            return Err(CliError::system(
+                "worker_handshake_session_invalid",
+                "resumed Pi session is not a regular file",
+            ));
+        }
+    } else {
+        write_session_header(session_id, session_path, &cwd, &expected_parent)?;
+    }
+    let relative_path = session_path.strip_prefix(state_root).map_err(|_| {
+        CliError::system(
+            "worker_handshake_session_invalid",
+            "Pi session path is outside the state root",
+        )
+    })?;
+    Ok(Some((
+        session_id.to_string(),
+        relative_path
+            .to_str()
+            .ok_or_else(|| {
+                CliError::system(
+                    "worker_handshake_session_invalid",
+                    "Pi session path is not UTF-8",
+                )
+            })?
+            .to_string(),
+        cwd.to_str()
+            .ok_or_else(|| {
+                CliError::system(
+                    "worker_handshake_session_invalid",
+                    "worker cwd is not UTF-8",
+                )
+            })?
+            .to_string(),
+    )))
+}
+
+fn write_session_header(
+    session_id: &str,
+    session_path: &Path,
+    cwd: &Path,
+    expected_parent: &Path,
+) -> Result<(), CliError> {
     let header = serde_json::json!({
         "type": "session",
         "version": 3,
@@ -316,7 +374,7 @@ fn prepare_pi_session(
                 format!("sync native Pi session {}: {e}", session_path.display()),
             )
         })?;
-    std::fs::File::open(&expected_parent)
+    std::fs::File::open(expected_parent)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| {
             CliError::system(
@@ -326,33 +384,7 @@ fn prepare_pi_session(
                     expected_parent.display()
                 ),
             )
-        })?;
-    let relative_path = session_path.strip_prefix(state_root).map_err(|_| {
-        CliError::system(
-            "worker_handshake_session_invalid",
-            "Pi session path is outside the state root",
-        )
-    })?;
-    Ok(Some((
-        session_id.to_string(),
-        relative_path
-            .to_str()
-            .ok_or_else(|| {
-                CliError::system(
-                    "worker_handshake_session_invalid",
-                    "Pi session path is not UTF-8",
-                )
-            })?
-            .to_string(),
-        cwd.to_str()
-            .ok_or_else(|| {
-                CliError::system(
-                    "worker_handshake_session_invalid",
-                    "worker cwd is not UTF-8",
-                )
-            })?
-            .to_string(),
-    )))
+        })
 }
 
 fn write_durable_json(path: &Path, value: &WorkerHandshake) -> Result<(), CliError> {

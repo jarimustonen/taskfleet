@@ -56,8 +56,9 @@ use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write
 use crate::report::ReportOrigin;
 use crate::schema::{
     CallerPiLifecycle, CallerPiSession, CallerPiState, CallerSettlementIntent, ChildRef, Event,
-    EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId,
-    Status, TmuxIdentity, WorkerEvidence, WorkerExit, STATE_SCHEMA_VERSION,
+    EvidenceStatus, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId,
+    ResidentPolicy, RoundLanding, RoundReport, RunId, Status, TmuxIdentity, WorkerEvidence,
+    WorkerExit, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -311,6 +312,11 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.death_observed" => reduce_node_death_observed(paths, ev),
         "node.awaiting_input" => reduce_node_awaiting_input(paths, ev),
         "node.input_resolved" => reduce_node_input_resolved(paths, ev),
+        "node.round_reported" => reduce_node_round_reported(paths, ev),
+        "node.resumed" => reduce_node_resumed(paths, ev),
+        "node.round_landed" => reduce_node_round_landed(paths, ev),
+        "node.resident_dormant" => reduce_node_resident_dormant(paths, ev),
+        "node.resident_attention" => reduce_node_resident_attention(paths, ev),
         KIND_MERGE_STARTED => reduce_merge_started(paths, ev),
         KIND_MERGE_ABORTED => reduce_merge_aborted(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
@@ -331,7 +337,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         // Mutates no projection — the event log is its only home — so it folds to
         // a clean no-op. Listed explicitly so the append path's transactional gate
         // runs the same no-op plan and the intent is documented here.
-        "run.notified" | "run.awaiting_input_notified" => Ok(vec![]),
+        "run.notified" | "run.awaiting_input_notified" | "run.round_notified" => Ok(vec![]),
         // Best-effort teardown audit records from the supervisor's cleanup
         // path. Each mutates no projection — the event log is their only home —
         // so they fold to a clean no-op. Listed explicitly so the append path's
@@ -563,6 +569,7 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         })?,
         parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
+        resident: resident_policy_from_data(&events_path, ev, d)?,
     };
     Ok(vec![ProjectionOp::Manifest(m)])
 }
@@ -783,6 +790,65 @@ fn worker_evidence_from_spawn_data(
     }))
 }
 
+/// Parse the optional `resident` policy of `run.created` (ADR 0003).
+fn resident_policy_from_data(
+    events_path: &Path,
+    ev: &Event,
+    d: &Value,
+) -> Result<Option<ResidentPolicy>> {
+    let Some(raw) = d.get("resident").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let policy: ResidentPolicy =
+        serde_json::from_value(raw.clone()).map_err(|e| Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!("event seq={} run.created invalid `resident`: {e}", ev.seq),
+        })?;
+    ResidentPolicy::validate_name(&policy.name).map_err(|reason| Error::CorruptEventLog {
+        path: events_path.to_path_buf(),
+        reason: format!(
+            "event seq={} run.created invalid `resident`: {reason}",
+            ev.seq
+        ),
+    })?;
+    if policy.idle_expiry_secs == 0 {
+        return Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} run.created `resident.idle_expiry_secs` must be positive",
+                ev.seq
+            ),
+        });
+    }
+    Ok(Some(policy))
+}
+
+/// Parse an optional launcher-assigned Claude session id (lowercase UUID).
+fn claude_session_from_data(events_path: &Path, ev: &Event, d: &Value) -> Result<Option<String>> {
+    let Some(raw) = d.get("claude_session_id").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let id = raw.as_str().unwrap_or("");
+    let uuid_shape = id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+            }
+        });
+    if !uuid_shape {
+        return Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} claude_session_id must be a lowercase hyphenated UUID",
+                ev.seq
+            ),
+        });
+    }
+    Ok(Some(id.to_string()))
+}
+
 fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     // The envelope `node_id` is already a validated `NodeId` (parsed on read),
@@ -845,6 +911,8 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         pending_merge: None,
         first_death_at: None,
         awaiting_input: None,
+        claude_session_id: claude_session_from_data(&events_path, ev, d)?,
+        resident: None,
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
@@ -1120,6 +1188,7 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
         .map(str::to_string);
     n.tmux_identity = tmux_identity_from_data(d).map(Box::new);
     n.evidence = worker_evidence_from_spawn_data(&events_path, ev, d)?;
+    n.claude_session_id = claude_session_from_data(&events_path, ev, d)?;
     n.retained_display = None;
     n.retention_unavailable = None;
     n.agent_pid = optional_i32(d, "agent_pid", &events_path, ev)?;
@@ -2051,6 +2120,236 @@ fn reduce_supervisor_cursor_advanced(paths: &RunPaths, ev: &Event) -> Result<Vec
     }
     n.last_processed_report_seq_by_child
         .insert(child_run_id.to_string(), Value::from(report_seq));
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Longest accepted round-report summary, in bytes.
+pub const MAX_ROUND_SUMMARY_BYTES: usize = 16 * 1024;
+
+fn corrupt(events_path: &Path, ev: &Event, what: &str) -> Error {
+    Error::CorruptEventLog {
+        path: events_path.to_path_buf(),
+        reason: format!("event seq={} kind={} {what}", ev.seq, ev.kind),
+    }
+}
+
+/// Read the run's resident policy, requiring one: a resident event against an
+/// ordinary run is a corrupt event (the CLI refuses it before appending).
+fn require_resident(paths: &RunPaths, events_path: &Path, ev: &Event) -> Result<ResidentPolicy> {
+    read_manifest_opt(paths)?
+        .and_then(|m| m.resident)
+        .ok_or_else(|| corrupt(events_path, ev, "requires a resident run"))
+}
+
+/// Fold `node.round_reported` (ADR 0003): the worker's told end of a round.
+///
+/// Payload: `attempt` (the reporting worker attempt, which must be the node's
+/// current one) and a bounded non-blank `summary`. A second report from the
+/// same attempt amends the open round (same number) rather than opening a new
+/// one. A settled node, or a report from a superseded attempt, is a no-op.
+fn reduce_node_round_reported(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let summary = ev
+        .data
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty() && s.len() <= MAX_ROUND_SUMMARY_BYTES && !s.contains('\0'))
+        .ok_or_else(|| {
+            corrupt(
+                &events_path,
+                ev,
+                &format!(
+                    "requires a non-blank `summary` of at most {MAX_ROUND_SUMMARY_BYTES} bytes"
+                ),
+            )
+        })?
+        .to_string();
+    let attempt = evidence_attempt(&events_path, ev)?;
+    require_resident(paths, &events_path, ev)?;
+    let Some(mut n) = read_node_opt(paths, &node_id)? else {
+        return Ok(vec![]);
+    };
+    if n.status.is_terminal() || attempt != n.retry_attempts {
+        return Ok(vec![]);
+    }
+    let state = n.resident.get_or_insert_with(Box::default);
+    match state.last_round.as_mut() {
+        Some(open) if open.closed_at.is_none() && open.attempt == attempt => {
+            open.summary = summary;
+            open.reported_at = ev.ts;
+            open.event_seq = ev.seq;
+        }
+        _ => {
+            state.rounds_reported = state.rounds_reported.saturating_add(1);
+            state.last_round = Some(RoundReport {
+                round: state.rounds_reported,
+                attempt,
+                reported_at: ev.ts,
+                event_seq: ev.seq,
+                summary,
+                closed_at: None,
+                closed_by: None,
+            });
+            state.expiry_attention_at = None;
+        }
+    }
+    // The round report answers any open question of this attempt.
+    n.awaiting_input = None;
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold `node.resumed` (ADR 0003): a message started the next worker attempt
+/// from the same native session in the same worktree.
+///
+/// Rewires the node to the new attempt exactly like `node.retry` does for the
+/// agent identity, but keeps the branch, the worktree path and the session,
+/// closes the open round with `message_id`, and clears dormancy/attention. The
+/// event carries its absolute `attempt`, which must advance the current one.
+fn reduce_node_resumed(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let d = &ev.data;
+    let attempt = evidence_attempt(&events_path, ev)?;
+    let message_id = want_str(&events_path, ev, d, "message_id")?.to_string();
+    let evidence = worker_evidence_from_spawn_data(&events_path, ev, d)?;
+    let claude_session_id = claude_session_from_data(&events_path, ev, d)?;
+    require_resident(paths, &events_path, ev)?;
+    let Some(mut n) = read_node_opt(paths, &node_id)? else {
+        return Ok(vec![]);
+    };
+    if n.status.is_terminal() || attempt <= n.retry_attempts {
+        return Ok(vec![]);
+    }
+    if let Some(sha) = d
+        .get("base_sha")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        n.base_sha = Some(sha.to_string());
+    }
+    n.tmux_window = d
+        .get("tmux_window")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(n.tmux_window);
+    if let Some(identity) = tmux_identity_from_data(d) {
+        n.tmux_identity = Some(Box::new(identity));
+    }
+    n.evidence = evidence;
+    n.claude_session_id = claude_session_id;
+    n.agent_pid = optional_i32(d, "agent_pid", &events_path, ev)?;
+    n.agent_pid_start_time = optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
+    n.agent_pid_start_identity = start_identity_from_data(d);
+    n.status = Status::Pending;
+    n.started_at = Some(ev.ts);
+    n.updated_at = ev.ts;
+    n.worker_exit = None;
+    n.first_death_at = None;
+    n.awaiting_input = None;
+    n.pending_merge = None;
+    n.retained_display = None;
+    n.retention_unavailable = None;
+    n.retry_attempts = attempt;
+    let state = n.resident.get_or_insert_with(Box::default);
+    if let Some(round) = state.last_round.as_mut().filter(|r| r.closed_at.is_none()) {
+        round.closed_at = Some(ev.ts);
+        round.closed_by = Some(message_id);
+    }
+    state.dormant_since = None;
+    state.expiry_attention_at = None;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold `node.round_landed` (ADR 0003): `run land` (or recovery of a crashed
+/// land) fast-forwarded the source branch to the rebased worker tip. Never a
+/// status transition. Clears the matching landing transaction and moves the
+/// node's fork point to the integrated tip.
+fn reduce_node_round_landed(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let d = &ev.data;
+    let op_id = want_str(&events_path, ev, d, "op_id")?.to_string();
+    let source_branch = want_str(&events_path, ev, d, "source_branch")?.to_string();
+    let integrated_oid = want_str(&events_path, ev, d, "integrated_oid")?.to_string();
+    if integrated_oid.len() < 40 || !integrated_oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(corrupt(
+            &events_path,
+            ev,
+            "requires a full hex `integrated_oid`",
+        ));
+    }
+    require_resident(paths, &events_path, ev)?;
+    let Some(mut n) = read_node_opt(paths, &node_id)? else {
+        return Ok(vec![]);
+    };
+    if n.status.is_terminal() {
+        return Ok(vec![]);
+    }
+    if n.pending_merge
+        .as_ref()
+        .is_some_and(|txn| txn.landing && txn.op_id == op_id)
+    {
+        n.pending_merge = None;
+    }
+    n.base_sha = Some(integrated_oid.clone());
+    let state = n.resident.get_or_insert_with(Box::default);
+    let round = state.last_round.as_ref().map_or(0, |r| r.round);
+    state.last_landing = Some(RoundLanding {
+        at: ev.ts,
+        source_branch,
+        integrated_oid,
+        round,
+    });
+    // Landing the work answers an unlanded-work expiry for this round.
+    state.expiry_attention_at = None;
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold `node.resident_dormant` (ADR 0003): idle expiry removed the worktree
+/// (and integrated branch) of a wholly landed round. The worktree path, branch
+/// name and native session stay recorded so the next message can revive it.
+fn reduce_node_resident_dormant(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    require_resident(paths, &events_path, ev)?;
+    let Some(mut n) = read_node_opt(paths, &node_id)? else {
+        return Ok(vec![]);
+    };
+    if n.status.is_terminal() {
+        return Ok(vec![]);
+    }
+    let state = n.resident.get_or_insert_with(Box::default);
+    if state.open_round().is_none() || state.dormant_since.is_some() {
+        return Ok(vec![]);
+    }
+    state.dormant_since = Some(ev.ts);
+    state.expiry_attention_at = None;
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold `node.resident_attention` (ADR 0003): idle expiry found unlanded or
+/// unverifiable work and preserved everything. Raised once per open round.
+fn reduce_node_resident_attention(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    want_str(&events_path, ev, &ev.data, "reason")?;
+    require_resident(paths, &events_path, ev)?;
+    let Some(mut n) = read_node_opt(paths, &node_id)? else {
+        return Ok(vec![]);
+    };
+    if n.status.is_terminal() {
+        return Ok(vec![]);
+    }
+    let state = n.resident.get_or_insert_with(Box::default);
+    if state.open_round().is_none() || state.expiry_attention_at.is_some() {
+        return Ok(vec![]);
+    }
+    state.expiry_attention_at = Some(ev.ts);
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }

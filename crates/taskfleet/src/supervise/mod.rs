@@ -29,6 +29,7 @@ pub mod notify;
 pub mod outcome;
 pub mod pid_file;
 pub mod reducer;
+pub mod resident;
 pub mod state;
 pub mod tail;
 pub mod watchdog;
@@ -750,6 +751,8 @@ pub fn dispatch(
     // The durable marker remains restart truth; this only avoids an exclusive
     // lock + event-log scan on every tick after a generation is settled.
     let mut awaiting_notified: Option<u64> = None;
+    // Same fast path for the resident round-reported notification.
+    let mut round_notified: Option<u64> = None;
 
     // Rate-limit state for the periodic lossy-drop warning (see
     // `maybe_warn_dropped`). The supervisor renders no envelope mid-run, so
@@ -1096,6 +1099,11 @@ pub fn dispatch(
                 "watchdog tick failed"
             );
         }
+
+        // Resident rounds (ADR 0003): notify once per told round report and
+        // apply idle expiry to an open round whose worker exited. Non-terminal;
+        // a no-op for ordinary runs.
+        resident::tick(&paths, &run_id, &mut round_notified);
 
         // Explicit human-decision propagation. The worker records
         // `node.awaiting_input` instead of blocking on stdin; after the durable
@@ -2968,13 +2976,17 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
             return;
         }
     };
-    let still_live = read_node_opt(paths, nid)
-        .ok()
-        .flatten()
-        .is_some_and(|n| !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled));
+    // The exit must still be the node's current told fact: a `node.retry` or a
+    // resident `node.resumed` that landed since the scan started a new attempt,
+    // and a resident's round report makes any later exit the end of a round.
+    let still_live = read_node_opt(paths, nid).ok().flatten().is_some_and(|n| {
+        !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
+            && n.worker_exit == Some(exit)
+            && !round_reported_by_current_attempt(&n)
+    });
     if !still_live {
-        // Already terminal (merged, cancelled, or a prior tick's told-failure):
-        // nothing to record.
+        // Already terminal (merged, cancelled, or a prior tick's told-failure),
+        // superseded by a new attempt, or a resident round end: nothing to record.
         drop(guard);
         return;
     }
@@ -3182,7 +3194,13 @@ fn synthesize_crash_backstop_failure(
     // `Dead` verdict only (not `Recycled`), a retry-eligible kind, git-confirmed
     // empty-handed, and attempts remaining. An exhausted budget (or a `Recycled`
     // verdict) falls through to the failed report below.
-    if matches!(v, watchdog::Liveness::Dead) {
+    // A resident (ADR 0003) is never auto-retried: a retry mints a fresh
+    // worktree and session and would discard the continuity it exists for.
+    let resident = read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .is_some_and(|m| m.resident.is_some());
+    if matches!(v, watchdog::Liveness::Dead) && !resident {
         if let Some(f) = fresh.as_ref() {
             if retry_eligible_kind(f) && cleanup::node_is_empty_handed(paths, f, git) {
                 let attempts = f.retry_attempts;
@@ -3272,6 +3290,16 @@ fn synthesize_crash_backstop_failure(
         );
     }
     drop(guard);
+}
+
+/// Whether a resident node's current worker attempt reported its round
+/// (`node.round_reported`, ADR 0003). The told fact that turns the following
+/// exit into the end of a round instead of a crash or attention.
+pub(crate) fn round_reported_by_current_attempt(n: &Node) -> bool {
+    n.resident
+        .as_deref()
+        .and_then(taskfleet_core::ResidentState::open_round)
+        .is_some_and(|r| r.attempt == n.retry_attempts)
 }
 
 fn watchdog_tick(
@@ -3382,6 +3410,17 @@ fn watchdog_tick(
             //   - a CLEAN exit (0) with no merge → attention-required: leave the
             //     node non-terminal, never auto-fail it (a merged node is already
             //     terminal and skipped above).
+            // A resident whose current attempt reported its round (ADR 0003) is
+            // waiting: the exit that follows ends the round whatever its status,
+            // and a lost shim after the report is not a crash to adjudicate.
+            if outcome::classify_live_node_with_round(
+                round_reported_by_current_attempt(&n),
+                n.worker_exit,
+                outcome::DeathObservation::Alive,
+            ) == outcome::LiveVerdict::RoundWaiting
+            {
+                continue;
+            }
             if let Some(exit) = n.worker_exit {
                 if exit.is_failure() {
                     told_failures.push((node_id.clone(), nid.clone(), exit));
@@ -3484,7 +3523,8 @@ fn watchdog_tick(
             // Alive, or a told-fact case that cannot arise for a candidate.
             outcome::LiveVerdict::Alive
             | outcome::LiveVerdict::WorkerFailed(_)
-            | outcome::LiveVerdict::AttentionRequired => {}
+            | outcome::LiveVerdict::AttentionRequired
+            | outcome::LiveVerdict::RoundWaiting => {}
             // First confirmed-death observation (or still inside the grace):
             // record the durable anchor and defer. A later tick past the grace
             // fires the backstop.
@@ -3835,6 +3875,8 @@ mod tests {
             pending_merge: None,
             first_death_at: None,
             awaiting_input: None,
+            claude_session_id: None,
+            resident: None,
         }
     }
 

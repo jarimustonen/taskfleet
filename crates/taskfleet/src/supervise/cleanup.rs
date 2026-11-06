@@ -982,6 +982,62 @@ fn cleanup_node_after_evidence(paths: &RunPaths, n: &Node, tmux: &str, git: &str
     }
 }
 
+/// Idle expiry of a resident worker (ADR 0003): remove its worktree only when
+/// nothing can be lost, using the same fail-closed guards as source-relative
+/// teardown (invariant 5). The branch is never deleted: it is wholly reachable
+/// from source when this succeeds, and the revival path reuses it. The tmux
+/// window (a leftover shell after the worker exited) is closed by exact
+/// identity first.
+///
+/// Returns `Ok(())` after a non-force `git worktree remove` succeeded, or the
+/// preserve reason when anything is unmerged, uncommitted, mid-rebase,
+/// detached with foreign commits, unverifiable, or not cleanly removable.
+pub(crate) fn remove_landed_resident_worktree(
+    paths: &RunPaths,
+    n: &Node,
+    tmux: &str,
+    git: &str,
+) -> Result<(), &'static str> {
+    let worktree_path = n.worktree_path.as_deref().ok_or("no recorded worktree")?;
+    if !Path::new(worktree_path).exists() {
+        return Err("worktree already missing (not recorded as removed by expiry)");
+    }
+    let branch = n
+        .branch
+        .as_deref()
+        .filter(|b| !b.is_empty())
+        .ok_or("no recorded branch")?;
+    let source = manifest_source_branch(paths).ok_or("no recorded source branch")?;
+    let main_repo = main_worktree_of(worktree_path, git).or_else(|| manifest_source_repo(paths));
+    let repo = main_repo
+        .as_deref()
+        .ok_or("source repository unavailable")?;
+    if crate::run::resident::rebase_in_progress(Path::new(worktree_path)) {
+        return Err("rebase in progress in the worktree");
+    }
+    match branch_unmerged_vs_source(repo, &source, branch, git) {
+        UnmergedCheck::NoUnmerged => {}
+        UnmergedCheck::HasUnmerged => return Err("unlanded commits vs source"),
+        UnmergedCheck::Unverifiable => return Err("unlanded-commit check unavailable"),
+    }
+    match worktree_cleanliness(Some(worktree_path), git) {
+        WorktreeCleanliness::Clean => {}
+        WorktreeCleanliness::Dirty => return Err("uncommitted or untracked changes in worktree"),
+        WorktreeCleanliness::Unverifiable => return Err("worktree cleanliness unavailable"),
+    }
+    if let HeadTeardown::Preserve(reason) =
+        head_teardown_safety(repo, worktree_path, Some(branch), Some(&source), git)
+    {
+        return Err(reason);
+    }
+    close_tmux_window(paths, n, tmux);
+    if remove_worktree(repo, worktree_path, git, false) {
+        Ok(())
+    } else {
+        Err("worktree not cleanly removable (dirty/locked)")
+    }
+}
+
 /// Proof of a linked checkout's root and Git pointer before removal. The
 /// pointer remains readable if Git removes its own admin dir first.
 struct OrphanIdentity {

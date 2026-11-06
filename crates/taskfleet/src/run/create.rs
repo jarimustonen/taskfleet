@@ -22,7 +22,7 @@ use chrono::{Duration, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use taskfleet_core::{ensure_root, new_run_id, AgentOwner, Kind, Lifecycle, RunId};
+use taskfleet_core::{ensure_root, new_run_id, AgentOwner, Kind, Lifecycle, ResidentPolicy, RunId};
 
 use crate::error::CliError;
 use crate::idempotency;
@@ -111,6 +111,13 @@ pub struct Args<'a> {
     /// `run.created` event as `notify_cmd` so the supervisor can run it once
     /// on the terminal transition. `None` for a run created without `--notify`.
     pub notify: Option<String>,
+    /// `--resident`: a named resident worker that works in told rounds
+    /// (ADR 0003). Requires `name`.
+    pub resident: bool,
+    /// `--name`: repository-scoped resident name.
+    pub name: Option<String>,
+    /// `--idle-expiry`: idle expiry after an open round report.
+    pub idle_expiry: Option<std::time::Duration>,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
@@ -225,6 +232,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     } else {
         lifecycle_for(args.kind)
     };
+
+    let resident_policy = resident_policy(&args)?;
 
     // Idempotent replay is a read of an already-published resource, not a new
     // resolution. Short-circuit before loading config or probing PATH so config
@@ -415,6 +424,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // gets a typed RunId rather than a raw &str.
     let run_id_typed = parse_run_id(&run_id)?;
     let child_dir = taskfleet_core::run_dir(&root, &run_id_typed);
+
+    if let Some(policy) = resident_policy.as_ref() {
+        let repo = match args.source_repo.as_deref() {
+            Some(repo) => PathBuf::from(repo),
+            None => std::env::current_dir().map_err(|e| {
+                CliError::system("io_error", format!("read current directory: {e}"))
+            })?,
+        };
+        super::resident::ensure_name_free(&root, &policy.name, &repo)?;
+    }
 
     if args.dry_run {
         return emit(EmitInput {
@@ -718,8 +737,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // in the same generated preamble.
     let prompt_path = match prompt_source {
         Some(src) => {
-            let preamble =
+            let mut preamble =
                 crate::harness::prompt::worker_prompt_preamble(&harness.name, args.kind, &run_id);
+            if let Some(policy) = resident_policy.as_ref() {
+                preamble = crate::harness::prompt::with_resident_round_note(
+                    &preamble,
+                    &policy.name,
+                    &run_id,
+                );
+            }
             Some(resolve_prompt_file(&staging_dir, src, &preamble)?)
         }
         None => None,
@@ -772,6 +798,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // caller mistake, not a silent no-op hook.
     if let Some(cmd) = notify_cmd.as_deref() {
         data.insert("notify_cmd".into(), Value::String(cmd.into()));
+    }
+    if let Some(policy) = resident_policy.as_ref() {
+        data.insert(
+            "resident".into(),
+            serde_json::to_value(policy).expect("resident policy serializes"),
+        );
     }
     // Record the resolved harness (folded into `manifest.harness` by the reducer)
     // and, for provenance, which precedence layer chose it. `harness_source` is
@@ -907,13 +939,19 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // config reload, candidate re-resolution, or fallback can occur between
     // recording and launch.
     let launcher_selection = &recorded_selection;
-    let agent_launcher = spawn::write_agent_launcher(
+    let agent_launcher = spawn::write_agent_launcher_with(
         &staging_dir,
         &root,
         launcher_selection,
         &run_id,
         "n-0001",
         0,
+        &spawn::LaunchOptions {
+            resume: None,
+            round_marker: (resident_policy.is_some()
+                && launcher_selection.selected.harness == "pi")
+                .then(|| super::resident::round_marker_path(&root, &run_id, 0)),
+        },
     )?;
     let agent_override = agent_launcher.path().to_str().ok_or_else(|| {
         CliError::system(
@@ -1024,6 +1062,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "pi_session_id": outcome.pi_session_id,
         "pi_session_path": outcome.pi_session_path,
         "pi_session_cwd": outcome.pi_session_cwd,
+        // The launcher-assigned Claude session, so a resident round can resume it.
+        "claude_session_id": agent_launcher.claude_session_id(),
         "attempt": 0,
         "agent_pid": outcome.agent_pid_hint,
         "agent_pid_start_time": chrono::DateTime::<Utc>::from_timestamp(
@@ -1628,6 +1668,62 @@ struct EmitInput<'a> {
     selection: Option<&'a taskfleet_core::AgentSelection>,
     spec: &'a OutputSpec,
     warnings: &'a [String],
+}
+
+/// Validate `--resident --name [--idle-expiry]` (ADR 0003). A resident is an
+/// autonomous, top-level, single-node, Taskfleet-owned worker.
+fn resident_policy(args: &Args<'_>) -> Result<Option<ResidentPolicy>, CliError> {
+    if !args.resident {
+        if args.name.is_some() || args.idle_expiry.is_some() {
+            return Err(CliError::user(
+                "invalid_arguments",
+                "--name and --idle-expiry require --resident",
+            ));
+        }
+        return Ok(None);
+    }
+    let name = args
+        .name
+        .as_deref()
+        .ok_or_else(|| CliError::user("invalid_arguments", "--resident requires --name <name>"))?;
+    ResidentPolicy::validate_name(name).map_err(|reason| {
+        CliError::user("invalid_resident_name", reason).with_invalid_value(name)
+    })?;
+    if args.interactive {
+        return Err(CliError::user(
+            "invalid_arguments",
+            "--resident cannot be combined with --interactive: a resident worker is autonomous and works in told rounds",
+        ));
+    }
+    if !args.kind.is_autonomous_single_node_worker() {
+        return Err(CliError::user(
+            "invalid_arguments",
+            format!(
+                "--resident requires a single-worker kind (spinoff, research, technical-decision), not {}",
+                kind_kebab(args.kind)
+            ),
+        ));
+    }
+    if args.parent_run_id.is_some() || args.parent_node_id.is_some() {
+        return Err(CliError::user(
+            "invalid_arguments",
+            "--resident cannot be combined with --parent-run-id/--parent-node-id",
+        ));
+    }
+    let idle_expiry_secs = match args.idle_expiry {
+        None => super::resident::DEFAULT_IDLE_EXPIRY_SECS,
+        Some(d) if d.as_secs() == 0 => {
+            return Err(CliError::user(
+                "invalid_arguments",
+                "--idle-expiry must be at least one second",
+            ))
+        }
+        Some(d) => d.as_secs(),
+    };
+    Ok(Some(ResidentPolicy {
+        name: name.to_string(),
+        idle_expiry_secs,
+    }))
 }
 
 fn emit(i: EmitInput<'_>) -> Result<(), CliError> {

@@ -507,6 +507,40 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
             return Ok(Recovery::Superseded);
         }
         match &verdict {
+            Verdict::Complete if txn.landing => {
+                // A crashed resident `run land` (ADR 0003): complete it with the
+                // non-terminal landing fact, never a terminal merge report.
+                let Some(oid) = integrated_oid.clone().or_else(|| {
+                    read_oid(
+                        git,
+                        source_repo
+                            .as_deref()
+                            .or(worktree_path.as_deref())
+                            .unwrap_or("."),
+                        &txn.source_branch,
+                    )
+                }) else {
+                    return Ok(Recovery::CannotVerify);
+                };
+                let key = crate::run::land::landed_key(&run_id, node_id, &txn.op_id);
+                let data = json!({
+                    "op_id": txn.op_id,
+                    "worker_oid": txn.worker_oid,
+                    "integrated_oid": oid,
+                    "source_branch": txn.source_branch,
+                });
+                match append_and_apply_idempotent(
+                    paths,
+                    lock,
+                    "node.round_landed",
+                    Some(node_id),
+                    &key,
+                    |_seq| Ok(data.clone()),
+                )? {
+                    AppendOutcome::Conflict { .. } => Ok(Recovery::Superseded),
+                    _ => Ok(Recovery::Completed),
+                }
+            }
             Verdict::Complete => {
                 // Append the terminal report the crashed driver would have — same
                 // idempotency key as `run merge`, so a racing retry dedupes.

@@ -255,6 +255,104 @@ pub fn maybe_fire_awaiting_input(
     true
 }
 
+/// Fire the registered hook once per resident round report (ADR 0003) with
+/// `TASKFLEET_STATUS=round-reported` and the round summary, so a parent that
+/// listens on `--notify` wakes when the round ends. Non-terminal; deduped on a
+/// `run.round_notified` marker keyed by the report's event seq (at-least-once,
+/// like the other hooks). Returns `true` when this report needs no further
+/// attempts.
+#[must_use]
+pub fn maybe_fire_round_reported(
+    paths: &RunPaths,
+    run_id: &str,
+    notify_cmd: Option<&str>,
+    round_seq: u64,
+    kind: &str,
+    title: &str,
+) -> bool {
+    let Some(cmd) = notify_cmd else {
+        return true;
+    };
+    let guard = match RunLock::acquire(&paths.lock()) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
+                "could not lock run to fire round-reported hook; will retry");
+            return false;
+        }
+    };
+    let lock = guard.witness();
+    let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("valid default node id");
+    let open = match read_node_opt(paths, &node_id) {
+        Ok(Some(n)) if !n.status.is_terminal() => n
+            .resident
+            .as_deref()
+            .and_then(taskfleet_core::ResidentState::open_round)
+            .filter(|r| r.event_seq == round_seq)
+            .cloned(),
+        Ok(_) => None,
+        Err(e) => {
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
+                "could not re-read round state; will retry");
+            return false;
+        }
+    };
+    let Some(open) = open else {
+        return true;
+    };
+    let key = format!("supervisor-round-reported:{run_id}:{round_seq}");
+    match find_prior_with_key(&lock, paths, "run.round_notified", &key) {
+        Ok(Some(_)) => return true,
+        Ok(None) => {}
+        Err(e) => {
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
+                "could not scan round notification marker; will retry");
+            return false;
+        }
+    }
+    let mut command = std::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg(cmd)
+        .env("TASKFLEET_RUN_ID", run_id)
+        .env("TASKFLEET_STATUS", "round-reported")
+        .env(
+            "TASKFLEET_SUMMARY",
+            env_safe(&open.summary, SUMMARY_MAX_CHARS),
+        )
+        .env("TASKFLEET_RUN_KIND", kind)
+        .env("TASKFLEET_RUN_TITLE", env_safe(title, TITLE_MAX_CHARS))
+        .env("TASKFLEET_ROUND", open.round.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match command.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => {
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
+                "round-reported notify hook failed to spawn; will retry");
+            return false;
+        }
+    }
+    if let Err(e) = append_and_apply_unlocked(
+        &lock,
+        paths,
+        "run.round_notified",
+        None,
+        Some(&key),
+        json!({ "event_seq": round_seq, "round": open.round }),
+    ) {
+        warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
+            "round-reported hook fired but marker append failed (a restart may re-fire)");
+        return false;
+    }
+    true
+}
+
 fn spawn_awaiting_hook(
     cmd: &str,
     run_id: &str,

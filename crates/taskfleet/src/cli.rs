@@ -53,6 +53,9 @@ struct Cli {
     command: Command,
 }
 
+// `Run` wraps the wide `RunAction` arg-bag (see its own allowance): parsed
+// once per process and immediately dispatched, so the size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Show binary, commit, and state-schema versions.
@@ -429,6 +432,7 @@ fn command_writes_state(command: &Command) -> bool {
         Command::Run { action } => match action {
             crate::run::RunAction::Create { dry_run, .. }
             | crate::run::RunAction::Merge { dry_run, .. }
+            | crate::run::RunAction::Land { dry_run, .. }
             | crate::run::RunAction::Salvage { dry_run, .. }
             | crate::run::RunAction::Discard { dry_run, .. }
             | crate::run::RunAction::Session {
@@ -458,7 +462,8 @@ fn command_writes_state(command: &Command) -> bool {
         },
         Command::Node { action } => match action {
             crate::node::NodeAction::Telemetry { .. } => true,
-            crate::node::NodeAction::Report { dry_run, .. } => !dry_run,
+            crate::node::NodeAction::Report { dry_run, .. }
+            | crate::node::NodeAction::RoundReport { dry_run, .. } => !dry_run,
             crate::node::NodeAction::List { .. } | crate::node::NodeAction::Show { .. } => false,
         },
         Command::Supervise(_) | Command::RunWorker(_) | Command::Session { .. } => true,

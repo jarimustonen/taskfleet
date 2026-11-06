@@ -16,7 +16,7 @@ use taskfleet_core::{
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_node_id, run_paths_from_cli_arg};
+use crate::run::{from_core, parse_node_id};
 
 const MAX_MESSAGE: usize = 32 * 1024;
 
@@ -28,6 +28,9 @@ struct Receipt<'a> {
     delivery: &'static str,
     read_or_acted: &'static str,
     attempt_seq: u64,
+    /// Resident resume details (ADR 0003); absent for adapter delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumed: Option<&'a crate::run::resume::Resumed>,
 }
 
 fn check_text(text: &str) -> Result<(), CliError> {
@@ -106,6 +109,7 @@ pub fn run(
     node: &str,
     text: Option<&str>,
     body_file: Option<&Path>,
+    wait_exit: Duration,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
@@ -144,12 +148,63 @@ pub fn run(
     check_text(&text)?;
     let node_id = parse_node_id(node)?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths_from_cli_arg(&root, run_id)?;
-    if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
+    let paths = crate::run::resident::resolve_run_ref(&root, run_id)?;
+    let Some(manifest) = read_manifest_opt(&paths).map_err(from_core)? else {
         return Err(CliError::user(
             "run_not_found",
             format!("run {} not found", paths.run_id),
         ));
+    };
+    // A resident between rounds (ADR 0003) is resumed from its native session;
+    // a Pi resident mid-round keeps the acknowledged adapter path below.
+    if manifest.resident.is_some() {
+        let node_data = read_node_opt(&paths, &node_id)
+            .map_err(from_core)?
+            .ok_or_else(|| CliError::user("node_not_found", format!("node {node} not found")))?;
+        let between_rounds = node_data.worker_exit.is_some()
+            || node_data
+                .resident
+                .as_deref()
+                .and_then(taskfleet_core::ResidentState::open_round)
+                .is_some_and(|r| r.attempt == node_data.retry_attempts);
+        let pi = manifest
+            .agent_selection
+            .as_ref()
+            .is_some_and(|a| a.selected.harness == "pi");
+        if between_rounds || node_data.status.is_terminal() || manifest.status.is_terminal() {
+            let (id, seq, resumed) =
+                crate::run::resume::resume(&root, &paths, &node_id, &text, wait_exit)?;
+            let payload = Receipt {
+                run_id: paths.run_id.as_str(),
+                node,
+                message_id: &id,
+                delivery: "resumed",
+                read_or_acted: "unconfirmed",
+                attempt_seq: seq,
+                resumed: Some(&resumed),
+            };
+            return match spec.format {
+                OutputFormat::Text => {
+                    println!(
+                        "message {id}: resumed round {} as attempt {} (read/acted unconfirmed)",
+                        resumed.round, resumed.attempt
+                    );
+                    output::emit_text_warnings(warnings);
+                    Ok(())
+                }
+                _ => output::emit_envelope(&payload, spec, warnings),
+            };
+        }
+        if !pi {
+            return Err(CliError::user(
+                "worker_running",
+                format!(
+                    "resident run {} is in the middle of a round and its Claude worker has no live                      input channel; wait for its round report (`taskfleet run wait {}`), then message it",
+                    paths.run_id, paths.run_id
+                ),
+            )
+            .with_invalid_value(paths.run_id.to_string()));
+        }
     }
     let id = uuid::Uuid::new_v4().to_string();
     let (session, attempt, seq) = {
@@ -254,6 +309,7 @@ pub fn run(
         delivery: status,
         read_or_acted: "unconfirmed",
         attempt_seq: seq,
+        resumed: None,
     };
     if let Err(error) = result {
         return Err(

@@ -765,6 +765,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         effective_source.as_deref(),
         &git,
         None,
+        false,
     )?;
 
     // Run the merge. A non-zero exit (conflict, dirty tree, lock timeout)
@@ -1086,6 +1087,7 @@ fn execute_caller_merge(
         Some(source),
         &git,
         Some(&authority),
+        false,
     )?
     .ok_or_else(|| {
         CliError::system(
@@ -1203,7 +1205,7 @@ fn validate_dry_run_target(
 }
 
 /// Build the stable error shape for Git merge eligibility failures.
-fn merge_failed(branch: &str, detail: impl Into<String>) -> CliError {
+pub(crate) fn merge_failed(branch: &str, detail: impl Into<String>) -> CliError {
     CliError {
         kind: ExitKind::User,
         code: "merge_failed".to_string(),
@@ -1376,15 +1378,15 @@ fn ensure_report_consumer(
 
 /// A recorded, in-flight merge transaction's identity — what `run merge` needs
 /// to CAS-guard the merge and to abort the transaction if the merge fails.
-struct MergeStartHandle {
+pub(crate) struct MergeStartHandle {
     /// The transaction's unique id, for a targeted `merge.aborted` on failure.
-    op_id: String,
+    pub(crate) op_id: String,
     /// The source ref OID recorded before the merge — the compare half of the
     /// compare-and-swap, checked under the Git merge lock.
-    expected_source_oid: String,
+    pub(crate) expected_source_oid: String,
     /// The worker tip OID the merge integrates — stamped into the terminal
     /// report's typed `RunMerge` origin for provenance (issue `typed-report-origin`).
-    worker_oid: String,
+    pub(crate) worker_oid: String,
 }
 
 /// Record the merge transaction (`merge.started`) BEFORE the git mutation, so a
@@ -1401,7 +1403,7 @@ struct MergeStartHandle {
 /// change eliminates (a crash after the git merge with no recorded transaction to
 /// recover from). Fail closed so the agent backs off and retries.
 #[allow(clippy::too_many_arguments)] // Both producers pass explicit Git and immutable node/source identities.
-fn record_merge_start(
+pub(crate) fn record_merge_start(
     paths: &taskfleet_core::RunPaths,
     node_id: &NodeId,
     worktree_path: &str,
@@ -1410,6 +1412,7 @@ fn record_merge_start(
     source_branch: Option<&str>,
     git: &str,
     caller: Option<&CallerMergeAuthority<'_>>,
+    landing: bool,
 ) -> Result<Option<MergeStartHandle>, CliError> {
     let source_branch = source_branch.ok_or_else(|| {
         merge_failed(
@@ -1439,6 +1442,7 @@ fn record_merge_start(
             writer_dev: c.intent.writer_dev,
             writer_ino: c.intent.writer_ino,
         }),
+        landing,
     };
     let data = serde_json::to_value(&txn)
         .map_err(|e| CliError::system("merge_txn_serialize_failed", e.to_string()))?;
@@ -1470,7 +1474,7 @@ fn record_merge_start(
 /// later trip recovery. Best-effort: a failure here is only cosmetic — the next
 /// recovery tick would reject the still-pending transaction anyway (the source ref
 /// is unchanged), so we log and move on.
-fn abort_merge_start(
+pub(crate) fn abort_merge_start(
     paths: &taskfleet_core::RunPaths,
     node_id: &NodeId,
     op_id: &str,
@@ -1648,7 +1652,7 @@ fn git_output(git: &str, dir: &Path, args: &[&str], branch: &str) -> Result<Stri
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn run_git_merge(
+pub(crate) fn run_git_merge(
     worktree_path: &Path,
     branch: &str,
     source: Option<&str>,

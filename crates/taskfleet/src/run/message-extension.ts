@@ -47,6 +47,17 @@ export default function (pi: any) {
       next.close();
     }
   });
+  // Resident rounds (ADR 0003): after the worker's told round report, end Pi at
+  // the next settled boundary so the launcher shim records the exit and the next
+  // message resumes this session. The marker is written by `node round-report`.
+  const roundMarker = process.env.TASKFLEET_ROUND_MARKER;
+  if (roundMarker) {
+    pi.on("agent_settled", async (_event: any, ctx: any) => {
+      if (!existsSync(roundMarker)) return;
+      if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
+      ctx.shutdown();
+    });
+  }
   pi.on("session_shutdown", async () => {
     if (!server) return;
     server.close();

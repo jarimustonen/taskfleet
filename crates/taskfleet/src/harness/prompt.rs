@@ -192,6 +192,58 @@ already on disk, so do not recreate it.
 The original task brief follows.
 "#;
 
+/// Round protocol of a named resident worker (ADR 0003). Rendered by
+/// [`with_resident_round_note`] with the run id and the resident name.
+const RESIDENT_ROUND_TEMPLATE: &str = r#"# Named resident worker `{RESIDENT_NAME}` (read first)
+
+You are a named support worker. You work in rounds. The parent agent relays
+every message to you; the person never writes to you directly, so put anything
+the person must see in your round summary.
+
+End every round like this:
+
+1. Write the round's result where the task asks (normally the issue's
+   `result.md`) and commit it, written as if the next round started fresh.
+   Your context is a cache, not the record.
+2. Write a short summary (what you did, what you recommend, what you need
+   next) to a file and run exactly:
+
+   ```bash
+   taskfleet node round-report {RUN_ID} --summary-file <file>
+   ```
+
+3. Stop. Do not wait for a reply and do not ask questions in the terminal.
+
+Your process ends after the round report. The next message resumes this same
+session in this same worktree after Taskfleet has rebased your branch onto the
+source branch tip, so you see decisions and other work landed meanwhile. If a
+message says the rebase stopped on conflicts, resolve them first
+(`git status`, fix, `git add`, `git rebase --continue`). The parent lands your
+committed rounds on the source branch with `taskfleet run land`; do not merge
+yourself.
+
+Do not run `taskfleet run merge` until a message tells you to finish. Then
+write the final result, commit, and close with `taskfleet run merge {RUN_ID}`
+as the closing instructions describe. This replaces the default "merge when
+done" ending for every earlier round, and a resident never needs `run message`
+replies to arrive while it works: each message starts a new round.
+
+"#;
+
+/// Insert the resident round protocol before the task brief of a rendered
+/// [`worker_prompt_preamble`].
+#[must_use]
+pub fn with_resident_round_note(preamble: &str, name: &str, run_id: &str) -> String {
+    let note = RESIDENT_ROUND_TEMPLATE
+        .replace("{RESIDENT_NAME}", name)
+        .replace(RUN_ID_SENTINEL, run_id);
+    const MARK: &str = "The original task brief follows.";
+    match preamble.rfind(MARK) {
+        Some(at) => format!("{}{note}{}", &preamble[..at], &preamble[at..]),
+        None => format!("{preamble}\n{note}"),
+    }
+}
+
 /// Worker-prompt preamble for a resolved harness + run kind.
 ///
 /// Every freshly-created worker receives the run context and issue-filing
@@ -241,6 +293,21 @@ mod tests {
                 assert!(!p.contains(RUN_ID_SENTINEL), "{harness}/{kind:?}");
                 assert!(!p.contains(RUN_KIND_SENTINEL), "{harness}/{kind:?}");
             }
+        }
+    }
+
+    #[test]
+    fn resident_note_precedes_the_brief_with_the_exact_round_command() {
+        for (harness, kind) in [("claude", Kind::Spinoff), ("pi", Kind::Research)] {
+            let base = worker_prompt_preamble(harness, kind, RUN_ID);
+            let p = with_resident_round_note(&base, "proto-m365", RUN_ID);
+            let note = p.find("Named resident worker `proto-m365`").unwrap();
+            assert!(note < p.rfind("The original task brief follows.").unwrap());
+            assert!(p.contains(&format!(
+                "taskfleet node round-report {RUN_ID} --summary-file <file>"
+            )));
+            assert!(p.contains("the person never writes to you directly"));
+            assert!(!p.contains("{RESIDENT_NAME}") && !p.contains(RUN_ID_SENTINEL));
         }
     }
 

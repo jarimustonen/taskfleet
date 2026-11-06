@@ -220,24 +220,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 .then_some(default_node.as_ref())
                 .flatten();
             let attention = diagnostic_node.and_then(|n| {
-                crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
-                    // `is_attention_required` guarantees `worker_exit` is Some+clean.
-                    .then_some(n.worker_exit.as_ref())
-                    .flatten()
-                    .map(|exit| {
-                        crate::run::attention::AttentionView::build(
-                            m.run_id.as_str(),
-                            now,
-                            exit,
-                            n.agent_pid,
-                            n.worktree_path.clone(),
-                            m.source_branch.clone(),
-                        )
-                    })
+                crate::run::attention::node_attention(n).map(|(reason, exit)| {
+                    crate::run::attention::AttentionView::build_for(
+                        reason,
+                        m.run_id.as_str(),
+                        now,
+                        exit,
+                        n.agent_pid,
+                        n.worktree_path.clone(),
+                        m.source_branch.clone(),
+                    )
+                })
             });
             let awaiting_input = diagnostic_node
                 .and_then(|n| n.awaiting_input.as_ref())
                 .map(|open| crate::run::awaiting_input::AwaitingInputView::build(open, now));
+            let resident = crate::run::resident::view(&m, default_node.as_ref());
             let worktree_path = default_node.as_ref().and_then(|n| n.worktree_path.clone());
             Ok(Some((
                 m,
@@ -247,14 +245,23 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 awaiting_input,
                 worktree_path,
                 transcripts,
+                resident,
             )))
         })
         .map_err(from_core)?;
-        let (m, supervisor, stillborn, attention, awaiting_input, worktree_path, transcripts) =
-            match scanned {
-                Some(v) => v,
-                None => continue, // half-initialized run dir; skip silently
-            };
+        let (
+            m,
+            supervisor,
+            stillborn,
+            attention,
+            awaiting_input,
+            worktree_path,
+            transcripts,
+            resident,
+        ) = match scanned {
+            Some(v) => v,
+            None => continue, // half-initialized run dir; skip silently
+        };
         // `stalled` is the "pending but visibly not progressing" hint; since the
         // 0.2 cut removed the orchestrate driver (the only other stall shape),
         // it is now exactly the never-started `stillborn` variant.
@@ -270,7 +277,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .with_stalled(stalled)
             .with_stillborn(stillborn)
             .with_attention(attention)
-            .with_awaiting_input(awaiting_input);
+            .with_awaiting_input(awaiting_input)
+            .with_resident(resident);
         // Filter the exact DTO values while still avoiding telemetry I/O for
         // excluded rows.
         if args

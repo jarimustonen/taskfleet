@@ -243,6 +243,14 @@ struct RunOutcome {
     recoverable_work: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     caller_agent: Option<CallerAgentView>,
+    /// Resident only (ADR 0003): an open round report satisfied the wait. The
+    /// worker finished its round and waits for the next `run message`; this is
+    /// not an error and never grades as a failure under `--fail-on-error`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    round_reported: bool,
+    /// Resident round view (name, `round_state`, latest report summary).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resident: Option<crate::run::resident::ResidentView>,
 }
 
 #[derive(Serialize)]
@@ -499,6 +507,7 @@ type ProgressKey = (
     Option<StallKind>,
     bool,
     Option<u64>,
+    Option<u64>,
     Option<(u64, bool)>,
 );
 
@@ -539,8 +548,10 @@ fn wait_loop(
             settle_now[i] = LatchedSettle {
                 stall: settle.stall,
                 attention: settle.attention,
+                attention_reason: settle.attention_reason,
                 awaiting_input: settle.awaiting_input.clone(),
                 caller: settle.caller.clone(),
+                round: settle.round,
             };
             // A run is settled when it reaches a terminal status, OR when it is
             // stalled (a supervisor that died — before creating any node, or
@@ -554,6 +565,7 @@ fn wait_loop(
                 || (!terminal_only
                     && (settle.stall.is_some()
                         || settle.attention
+                        || settle.round.is_some()
                         || settle.awaiting_input.is_some()
                         || settle
                             .caller
@@ -566,6 +578,7 @@ fn wait_loop(
                 settle.status,
                 settle.stall,
                 settle.attention,
+                settle.round,
                 settle.awaiting_input.as_ref().map(|v| v.event_seq),
                 settle
                     .caller
@@ -666,9 +679,14 @@ struct Settle {
     /// worker is attention-required (manual finish) even if its supervisor later
     /// died, which would otherwise read as `orphaned` (`run reattach`).
     attention: bool,
+    /// Why the node needs attention (see [`crate::run::attention::node_attention`]).
+    attention_reason: Option<&'static str>,
     /// Exact explicit decision generation whose durable grace has elapsed.
     awaiting_input: Option<AwaitingInput>,
     caller: Option<CallerPiLifecycle>,
+    /// Resident only: event seq of the open round report (ADR 0003). Settles
+    /// the wait immediately, with no awaiting-input grace.
+    round: Option<u64>,
 }
 
 /// The two non-terminal settle verdicts a poll can latch for a run — the stall
@@ -680,8 +698,10 @@ struct Settle {
 struct LatchedSettle {
     stall: Option<StallKind>,
     attention: bool,
+    attention_reason: Option<&'static str>,
     awaiting_input: Option<AwaitingInput>,
     caller: Option<CallerPiLifecycle>,
+    round: Option<u64>,
 }
 
 /// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
@@ -719,9 +739,17 @@ fn current_settle(
         } else {
             None
         };
-        let attention = node.as_ref().is_some_and(|n| {
-            crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
-        });
+        let attention_reason = node
+            .as_ref()
+            .and_then(crate::run::attention::node_attention)
+            .map(|(reason, _)| reason);
+        let attention = attention_reason.is_some();
+        let round = node
+            .as_ref()
+            .filter(|n| !n.status.is_terminal())
+            .and_then(|n| n.resident.as_deref())
+            .and_then(taskfleet_core::ResidentState::open_round)
+            .map(|r| r.event_seq);
         // Resolve attention-over-stall precedence HERE (design.md §2.5), at snapshot
         // construction — not only in `read_outcome` — so the `--progress` JSONL and
         // the settled-count decision agree with the final outcome. A clean-exited
@@ -747,8 +775,10 @@ fn current_settle(
             status: m.status,
             stall,
             attention,
+            attention_reason,
             awaiting_input,
             caller,
+            round,
         }))
     })
     .map_err(from_core)
@@ -786,7 +816,11 @@ fn read_outcome(
         } else {
             Vec::new()
         };
+        let resident = manifest
+            .as_ref()
+            .and_then(|m| crate::run::resident::view(m, node.as_ref()));
         Ok(GitInputs {
+            resident,
             retained_manifest: manifest.clone(),
             retained_nodes,
             status: manifest.as_ref().map(|m| m.status),
@@ -923,7 +957,12 @@ fn read_outcome(
     } else if settled_caller {
         latched.caller.as_ref().and_then(|c| c.reason.clone())
     } else if attention_required {
-        Some(crate::run::attention::ATTENTION_REASON.to_string())
+        Some(
+            latched
+                .attention_reason
+                .unwrap_or(crate::run::attention::ATTENTION_REASON)
+                .to_string(),
+        )
     } else if let Some(kind) = stall {
         Some(stall_reason(kind).to_string())
     } else if settled_awaiting_input {
@@ -945,7 +984,10 @@ fn read_outcome(
     // outcome). Uses the run's resolved id so the hint's `run merge <id>` is exact.
     let attention = if attention_required {
         git_inputs.worker_exit.as_ref().map(|exit| {
-            crate::run::attention::AttentionView::build(
+            crate::run::attention::AttentionView::build_for(
+                latched
+                    .attention_reason
+                    .unwrap_or(crate::run::attention::ATTENTION_REASON),
                 paths.run_id.as_str(),
                 chrono::Utc::now(),
                 exit,
@@ -995,6 +1037,8 @@ fn read_outcome(
         error,
         recoverable_work,
         caller_agent,
+        round_reported: !status.is_terminal() && latched.round.is_some(),
+        resident: git_inputs.resident,
     })
 }
 
@@ -1014,6 +1058,7 @@ fn stall_reason(kind: StallKind) -> &'static str {
 /// computing `landed` outside it. Bundling them keeps the single consistent
 /// snapshot (invariant 3) explicit and lets the git shell-out run lock-free.
 struct GitInputs {
+    resident: Option<crate::run::resident::ResidentView>,
     retained_manifest: Option<taskfleet_core::Manifest>,
     retained_nodes: Vec<taskfleet_core::Node>,
     status: Option<Status>,
@@ -1349,7 +1394,15 @@ mod tests {
             error: None,
             recoverable_work: None,
             caller_agent: None,
+            round_reported: false,
+            resident: None,
         };
+        let mk_round = || RunOutcome {
+            round_reported: true,
+            ..mk("pending")
+        };
+        // A resident round report is a normal wake, never a settled error.
+        assert!(!any_settled_error(&[mk_round()], false));
         let mk_stalled = || RunOutcome {
             stalled: true,
             ..mk("pending")

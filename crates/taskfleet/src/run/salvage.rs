@@ -633,6 +633,8 @@ mod tests {
             pending_merge: None,
             first_death_at: None,
             awaiting_input: None,
+            claude_session_id: None,
+            resident: None,
         }
     }
 

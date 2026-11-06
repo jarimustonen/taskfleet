@@ -9,6 +9,7 @@
 pub mod dto;
 pub mod list;
 pub mod report;
+pub mod round_report;
 pub mod show;
 pub mod telemetry;
 
@@ -48,6 +49,28 @@ pub enum NodeAction {
         idempotency_key: Option<String>,
         /// Validate the payload and exit 0 without writing anything
         /// to the run's events.jsonl or projection files.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// End a resident worker's round (ADR 0003): record the round summary as a
+    /// told `node.round_reported`, then stop. The exit that follows is the end
+    /// of the round, `run wait` settles at once, and the next `run message`
+    /// resumes the same session in the same worktree. Resident runs only.
+    /// Example: taskfleet node round-report <run-id> --summary-file /tmp/round.md
+    RoundReport {
+        /// Exact run id from the worker's run context.
+        run_id: String,
+        /// Reporting node id.
+        #[arg(long, default_value = "n-0001")]
+        node: String,
+        /// UTF-8 file with the round summary (at most 16 KiB): what was done,
+        /// what is recommended, what is needed next.
+        #[arg(long, conflicts_with = "summary")]
+        summary_file: Option<PathBuf>,
+        /// Inline round summary (alternative to --summary-file).
+        #[arg(long)]
+        summary: Option<String>,
+        /// Validate and report the round number without appending anything.
         #[arg(long)]
         dry_run: bool,
     },
@@ -130,6 +153,21 @@ pub fn dispatch(
             node_id,
             from_file,
             idempotency_key,
+            dry_run,
+            spec,
+            warnings,
+        }),
+        NodeAction::RoundReport {
+            run_id,
+            node,
+            summary_file,
+            summary,
+            dry_run,
+        } => round_report::run(round_report::Args {
+            run_id,
+            node_id: node,
+            summary,
+            summary_file,
             dry_run,
             spec,
             warnings,

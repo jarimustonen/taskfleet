@@ -72,6 +72,37 @@ pub fn is_attention_required(node_status: Status, worker_exit: Option<&WorkerExi
         && worker_exit.is_some_and(|e| e.is_clean())
 }
 
+/// Node-aware attention verdict, including resident rounds (ADR 0003).
+///
+/// A resident whose current attempt reported its round is *waiting*, not
+/// attention-required, whatever its exit was: the round report is the told
+/// end of the round. Idle expiry that found unlanded work raises attention
+/// explicitly (`node.resident_attention`). Every other node uses
+/// [`is_attention_required`]. Returns the reason and the anchoring exit.
+#[must_use]
+pub fn node_attention(node: &taskfleet_core::Node) -> Option<(&'static str, &WorkerExit)> {
+    let exit = node.worker_exit.as_ref()?;
+    if !matches!(node.status, Status::Pending | Status::Running) {
+        return None;
+    }
+    if let Some(state) = node.resident.as_deref() {
+        let reported = state
+            .open_round()
+            .is_some_and(|r| r.attempt == node.retry_attempts);
+        if reported {
+            return state
+                .expiry_attention_at
+                .is_some()
+                .then_some((RESIDENT_IDLE_REASON, exit));
+        }
+    }
+    is_attention_required(node.status, Some(exit)).then_some((ATTENTION_REASON, exit))
+}
+
+/// The stable `reason` for a resident whose idle expiry preserved unlanded work.
+pub const RESIDENT_IDLE_REASON: &str =
+    "resident worker passed its idle expiry with unlanded work (preserved, not merged)";
+
 /// The human/JSON resume hint for an attention-required run: the two ways a PO
 /// can settle it — the fenced manual finish (`run salvage`, which finds the
 /// worktree, verifies/fences the prior worker, and drives the skipped merge
@@ -149,6 +180,7 @@ impl AttentionView {
     /// `worker_exit` is the node's told clean exit ([`is_attention_required`]
     /// guarantees it is present and clean at every call site) — its `.at` anchors
     /// the awaiting-intervention age.
+    #[cfg(test)]
     #[must_use]
     pub fn build(
         run_id: &str,
@@ -158,11 +190,40 @@ impl AttentionView {
         worktree_path: Option<String>,
         source_branch: Option<String>,
     ) -> Self {
+        Self::build_for(
+            ATTENTION_REASON,
+            run_id,
+            now,
+            worker_exit,
+            worker_pid,
+            worktree_path,
+            source_branch,
+        )
+    }
+
+    /// [`Self::build`] for a reason from [`node_attention`].
+    #[must_use]
+    pub fn build_for(
+        reason: &'static str,
+        run_id: &str,
+        now: DateTime<Utc>,
+        worker_exit: &WorkerExit,
+        worker_pid: Option<i32>,
+        worktree_path: Option<String>,
+        source_branch: Option<String>,
+    ) -> Self {
         let exited_at = worker_exit.at;
         let pending_age_secs = now.signed_duration_since(exited_at).num_seconds().max(0);
-        let resume_hint = resume_hint(run_id, worktree_path.as_deref());
+        let resume_hint = if reason == RESIDENT_IDLE_REASON {
+            let q_run = shell_single_quote(run_id);
+            format!(
+                "resident worker idle with unlanded work; land it with `taskfleet run land {q_run}`,                  send it the next message with `taskfleet run message {q_run} <text>`, or finish it                  with `run merge {q_run}` / `run cancel {q_run}`"
+            )
+        } else {
+            resume_hint(run_id, worktree_path.as_deref())
+        };
         Self {
-            reason: ATTENTION_REASON,
+            reason,
             pending_age_secs,
             exited_at,
             worker_pid,

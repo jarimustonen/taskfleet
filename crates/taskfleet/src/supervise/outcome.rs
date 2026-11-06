@@ -228,6 +228,10 @@ pub enum LiveVerdict {
     /// Nothing to do this tick: alive with no told exit, or awaiting its own
     /// terminal signal.
     Alive,
+    /// A resident's current attempt reported its round (ADR 0003): any exit
+    /// that follows, and a shim lost after the report, ends the round. Stay
+    /// non-terminal, not attention; the next `run message` resumes it.
+    RoundWaiting,
 }
 
 /// Classify a non-terminal node into a [`LiveVerdict`] (design.md §2.1 / §2.6).
@@ -249,6 +253,21 @@ pub fn classify_live_node(worker_exit: Option<WorkerExit>, death: DeathObservati
         DeathObservation::DeadWithinGrace => LiveVerdict::DeferGrace,
         DeathObservation::DeadGraceElapsed => LiveVerdict::CrashBackstopFailed,
     }
+}
+
+/// [`classify_live_node`] for a node that may be a resident (ADR 0003): a told
+/// round report from the current attempt outranks the exit and the backstop,
+/// the way a merge outranks a later non-zero exit.
+#[must_use]
+pub fn classify_live_node_with_round(
+    round_reported: bool,
+    worker_exit: Option<WorkerExit>,
+    death: DeathObservation,
+) -> LiveVerdict {
+    if round_reported {
+        return LiveVerdict::RoundWaiting;
+    }
+    classify_live_node(worker_exit, death)
 }
 
 /// Split a negative (`success: false`, non-cancel) terminal report into a
@@ -303,6 +322,29 @@ const AGENT_DIED_REASON_PREFIX: &str = "agent-";
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_round_report_outranks_every_exit_and_the_backstop() {
+        let failing = WorkerExit {
+            code: Some(1),
+            signal: None,
+            at: chrono::Utc::now(),
+        };
+        for (exit, death) in [
+            (Some(failing), DeathObservation::Alive),
+            (None, DeathObservation::DeadGraceElapsed),
+            (None, DeathObservation::Alive),
+        ] {
+            assert_eq!(
+                classify_live_node_with_round(true, exit, death),
+                LiveVerdict::RoundWaiting
+            );
+        }
+        assert_eq!(
+            classify_live_node_with_round(false, Some(failing), DeathObservation::Alive),
+            LiveVerdict::WorkerFailed(failing)
+        );
+    }
+
     use super::*;
     use chrono::Utc;
     use serde_json::json;
@@ -342,6 +384,8 @@ mod tests {
             pending_merge: None,
             first_death_at: None,
             awaiting_input: None,
+            claude_session_id: None,
+            resident: None,
         }
     }
 

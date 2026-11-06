@@ -78,11 +78,18 @@ pub struct AgentLauncher {
     node_id: String,
     attempt: u32,
     pi_session_source_path: Option<PathBuf>,
+    claude_session_id: Option<String>,
 }
 
 impl AgentLauncher {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The Claude session id this launcher starts (`--session-id`) or resumes
+    /// (`--resume`); `None` for Pi.
+    pub fn claude_session_id(&self) -> Option<&str> {
+        self.claude_session_id.as_deref()
     }
 
     pub fn cleanup_private_session(&self) {
@@ -146,6 +153,47 @@ pub fn write_agent_launcher(
     node_id: &str,
     attempt: u32,
 ) -> Result<AgentLauncher, CliError> {
+    write_agent_launcher_with(
+        run_dir,
+        state_root,
+        selection,
+        run_id,
+        node_id,
+        attempt,
+        &LaunchOptions::default(),
+    )
+}
+
+/// The recorded native session a resident round resumes (ADR 0003).
+#[derive(Debug, Clone)]
+pub enum ResumeSession {
+    /// Reopen the exact Taskfleet-owned Pi transcript (`--session <path>`).
+    Pi { session_id: String, path: PathBuf },
+    /// Resume the exact Claude session (`--resume <id>`).
+    Claude { session_id: String },
+}
+
+/// Launcher variations beyond a fresh attempt.
+#[derive(Debug, Clone, Default)]
+pub struct LaunchOptions {
+    /// Resume this recorded session instead of assigning a new one.
+    pub resume: Option<ResumeSession>,
+    /// Resident Pi only: the round marker the bundled adapter watches to shut
+    /// Pi down at the next settled boundary after a round report.
+    pub round_marker: Option<PathBuf>,
+}
+
+/// [`write_agent_launcher`] with resident options: resume a recorded session
+/// and/or arm the Pi round marker.
+pub fn write_agent_launcher_with(
+    run_dir: &Path,
+    state_root: &Path,
+    selection: &taskfleet_core::AgentSelection,
+    run_id: &str,
+    node_id: &str,
+    attempt: u32,
+    options: &LaunchOptions,
+) -> Result<AgentLauncher, CliError> {
     let selected = &selection.selected;
     if selected.command.is_empty() {
         return Err(CliError::system(
@@ -194,7 +242,6 @@ pub fn write_agent_launcher(
                 ));
             }
         }
-        let id = uuid::Uuid::new_v4().to_string();
         // Keep the live writer in a run-bound private area outside the staging
         // directory that publication renames. This lets Pi start before
         // publication (preserving the live-worker transaction) while never
@@ -205,13 +252,42 @@ pub fn write_agent_launcher(
         ensure_private_directory(&sessions)?;
         let dir = sessions.join(run_id);
         ensure_private_directory(&dir)?;
-        let path = dir.join(format!("pi-session-{id}.jsonl"));
-        Some((id, path))
+        match &options.resume {
+            // A resumed round reopens the exact recorded transcript; the
+            // handshake verifies it instead of creating a header.
+            Some(ResumeSession::Pi { session_id, path }) => {
+                if path != &dir.join(format!("pi-session-{session_id}.jsonl")) {
+                    return Err(CliError::system(
+                        "resume_session_invalid",
+                        "recorded Pi session is not the run-bound transcript",
+                    ));
+                }
+                Some((session_id.clone(), path.clone()))
+            }
+            Some(ResumeSession::Claude { .. }) => {
+                return Err(CliError::system(
+                    "resume_session_invalid",
+                    "a Pi candidate cannot resume a Claude session",
+                ))
+            }
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                let path = dir.join(format!("pi-session-{id}.jsonl"));
+                Some((id, path))
+            }
+        }
     } else {
         None
     };
-    let mut private_session_guard =
-        PrivateSessionGuard(pi_session.as_ref().map(|(_, path)| path.clone()), None);
+    let resuming = options.resume.is_some();
+    // Never delete a resumed transcript on a failed launch: it is the session.
+    let mut private_session_guard = PrivateSessionGuard(
+        pi_session
+            .as_ref()
+            .filter(|_| !resuming)
+            .map(|(_, path)| path.clone()),
+        None,
+    );
     match std::fs::symlink_metadata(&handshake_path) {
         Ok(meta) if meta.file_type().is_file() || meta.file_type().is_symlink() => {
             std::fs::remove_file(&handshake_path)
@@ -269,6 +345,7 @@ pub fn write_agent_launcher(
                 path.to_string_lossy().into_owned(),
             ]
         }))
+        .chain((resuming && pi_session.is_some()).then(|| "--pi-session-resume".to_string()))
         .collect::<Vec<_>>(),
         true,
     ));
@@ -295,6 +372,11 @@ pub fn write_agent_launcher(
         inner_body.extend_from_slice(b"export TASKFLEET_MESSAGE_EXTENSION=");
         inner_body.extend_from_slice(&shell_literal_path(&extension));
         inner_body.extend_from_slice(b"\n");
+        if let Some(marker) = &options.round_marker {
+            inner_body.extend_from_slice(b"export TASKFLEET_ROUND_MARKER=");
+            inner_body.extend_from_slice(&shell_literal_path(marker));
+            inner_body.extend_from_slice(b"\n");
+        }
     }
     let claude_session = if selected.harness == "claude" {
         // These flags could replace our session-bound hooks or direct them at a
@@ -317,7 +399,16 @@ pub fn write_agent_launcher(
                     format!("Claude candidate argv contains Taskfleet-owned settings/session flag {arg:?}")));
             }
         }
-        Some(uuid::Uuid::new_v4().to_string())
+        match &options.resume {
+            Some(ResumeSession::Claude { session_id }) => Some(session_id.clone()),
+            Some(ResumeSession::Pi { .. }) => {
+                return Err(CliError::system(
+                    "resume_session_invalid",
+                    "a Claude candidate cannot resume a Pi session",
+                ))
+            }
+            None => Some(uuid::Uuid::new_v4().to_string()),
+        }
     } else {
         None
     };
@@ -335,7 +426,13 @@ pub fn write_agent_launcher(
             attempt,
             session,
         );
-        inner_body.extend_from_slice(b" --session-id ");
+        // A fresh attempt assigns the id; a resumed round reopens it. Hooks stay
+        // bound to the same session either way.
+        inner_body.extend_from_slice(if resuming {
+            b" --resume ".as_slice()
+        } else {
+            b" --session-id ".as_slice()
+        });
         inner_body.extend_from_slice(shell_literal(session).as_bytes());
         inner_body.extend_from_slice(b" --settings ");
         inner_body.extend_from_slice(shell_literal(&settings.to_string()).as_bytes());
@@ -396,7 +493,12 @@ pub fn write_agent_launcher(
         run_id: run_id.into(),
         node_id: node_id.into(),
         attempt,
-        pi_session_source_path: pi_session.as_ref().map(|(_, path)| path.clone()),
+        // A resumed transcript is never this launcher's to delete on rollback.
+        pi_session_source_path: pi_session
+            .as_ref()
+            .filter(|_| !resuming)
+            .map(|(_, path)| path.clone()),
+        claude_session_id: claude_session.clone(),
     };
     private_session_guard.0 = None;
     private_session_guard.1 = None;
@@ -766,6 +868,149 @@ fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         pi_session_path: handshake.pi_session_path,
         pi_session_cwd: handshake.pi_session_cwd,
         rollback: Some(rollback),
+    })
+}
+
+/// A resident round's resume launch (ADR 0003): the next attempt starts in
+/// the existing worktree, never through `workmux add`, which would mint a new
+/// branch and worktree.
+pub struct ResumeRequest<'a> {
+    /// Attempt-bound launcher generated with [`LaunchOptions::resume`].
+    pub launcher: &'a AgentLauncher,
+    /// The worker's existing worktree (the new attempt's cwd).
+    pub worktree: &'a Path,
+    /// First input of the new attempt (the relayed message with its preamble).
+    pub message: &'a str,
+    /// The previous attempt's recorded display; reused when it still exists.
+    pub recorded: Option<&'a TmuxIdentity>,
+    /// Display name for a fresh window (the previous workmux-chosen name).
+    pub window_name: &'a str,
+    /// Session that hosts the worker (recreated when absent).
+    pub session: &'a str,
+    /// Directory tmux commands run from (the source repository).
+    pub cwd: &'a Path,
+    pub agent_startup_timeout: u32,
+    pub require_server_identity: bool,
+}
+
+/// Start the next attempt of a resident worker in its existing worktree.
+///
+/// The previous attempt has a recorded exit. When its exact pane still exists
+/// (same window id on the run's tmux server), the new attempt replaces the
+/// pane's leftover process with `respawn-pane -k`, keeping one display per
+/// worker; otherwise a new detached window opens in the recorded session.
+/// Identity comes only from the launcher's PID handshake, as for a fresh spawn.
+pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliError> {
+    if req.message.starts_with('-') || req.message.trim().is_empty() {
+        return Err(CliError::system(
+            "resume_message_invalid",
+            "resume input must be nonblank and must not start with '-'",
+        ));
+    }
+    let session = ensure_session(Some(req.session), req.cwd)?;
+    let launcher = os_string(req.launcher.path())?;
+    let worktree = os_string(req.worktree)?;
+    let reusable = req.recorded.and_then(|identity| {
+        let pane = identity.pane_id.as_deref().filter(|p| !p.is_empty())?;
+        let out = command_output(
+            "tmux",
+            &[
+                "display-message".into(),
+                "-p".into(),
+                "-t".into(),
+                pane.into(),
+                "#{window_id}".into(),
+            ],
+            req.cwd,
+            "tmux_probe_failed",
+        )
+        .ok()?;
+        (out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == identity.window_id)
+            .then(|| pane.to_string())
+    });
+    let started = match &reusable {
+        Some(pane) => command_output(
+            "tmux",
+            &[
+                "respawn-pane".into(),
+                "-k".into(),
+                "-t".into(),
+                pane.clone(),
+                "-c".into(),
+                worktree.clone(),
+                launcher.clone(),
+                req.message.into(),
+            ],
+            req.cwd,
+            "resume_launch_failed",
+        )?,
+        None => command_output(
+            "tmux",
+            &[
+                "new-window".into(),
+                "-d".into(),
+                "-t".into(),
+                format!("{session}:"),
+                "-n".into(),
+                req.window_name.into(),
+                "-c".into(),
+                worktree.clone(),
+                launcher.clone(),
+                req.message.into(),
+            ],
+            req.cwd,
+            "resume_launch_failed",
+        )?,
+    };
+    if !started.status.success() {
+        return Err(CliError::system(
+            "resume_launch_failed",
+            format!(
+                "tmux could not start the resumed worker: {}",
+                String::from_utf8_lossy(&started.stderr).trim()
+            ),
+        ));
+    }
+    let handshake = await_handshake(
+        req.launcher,
+        Duration::from_secs(u64::from(req.agent_startup_timeout)),
+    )?;
+    std::thread::sleep(Duration::from_millis(100));
+    verify_identity(
+        handshake.pid,
+        handshake.start_time,
+        &handshake.start_identity,
+    )?;
+    let pane = handshake.tmux_pane_id.clone();
+    let window = query_tmux_window(&pane, &session, req.cwd)?;
+    if req.require_server_identity
+        && (window.identity.socket.as_deref().is_none_or(str::is_empty)
+            || window.server_pid.is_none()
+            || window.server_pid_start_secs.is_none())
+    {
+        return Err(CliError::system(
+            "tmux_server_identity_unavailable",
+            "persistent tmux retention requires an exact socket, server PID, and PID start identity",
+        ));
+    }
+    Ok(SpawnOutcome {
+        branch: String::new(),
+        worktree_path: worktree,
+        tmux_window: window.name,
+        agent_pid_hint: i64::from(handshake.pid),
+        agent_start_time: handshake.start_time,
+        agent_start_identity: handshake.start_identity,
+        tmux_socket: window.identity.socket,
+        tmux_session: Some(session),
+        tmux_window_id: Some(window.identity.window_id),
+        tmux_pane_id: Some(pane),
+        tmux_server_pid: window.server_pid,
+        tmux_server_pid_start_secs: window.server_pid_start_secs,
+        tmux_server_marker: window.server_marker,
+        pi_session_id: handshake.pi_session_id,
+        pi_session_path: handshake.pi_session_path,
+        pi_session_cwd: handshake.pi_session_cwd,
+        rollback: None,
     })
 }
 
@@ -1253,6 +1498,7 @@ pub(crate) mod tests {
             node_id: "n-0001".into(),
             attempt: 3,
             pi_session_source_path: None,
+            claude_session_id: None,
         }
     }
 

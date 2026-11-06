@@ -429,6 +429,13 @@ fn remove_message_adapter(paths: &RunPaths, attempt: u32) {
         let dir = state_root.join(".creating");
         remove_message_socket(paths, attempt);
         let _ = std::fs::remove_file(dir.join(format!("message-{}.ts", paths.run_id)));
+        // A resident's last round marker (ADR 0003); earlier ones are removed
+        // when each next round resumes.
+        let _ = std::fs::remove_file(crate::run::resident::round_marker_path(
+            state_root,
+            paths.run_id.as_str(),
+            attempt,
+        ));
     }
 }
 

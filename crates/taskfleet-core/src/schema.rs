@@ -739,6 +739,110 @@ pub struct Manifest {
     pub parent_run_id: Option<RunId>,
     /// Node in the parent run that spawned this run, if any.
     pub parent_node_id: Option<NodeId>,
+    /// Named resident policy (`run create --resident --name`, ADR 0003). A
+    /// told create-time fact, never transitioned; absent for ordinary runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident: Option<ResidentPolicy>,
+}
+
+/// Create-time policy of a named resident run (ADR 0003): a worker that works
+/// in told rounds and is resumed from its native session by the next message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResidentPolicy {
+    /// Repository-scoped name; resolves only among live runs of the same
+    /// repository. Starts with a lowercase letter, so it is never a run-id prefix.
+    pub name: String,
+    /// Seconds after the open round report (worker exited) before idle expiry.
+    pub idle_expiry_secs: u64,
+}
+
+impl ResidentPolicy {
+    /// Longest accepted resident name.
+    pub const MAX_NAME_LEN: usize = 48;
+
+    /// Validate a resident name: `[a-z][a-z0-9-]*`, at most
+    /// [`Self::MAX_NAME_LEN`] bytes, no trailing or doubled hyphen. The leading
+    /// letter keeps names disjoint from run-id prefixes (which start `0`-`7`).
+    pub fn validate_name(name: &str) -> Result<(), String> {
+        let b = name.as_bytes();
+        if b.is_empty()
+            || b.len() > Self::MAX_NAME_LEN
+            || !b[0].is_ascii_lowercase()
+            || !b
+                .iter()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+            || name.ends_with('-')
+            || name.contains("--")
+        {
+            return Err(format!(
+                "resident name must match [a-z][a-z0-9-]* (at most {} bytes, no trailing or doubled hyphen)",
+                Self::MAX_NAME_LEN
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One told round report of a resident worker (`node.round_reported`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoundReport {
+    /// 1-based round number.
+    pub round: u32,
+    /// Worker attempt that reported it.
+    pub attempt: u32,
+    /// Envelope timestamp of the report (the idle-expiry anchor).
+    pub reported_at: DateTime<Utc>,
+    /// Event sequence of the report.
+    pub event_seq: u64,
+    /// Worker-written summary of the round (bounded).
+    pub summary: String,
+    /// Set when the next message resumed the worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<DateTime<Utc>>,
+    /// Message id that closed the round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_by: Option<String>,
+}
+
+/// A round landed into the source branch by `run land` (`node.round_landed`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoundLanding {
+    /// When the landing was recorded.
+    pub at: DateTime<Utc>,
+    /// Source branch that was fast-forwarded.
+    pub source_branch: String,
+    /// The integrated tip now at the source branch.
+    pub integrated_oid: String,
+    /// Round number open (or last reported) when the land happened.
+    pub round: u32,
+}
+
+/// Durable round state of a resident worker node (ADR 0003). Folded only from
+/// told events; the read surfaces derive `working | waiting | dormant` from it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResidentState {
+    /// Rounds reported so far.
+    pub rounds_reported: u32,
+    /// The latest round report, open until a message resumes the worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_round: Option<RoundReport>,
+    /// The latest landing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_landing: Option<RoundLanding>,
+    /// Set when idle expiry removed the worktree of a wholly landed round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dormant_since: Option<DateTime<Utc>>,
+    /// Set when idle expiry found unlanded work and raised attention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_attention_at: Option<DateTime<Utc>>,
+}
+
+impl ResidentState {
+    /// The open round report, if the worker is between rounds.
+    #[must_use]
+    pub fn open_round(&self) -> Option<&RoundReport> {
+        self.last_round.as_ref().filter(|r| r.closed_at.is_none())
+    }
 }
 
 /// Immutable same-user display attribution, never ownership or authorization.
@@ -1185,6 +1289,15 @@ pub struct Node {
     /// default without inventing a second advisory schema.
     #[serde(default)]
     pub awaiting_input: Option<Box<AwaitingInput>>,
+    /// Claude session id the launcher assigned (`--session-id`), recorded so a
+    /// resident round can `--resume` exactly that session. Absent for Pi and
+    /// for runs created before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
+    /// Round state of a resident worker (ADR 0003); absent for ordinary runs
+    /// and before the first round report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident: Option<Box<ResidentState>>,
 }
 
 /// Durable open-discussion state projected from `node.awaiting_input`.
@@ -1265,6 +1378,10 @@ pub struct MergeTxn {
     /// the exact writer inode held by the merge driver. Absent on normal merges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_authority: Option<CallerMergeLink>,
+    /// A resident `run land` transaction (ADR 0003): its completion is a
+    /// non-terminal `node.round_landed`, never an `explicit-merge` report.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landing: bool,
     /// When the transaction was recorded.
     pub started_at: DateTime<Utc>,
 }

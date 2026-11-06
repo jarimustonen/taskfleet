@@ -15,6 +15,7 @@ pub mod create;
 pub mod discard;
 pub mod dto;
 pub mod false_failed;
+pub mod land;
 pub mod landed;
 pub mod list;
 pub mod merge;
@@ -22,6 +23,8 @@ pub mod merge_recovery;
 pub mod message;
 pub mod ownership;
 pub mod reattach;
+pub mod resident;
+pub mod resume;
 pub mod retained;
 pub mod salvage;
 pub mod session;
@@ -198,6 +201,25 @@ pub enum RunAction {
         /// the command should tolerate running more than once.
         #[arg(long)]
         notify: Option<String>,
+        /// Make this a named resident worker (ADR 0003): it works in rounds,
+        /// ends each with `taskfleet node round-report`, and its process exits
+        /// while its worktree, branch, and native session stay. The next
+        /// `run message <name>` resumes the same session in the same worktree
+        /// (Pi and Claude); `run land <name>` merges a round without ending the
+        /// run. Autonomous single-worker kinds only. Requires `--name`.
+        #[arg(long, requires = "name")]
+        resident: bool,
+        /// Repository-scoped resident name (`[a-z][a-z0-9-]*`, at most 48
+        /// bytes). Resolves only among this repository's live runs; refused
+        /// while another live run here has it.
+        #[arg(long, requires = "resident")]
+        name: Option<String>,
+        /// Idle expiry after an open round report with the worker exited
+        /// (default `24h`). Then a wholly landed round's worktree is removed
+        /// (the session is kept and the next message recreates it); unlanded
+        /// work is preserved and raises attention. Never merges.
+        #[arg(long, requires = "resident", value_parser = wait::parse_duration)]
+        idle_expiry: Option<Duration>,
         #[arg(long)]
         idempotency_key: Option<String>,
         #[arg(long)]
@@ -264,6 +286,7 @@ pub enum RunAction {
     /// inside a worker worktree to resolve its exact owning run from durable
     /// node ownership metadata (never from the branch's short run-id prefix).
     Show {
+        /// Run id, unambiguous prefix, or resident name (this repository).
         #[arg(required_unless_present = "current", conflicts_with = "current")]
         run_id: Option<String>,
         /// Resolve the exact run whose node records the current git worktree and
@@ -277,9 +300,15 @@ pub enum RunAction {
     /// and returns a descriptor without attaching. Never creates a tmux server.
     /// Example: taskfleet run attach 01arz3ndektsv4rrffq69g5fav --json
     Attach { run_id: String },
-    /// Send a steering message to a live Taskfleet-launched Pi worker with an
-    /// acknowledged extension adapter. Acceptance does not prove it was read or acted on.
+    /// Send a message to a worker. A live Taskfleet-launched Pi worker gets it
+    /// through its acknowledged extension adapter. A resident worker between
+    /// rounds (ADR 0003) is resumed: its branch is rebased onto the source tip
+    /// (conflicts become the round's first task), then its next attempt starts
+    /// from the same native session (Pi `--session`, Claude `--resume`) in the
+    /// same worktree with the message as first input, closing the open round.
+    /// Acceptance does not prove the message was read or acted on.
     Message {
+        /// Run id, unambiguous prefix, or resident name (this repository).
         run_id: String,
         #[arg(long, default_value = "n-0001")]
         node: String,
@@ -287,6 +316,29 @@ pub enum RunAction {
         text: Option<String>,
         #[arg(long, conflicts_with = "text")]
         body_file: Option<PathBuf>,
+        /// Resident only: how long to wait for the told exit of a worker that
+        /// reported its round but is still stopping.
+        #[arg(long, value_parser = wait::parse_duration, default_value = "2m")]
+        wait_exit: Duration,
+    },
+    /// Land a resident worker's committed rounds (ADR 0003): rebase its branch
+    /// onto the source tip and fast-forward the source, recorded and
+    /// recoverable like `run merge`, but non-terminal: worktree, branch, and
+    /// native session stay. Only while no worker process runs (waits up to
+    /// --wait-exit after a round report). A conflict lands nothing and leaves
+    /// the worktree unchanged; message the worker to resolve it.
+    /// Example: taskfleet run land proto-m365 --json
+    Land {
+        /// Run id, unambiguous prefix, or resident name (this repository).
+        run: String,
+        #[arg(long, default_value = "n-0001")]
+        node: String,
+        /// How long to wait for the told exit after an open round report.
+        #[arg(long, value_parser = wait::parse_duration, default_value = "2m")]
+        wait_exit: Duration,
+        /// Report how many commits would land without moving anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Manage a caller-owned native Pi session association (not writer authority).
     Session {
@@ -421,7 +473,8 @@ pub enum RunAction {
     /// mutates run state. Exit codes: `0` condition met, `1` usage/unknown
     /// run, `2` timeout, `3` (`--fail-on-error`) a settled run failed, `4` check-in.
     Wait {
-        /// One or more run ids to wait on.
+        /// One or more run ids (or resident names) to wait on. A resident
+        /// settles as soon as it reports its round (`round_reported: true`).
         #[arg(required = true, num_args = 1..)]
         run_id: Vec<String>,
         /// Return once *every* listed run settles (default).
@@ -583,6 +636,9 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             parent_run_id,
             parent_node_id,
             notify,
+            resident,
+            name,
+            idle_expiry,
             idempotency_key,
             dry_run,
             skip_materialize,
@@ -606,6 +662,9 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             parent_run_id,
             parent_node_id,
             notify,
+            resident,
+            name,
+            idle_expiry,
             idempotency_key,
             dry_run,
             spec,
@@ -650,7 +709,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
                 })?;
                 ownership::resolve_current(&root, &cwd)?.to_string()
             } else {
-                run_id.expect("clap requires run_id unless --current")
+                resident::canonical_run_arg(run_id.expect("clap requires run_id unless --current"))?
             };
             show::run(&run_id, spec, warnings)
         }
@@ -754,21 +813,36 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             node,
             text,
             body_file,
+            wait_exit,
         } => message::run(
             &run_id,
             &node,
             text.as_deref(),
             body_file.as_deref(),
+            wait_exit,
             spec,
             warnings,
         ),
+        RunAction::Land {
+            run,
+            node,
+            wait_exit,
+            dry_run,
+        } => land::run(land::Args {
+            run,
+            node,
+            wait_exit,
+            dry_run,
+            spec,
+            warnings,
+        }),
         RunAction::Cancel {
             run_id,
             node,
             note,
             settlement_key,
         } => cancel::run(
-            &run_id,
+            &resident::canonical_run_arg(run_id)?,
             node.as_deref(),
             note.as_deref(),
             settlement_key.as_deref(),
@@ -784,7 +858,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             actor,
             dry_run,
         } => merge::run(merge::Args {
-            run_id,
+            run_id: resident::canonical_run_arg(run_id)?,
             source,
             node_id,
             report_file,
@@ -839,7 +913,10 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             progress,
             poll_interval,
         } => wait::run(wait::Args {
-            run_ids: run_id,
+            run_ids: run_id
+                .into_iter()
+                .map(resident::canonical_run_arg)
+                .collect::<Result<_, _>>()?,
             any,
             timeout,
             check_in,

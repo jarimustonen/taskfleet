@@ -202,9 +202,11 @@ the person must see in your round summary.
 
 End every round like this:
 
-1. Write the round's result where the task asks (normally the issue's
-   `result.md`) and commit it, written as if the next round started fresh.
-   Your context is a cache, not the record.
+1. Write the round's result where the task asks (for an issue-driven task,
+   normally the issue's `result.md`; nowhere extra when the task names its
+   artifact), written as if the next round started fresh, and commit
+   everything you keep: leave `git status` clean, because uncommitted files
+   block landing the round. Your context is a cache, not the record.
 2. Write a short summary (what you did, what you recommend, what you need
    next) to a file and run exactly:
 

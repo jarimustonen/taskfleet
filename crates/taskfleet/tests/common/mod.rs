@@ -102,6 +102,7 @@ case "$1" in
     pid=$!
     echo "$pid" > "$NATIVE_TEST_AGENT_PID"
     /bin/ps -o lstart= -p "$pid" > "$NATIVE_TEST_AGENT_START"
+    printf '%%77\n'
     exit 0 ;;
   display-message)
     case "$*" in

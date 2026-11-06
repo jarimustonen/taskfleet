@@ -166,6 +166,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             ),
         ));
     }
+    let dirty = resident::git(wt, &["status", "--porcelain", "--untracked-files=all"])
+        .map_err(|e| merge_failed(&branch, e))?;
+    if !dirty.is_empty() {
+        return Err(CliError::user(
+            "worktree_dirty",
+            format!(
+                "worktree {worktree} has uncommitted or untracked files; nothing was landed. \
+                 Message the worker to commit (or remove) them, then land"
+            ),
+        )
+        .with_details(json!({"status": dirty.lines().take(20).collect::<Vec<_>>()})));
+    }
     let commits = resident::git(wt, &["rev-list", "--count", &format!("{source}..{branch}")])
         .map_err(|e| merge_failed(&branch, e))?
         .parse::<usize>()

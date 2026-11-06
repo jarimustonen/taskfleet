@@ -928,6 +928,27 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
         (out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == identity.window_id)
             .then(|| pane.to_string())
     });
+    // A resumed round's worker runs as the pane's own process, so keep a dead
+    // pane: evidence capture reads its final history at the terminal
+    // transition, and the next round respawns it.
+    let keep_dead_pane = |pane: &str| {
+        command_output(
+            "tmux",
+            &[
+                "set-option".into(),
+                "-p".into(),
+                "-t".into(),
+                pane.into(),
+                "remain-on-exit".into(),
+                "on".into(),
+            ],
+            req.cwd,
+            "tmux_setup_failed",
+        )
+    };
+    if let Some(pane) = &reusable {
+        let _ = keep_dead_pane(pane);
+    }
     let started = match &reusable {
         Some(pane) => command_output(
             "tmux",
@@ -949,6 +970,9 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
             &[
                 "new-window".into(),
                 "-d".into(),
+                "-P".into(),
+                "-F".into(),
+                "#{pane_id}".into(),
                 "-t".into(),
                 format!("{session}:"),
                 "-n".into(),
@@ -962,6 +986,12 @@ pub fn materialize_resume(req: &ResumeRequest<'_>) -> Result<SpawnOutcome, CliEr
             "resume_launch_failed",
         )?,
     };
+    if reusable.is_none() && started.status.success() {
+        let pane = String::from_utf8_lossy(&started.stdout).trim().to_string();
+        if !pane.is_empty() {
+            let _ = keep_dead_pane(&pane);
+        }
+    }
     if !started.status.success() {
         return Err(CliError::system(
             "resume_launch_failed",

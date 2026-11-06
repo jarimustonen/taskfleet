@@ -3,12 +3,14 @@ created: 2026-11-06
 updated: 2026-11-06
 type: feature
 reporter: jari
-status: open
+status: done
 priority: normal
 provenance: chat
 source_ref: open-habitat:design-named-workers
 lane: named-workers
 lane_seq: 1
+closed: 2026-11-06
+closed_by: claude
 ---
 
 # Named resident workers that work in rounds, land, sleep and resume
@@ -57,6 +59,6 @@ must expose the round state and the latest report summary.
 
 ## Acceptance Criteria
 
-- [ ] ADR recording the resident/round model and how it fits ADR 0001
-- [ ] the surface above works for Pi and Claude workers, with tests of round report, resume after exit, land, rebase-on-message, expiry and revival
-- [ ] bundled skills updated; `scripts/validate-local-release.sh` green
+- [x] ADR recording the resident/round model and how it fits ADR 0001
+- [x] the surface above works for Pi and Claude workers, with tests of round report, resume after exit, land, rebase-on-message, expiry and revival
+- [x] bundled skills updated; `scripts/validate-local-release.sh` green

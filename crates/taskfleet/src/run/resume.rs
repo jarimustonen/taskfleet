@@ -430,7 +430,14 @@ pub(crate) fn resume(
         "tmux_server_marker": outcome.tmux_server_marker,
         "pi_session_id": outcome.pi_session_id,
         "pi_session_path": outcome.pi_session_path,
-        "pi_session_cwd": outcome.pi_session_cwd,
+        // The transcript header is written once, at the session's creation, and
+        // a resumed round reopens it unchanged: its recorded cwd stays the one
+        // evidence capture verifies against.
+        "pi_session_cwd": node
+            .evidence
+            .as_ref()
+            .map(|e| e.original_cwd.clone())
+            .or(outcome.pi_session_cwd.clone()),
         "claude_session_id": launcher.claude_session_id(),
         "agent_pid": outcome.agent_pid_hint,
         "agent_pid_start_time": DateTime::<Utc>::from_timestamp(

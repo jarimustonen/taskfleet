@@ -84,7 +84,29 @@ case "$1" in
   new-session|has-session) : > "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
   rename-window) exit 97 ;; # workmux, not Taskfleet, owns display naming
   kill-window|kill-session) /bin/rm -f "$NATIVE_TEST_TMUX_STATE"; exit 0 ;;
+  respawn-pane|new-window)
+    # Resident resume (ADR 0003): run the trailing `<launcher> <message>` in
+    # the requested directory, like a pane process with TMUX_PANE set.
+    shift; dir=.
+    while [ "$#" -gt 2 ]; do
+      case "$1" in
+        -c) dir=$2; shift 2 ;;
+        -t|-n) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '%s' "$NATIVE_TEST_WORKMUX_CONFIGURED_WINDOW_NAME" > "$NATIVE_TEST_WINDOW_NAME_STATE"
+    : > "$NATIVE_TEST_TMUX_STATE"
+    cd "$dir" || exit 1
+    TMUX_PANE=%77 "$1" "$2" </dev/null >>"$NATIVE_TEST_AGENT_STDOUT" 2>>"$NATIVE_TEST_AGENT_STDERR" &
+    pid=$!
+    echo "$pid" > "$NATIVE_TEST_AGENT_PID"
+    /bin/ps -o lstart= -p "$pid" > "$NATIVE_TEST_AGENT_START"
+    exit 0 ;;
   display-message)
+    case "$*" in
+      *'#{window_id}') [ -f "$NATIVE_TEST_TMUX_STATE" ] && printf '@77\n'; exit 0 ;;
+    esac
     case " $* " in
       *" -t "*) printf '%s\t%s\t@77\t%s\t%s\t%s\n' "$NATIVE_TEST_TMUX_SOCKET" "${NATIVE_TEST_SESSION:-headless}" "$(/bin/cat "$NATIVE_TEST_WINDOW_NAME_STATE")" "${NATIVE_TEST_TMUX_SERVER_PID:-}" "${NATIVE_TEST_TMUX_SERVER_MARKER:-}" ;;
       *) printf '%s\n' "${NATIVE_TEST_SESSION:-fixture}" ;;

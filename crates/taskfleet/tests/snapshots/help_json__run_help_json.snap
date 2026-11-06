@@ -140,6 +140,14 @@ expression: value
         "has_subcommands": false
       },
       {
+        "command": "taskfleet run land",
+        "about": "Land a resident worker's committed rounds (ADR 0003): rebase its branch onto the source tip and fast-forward the source, recorded and recoverable like `run merge`, but non-terminal: worktree, branch, and native session stay. Only while no worker process runs (waits up to --wait-exit after a round report). A conflict lands nothing and leaves the worktree unchanged; message the worker to resolve it. Example: taskfleet run land proto-m365 --json",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
         "command": "taskfleet run list",
         "about": "List runs on disk",
         "aliases": [],
@@ -157,7 +165,7 @@ expression: value
       },
       {
         "command": "taskfleet run message",
-        "about": "Send a steering message to a live Taskfleet-launched Pi worker with an acknowledged extension adapter. Acceptance does not prove it was read or acted on",
+        "about": "Send a message to a worker. A live Taskfleet-launched Pi worker gets it through its acknowledged extension adapter. A resident worker between rounds (ADR 0003) is resumed: its branch is rebased onto the source tip (conflicts become the round's first task), then its next attempt starts from the same native session (Pi `--session`, Claude `--resume`) in the same worktree with the message as first input, closing the open round. Acceptance does not prove the message was read or acted on",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

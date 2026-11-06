@@ -1891,6 +1891,244 @@ expression: value
             "subcommands": []
           },
           {
+            "command": "taskfleet node round-report",
+            "about": "End a resident worker's round (ADR 0003): record the round summary as a told `node.round_reported`, then stop. The exit that follows is the end of the round, `run wait` settles at once, and the next `run message` resumes the same session in the same worktree. Resident runs only. Example: taskfleet node round-report <run-id> --summary-file /tmp/round.md",
+            "aliases": [],
+            "hidden": false,
+            "deprecated": false,
+            "flags": [
+              {
+                "name": "dry_run",
+                "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Validate and report the round number without appending anything",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "help",
+                "long": "help",
+                "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "node",
+                "long": "node",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Reporting node id",
+                "value_names": [
+                  "NODE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "n-0001"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "output",
+                "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "summary",
+                "long": "summary",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Inline round summary (alternative to --summary-file)",
+                "value_names": [
+                  "SUMMARY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "summary_file",
+                "long": "summary-file",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "UTF-8 file with the round summary (at most 16 KiB): what was done, what is recommended, what is needed next",
+                "value_names": [
+                  "SUMMARY_FILE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [
+                  "summary"
+                ],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "help": "Exact run id from the worker's run context",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
+                "deprecated": false
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "command": "taskfleet node show",
             "about": "Print one node's JSON projection",
             "aliases": [],
@@ -3093,6 +3331,37 @@ expression: value
                 }
               },
               {
+                "name": "idle_expiry",
+                "long": "idle-expiry",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Idle expiry after an open round report with the worker exited (default `24h`). Then a wholly landed round's worktree is removed (the session is kept and the next message recreates it); unlanded work is preserved and raises attention. Never merges",
+                "value_names": [
+                  "IDLE_EXPIRY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "resident"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "interactive",
                 "long": "interactive",
                 "long_aliases": [],
@@ -3203,6 +3472,37 @@ expression: value
                 "accepts_file_paths": false,
                 "conflicts_with": [],
                 "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "name",
+                "long": "name",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Repository-scoped resident name (`[a-z][a-z0-9-]*`, at most 48 bytes). Resolves only among this repository's live runs; refused while another live run here has it",
+                "value_names": [
+                  "NAME"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "resident"
+                ],
                 "required_unless_present": [],
                 "arity": {
                   "min": 1,
@@ -3418,6 +3718,37 @@ expression: value
                 "arity": {
                   "min": 1,
                   "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "resident",
+                "long": "resident",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Make this a named resident worker (ADR 0003): it works in rounds, ends each with `taskfleet node round-report`, and its process exits while its worktree, branch, and native session stay. The next `run message <name>` resumes the same session in the same worktree (Pi and Claude); `run land <name>` merges a round without ending the run. Autonomous single-worker kinds only. Requires `--name`",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [
+                  "name"
+                ],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
                   "repeated": false,
                   "multi_value": false,
                   "require_equals": false
@@ -3849,6 +4180,214 @@ expression: value
                 "name": "run_id",
                 "value_names": [
                   "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
+                "deprecated": false
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "taskfleet run land",
+            "about": "Land a resident worker's committed rounds (ADR 0003): rebase its branch onto the source tip and fast-forward the source, recorded and recoverable like `run merge`, but non-terminal: worktree, branch, and native session stay. Only while no worker process runs (waits up to --wait-exit after a round report). A conflict lands nothing and leaves the worktree unchanged; message the worker to resolve it. Example: taskfleet run land proto-m365 --json",
+            "aliases": [],
+            "hidden": false,
+            "deprecated": false,
+            "flags": [
+              {
+                "name": "dry_run",
+                "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Report how many commits would land without moving anything",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "help",
+                "long": "help",
+                "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "node",
+                "long": "node",
+                "long_aliases": [],
+                "short_aliases": [],
+                "value_names": [
+                  "NODE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "n-0001"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "output",
+                "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "wait_exit",
+                "long": "wait-exit",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "How long to wait for the told exit after an open round report",
+                "value_names": [
+                  "WAIT_EXIT"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "2m"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run",
+                "help": "Run id, unambiguous prefix, or resident name (this repository)",
+                "value_names": [
+                  "RUN"
                 ],
                 "index": 1,
                 "required": true,
@@ -4344,7 +4883,7 @@ expression: value
           },
           {
             "command": "taskfleet run message",
-            "about": "Send a steering message to a live Taskfleet-launched Pi worker with an acknowledged extension adapter. Acceptance does not prove it was read or acted on",
+            "about": "Send a message to a worker. A live Taskfleet-launched Pi worker gets it through its acknowledged extension adapter. A resident worker between rounds (ADR 0003) is resumed: its branch is rebased onto the source tip (conflicts become the round's first task), then its next attempt starts from the same native session (Pi `--session`, Claude `--resume`) in the same worktree with the message as first input, closing the open round. Acceptance does not prove the message was read or acted on",
             "aliases": [],
             "hidden": false,
             "deprecated": false,
@@ -4500,11 +5039,43 @@ expression: value
                   "multi_value": false,
                   "require_equals": false
                 }
+              },
+              {
+                "name": "wait_exit",
+                "long": "wait-exit",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Resident only: how long to wait for the told exit of a worker that reported its round but is still stopping",
+                "value_names": [
+                  "WAIT_EXIT"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "2m"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
               {
                 "name": "run_id",
+                "help": "Run id, unambiguous prefix, or resident name (this repository)",
                 "value_names": [
                   "RUN_ID"
                 ],
@@ -6561,6 +7132,7 @@ expression: value
             "positionals": [
               {
                 "name": "run_id",
+                "help": "Run id, unambiguous prefix, or resident name (this repository)",
                 "value_names": [
                   "RUN_ID"
                 ],
@@ -7247,7 +7819,7 @@ expression: value
             "positionals": [
               {
                 "name": "run_id",
-                "help": "One or more run ids to wait on",
+                "help": "One or more run ids (or resident names) to wait on. A resident settles as soon as it reports its round (`round_reported: true`)",
                 "value_names": [
                   "RUN_ID"
                 ],
@@ -8938,6 +9510,37 @@ expression: value
             "arity": {
               "min": 1,
               "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "pi_session_resume",
+            "long": "pi-session-resume",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Resident resume (ADR 0003): verify the existing run-bound transcript instead of creating its header",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [
+              "pi_session_path"
+            ],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
               "repeated": false,
               "multi_value": false,
               "require_equals": false

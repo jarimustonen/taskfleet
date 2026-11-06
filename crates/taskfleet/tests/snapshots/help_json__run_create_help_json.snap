@@ -1,6 +1,5 @@
 ---
 source: crates/taskfleet/tests/help_json.rs
-assertion_line: 82
 expression: value
 ---
 {
@@ -221,6 +220,37 @@ expression: value
         }
       },
       {
+        "name": "idle_expiry",
+        "long": "idle-expiry",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Idle expiry after an open round report with the worker exited (default `24h`). Then a wholly landed round's worktree is removed (the session is kept and the next message recreates it); unlanded work is preserved and raises attention. Never merges",
+        "value_names": [
+          "IDLE_EXPIRY"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [
+          "resident"
+        ],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
         "name": "interactive",
         "long": "interactive",
         "long_aliases": [],
@@ -331,6 +361,37 @@ expression: value
         "accepts_file_paths": false,
         "conflicts_with": [],
         "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "name",
+        "long": "name",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Repository-scoped resident name (`[a-z][a-z0-9-]*`, at most 48 bytes). Resolves only among this repository's live runs; refused while another live run here has it",
+        "value_names": [
+          "NAME"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [
+          "resident"
+        ],
         "required_unless_present": [],
         "arity": {
           "min": 1,
@@ -546,6 +607,37 @@ expression: value
         "arity": {
           "min": 1,
           "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "resident",
+        "long": "resident",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Make this a named resident worker (ADR 0003): it works in rounds, ends each with `taskfleet node round-report`, and its process exits while its worktree, branch, and native session stay. The next `run message <name>` resumes the same session in the same worktree (Pi and Claude); `run land <name>` merges a round without ending the run. Autonomous single-worker kinds only. Requires `--name`",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [
+          "name"
+        ],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
           "repeated": false,
           "multi_value": false,
           "require_equals": false

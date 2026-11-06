@@ -1219,6 +1219,61 @@ mod tests {
         );
     }
 
+    /// A crashed resident `run land` (ADR 0003) that moved the source completes
+    /// with the non-terminal `node.round_landed`, never a terminal merge report:
+    /// the resident run, its worktree, and its session stay.
+    #[test]
+    fn recovered_landing_transaction_completes_without_terminalizing() {
+        let (repo_dir, base, worker_tip) = repo_with_worker();
+        let repo = repo_dir.path();
+        git(repo, &["merge", "-q", "--ff-only", "wt/worker"]);
+        let home = tempfile::TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let dir = home.path().join(run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({"kind": "spinoff", "lifecycle": "autonomous", "title": "t",
+                "source_branch": "main", "source_repo": repo.to_str().unwrap(),
+                "resident": {"name": "proto", "idle_expiry_secs": 60}}),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid),
+            None,
+            json!({"kind": "spinoff", "worktree_path": repo.to_str().unwrap(), "branch": "wt/worker"}),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            taskfleet_core::KIND_MERGE_STARTED,
+            Some(&nid),
+            None,
+            json!({"op_id": "01jxop00000000000000000000", "source_branch": "main",
+                "worker_branch": "wt/worker", "expected_source_oid": base,
+                "worker_oid": worker_tip, "base_sha": base, "driver_pid": 2_000_000_000,
+                "driver_pid_start_secs": null, "landing": true,
+                "started_at": "2026-08-15T00:00:00Z"}),
+        )
+        .unwrap();
+
+        assert_eq!(recover_node(&paths, &nid, &git_bin()), Recovery::Completed);
+        let n = read_node_opt(&paths, &nid).unwrap().unwrap();
+        assert_eq!(n.status, Status::Pending, "a land never ends the run");
+        assert!(n.last_report.is_none());
+        assert!(n.pending_merge.is_none());
+        let landing = n.resident.unwrap().last_landing.unwrap();
+        assert_eq!(landing.integrated_oid, worker_tip);
+        assert_eq!(n.base_sha.as_deref(), Some(worker_tip.as_str()));
+    }
+
     /// Crash window 2: `merge.started` was recorded but git was never mutated (the
     /// source ref is still exactly `expected_source_oid`). Recovery must REJECT the
     /// transaction — fail closed, clear it, and leave the node live with its work

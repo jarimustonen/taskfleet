@@ -43,15 +43,28 @@ pub const DEFAULT_IDLE_EXPIRY_SECS: u64 = 24 * 60 * 60;
 pub(crate) fn resolve_run_ref(root: &Path, arg: &str) -> Result<RunPaths, CliError> {
     match RunSelector::parse(arg) {
         Ok(selector) => run_paths_exact(root, &selector.resolve(root)?),
-        Err(id_error) => {
-            if ResidentPolicy::validate_name(arg).is_err() {
-                return Err(id_error);
-            }
-            let cwd = std::env::current_dir().map_err(|e| {
-                CliError::system("io_error", format!("read current directory: {e}"))
-            })?;
-            let rid = resolve_name(root, arg, &cwd)?;
-            run_paths_exact(root, &rid)
+        Err(id_error) => run_paths_exact(root, &resolve_name_or(root, arg, id_error)?),
+    }
+}
+
+/// Resolve `arg` as a resident name. When it is not a name, or no live run
+/// of this repository carries it, the original run-id error stands (a typo
+/// keeps its `invalid_run_id` class); an ambiguous name is its own error.
+fn resolve_name_or(root: &Path, arg: &str, id_error: CliError) -> Result<RunId, CliError> {
+    if ResidentPolicy::validate_name(arg).is_err() {
+        return Err(id_error);
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| CliError::system("io_error", format!("read current directory: {e}")))?;
+    match resolve_name(root, arg, &cwd) {
+        Ok(rid) => Ok(rid),
+        Err(e) if e.code == "ambiguous_run_name" => Err(e),
+        Err(_) => {
+            let mut error = id_error;
+            error
+                .message
+                .push_str("; it is also not the name of a live resident run in this repository");
+            Err(error)
         }
     }
 }
@@ -61,13 +74,15 @@ pub(crate) fn resolve_run_ref(root: &Path, arg: &str) -> Result<RunPaths, CliErr
 /// other argument untouched, so id and prefix handling (and their errors) are
 /// exactly as before.
 pub(crate) fn canonical_run_arg(arg: String) -> Result<String, CliError> {
-    if RunSelector::parse(&arg).is_ok() || ResidentPolicy::validate_name(&arg).is_err() {
+    let id_error = match RunSelector::parse(&arg) {
+        Ok(_) => return Ok(arg),
+        Err(e) => e,
+    };
+    if ResidentPolicy::validate_name(&arg).is_err() {
         return Ok(arg);
     }
     let root = crate::home::root_dir()?;
-    let cwd = std::env::current_dir()
-        .map_err(|e| CliError::system("io_error", format!("read current directory: {e}")))?;
-    Ok(resolve_name(&root, &arg, &cwd)?.to_string())
+    Ok(resolve_name_or(&root, &arg, id_error)?.to_string())
 }
 
 /// The git common directory identifying the repository that contains `path`.

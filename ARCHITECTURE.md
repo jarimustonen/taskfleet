@@ -14,7 +14,8 @@ the only command and hidden subprocesses re-execute that exact current binary.
   `TASKFLEET_*` variables and `taskfleet.worker-telemetry-adapter` id form its
   protocol vocabulary.
 - `docs/decisions/` records architectural decisions. ADR 0002 establishes
-  Taskfleet as the repository's sole identity.
+  Taskfleet as the repository's sole identity; ADR 0003 adds named resident
+  workers that work in told rounds.
 
 ## State and process boundaries
 
@@ -51,6 +52,14 @@ existing awaiting-input event contract independently of worker telemetry. They
 never answer prompts or grant teardown authority. `run wait --check-in` bounds
 parent inspection without inventing worker state from activity proxies. See
 [Claude prompt signals](docs/CLAUDE-PROMPT-SIGNALS.md) for supported paths and unknowns.
+
+A named resident run (ADR 0003, `run/resident.rs`) keeps its worktree,
+branch, and native session between rounds. `node round-report` is the told end
+of a round, `run message` resumes the recorded Pi or Claude session in the same
+worktree after rebasing onto the source (`run/resume.rs`), `run land` is a
+recorded non-terminal merge (`run/land.rs`), and the supervisor's
+`supervise/resident.rs` notifies on round reports and applies idle expiry
+without ever merging.
 
 Creator run and optional native-session attribution are immutable display facts,
 not ownership or fan-out edges. See [Creator attribution](docs/CREATOR-ATTRIBUTION.md)

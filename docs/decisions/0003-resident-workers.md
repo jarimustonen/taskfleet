@@ -60,14 +60,16 @@ current attempt and the shim's exit — and the outcome table gains:
 | round report for this attempt, then any exit | `waiting` (non-terminal, not attention) | none |
 | clean exit, no round report, no merge | `attention-required` (unchanged) | none |
 | non-zero exit or signal, no round report | `failed` (unchanged) | preserve |
-| idle expiry, everything landed | `dormant` (non-terminal) | worktree and integrated branch removed; native session kept |
-| idle expiry, unlanded work | `attention-required` (`resident-idle-unlanded`) | none |
+| idle expiry, everything landed | `dormant` (non-terminal) | worktree removed; branch and native session kept |
+| idle expiry, unlanded work | `attention-required` (idle with unlanded work) | none |
 | `run merge` | `done` (unchanged) | yes |
 | `run cancel` | `cancelled` (unchanged) | preserve |
 
 A failing exit *after* the round report does not fail the node: the report is
 the higher-fidelity fact about the round, the same way a merge wins over a
-later non-zero exit. Resident runs are excluded from the empty-handed
+later non-zero exit. For the same reason the crash backstop does not fire after
+a round report; a recorded worker that is provably gone (its shim lost to a
+host restart) has ended the round as well, and the next message resumes it. Resident runs are excluded from the empty-handed
 auto-retry, because a retry mints a fresh worktree and session and would throw
 away the continuity the run exists for.
 
@@ -120,11 +122,11 @@ initiates a merge or a land.
 After `idle_expiry` (default 24 h) from the open round report with the worker
 exited, the supervisor takes the resident lock and applies invariant 5's
 fail-closed rule. If the branch is wholly reachable from the source branch and
-the worktree is clean, it removes the worktree and the integrated branch and
-records `node.resident_dormant`; the Pi transcript and the Claude session
+the worktree is clean, it removes the worktree (non-force) and records
+`node.resident_dormant`; the branch, the Pi transcript and the Claude session
 store are untouched, and the next message recreates the worktree at the same
-path. Anything else records `node.resident_attention` once and preserves
-everything. A dormant resident is still revivable at any time; it ends only
+path on the same branch. Anything else records `node.resident_attention` once
+and preserves everything. A dormant resident is still revivable at any time; it ends only
 with `run merge` or `run cancel`.
 
 The deadline is anchored on the told round report, not on observed activity.

@@ -73,7 +73,9 @@ which one it is.
 - `/worktree-spinoff` — one focused piece of autonomous work: a coding task, a
   bug fix, a chore, or an issue slug on its own. This is the default when no
   other shape applies. A bug fix is a spinoff driven by the bug's issue slug;
-  there is no separate bugfix variant.
+  there is no separate bugfix variant. A named support worker that takes
+  follow-up rounds ("keep a prototyper on this", "a reviewer I will come back
+  to") is a spinoff created `--resident`; the sibling covers it.
 - `/worktree-research` — an open inquiry that needs several sources read and
   synthesized into a written report: "research", "investigate", "survey",
   "compare the options for". Not a one-search factual lookup, not a summary of

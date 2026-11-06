@@ -183,7 +183,13 @@ history, and the terminal report before any cleanup. A failed capture is a
 durable `worker.evidence.failed` fact that vetoes cleanup and retries with
 backoff, so a run that seems stuck at teardown is usually waiting on
 evidence, and the fix is to look at that event rather than to force cleanup.
-The original transcript is never rewritten. Reaching into pi's session store
+The original transcript is never rewritten. A named resident round (ADR
+0003, `src/run/resume.rs`) is the one launch that reuses a session: its
+launcher reopens the recorded Pi transcript with `--session` (the handshake
+verifies the file instead of writing a header, and the header's original cwd
+stays the evidence identity) or resumes the recorded Claude id with
+`--resume`, and it starts in the existing worktree with `tmux respawn-pane` or
+`new-window`, never `workmux add`. Reaching into pi's session store
 by mtime or newest file, or into a harness process manager, was considered and
 rejected (root `AGENTS.md`, homebase ADR 0011).
 

@@ -117,7 +117,67 @@ independent units are `/fan-out`. Several features that depend on each other are
 scheduled as bounded waves through `/stint-start` (using the issuectl DAG only
 when the repository tracker is enabled); taskfleet
 has no integration orchestrator. Research and architectural decisions have their
-own kinds (`/worktree-research`, `/worktree-technical-decision`).
+own kinds (`/worktree-research`, `/worktree-technical-decision`). A worker you
+will send follow-up rounds the same day is a spinoff created `--resident`; see
+"Named support workers" below.
+
+## Named support workers
+
+A named (resident) worker is a worktree run that works in rounds. It finishes
+a round, reports, and its process exits while its worktree, branch, and native
+session stay; the next message resumes the same session in the same worktree.
+Its value is continuity, what it tried and rejected and why, not speed or
+quota: a fresh worker re-reads the files in a few minutes for about the same
+cost.
+
+Create one when you expect a follow-up within the same day that depends on
+what the worker learned rather than on what it wrote down: prototype rounds
+while the user answers, a bug analysis whose fix comes next, a reviewer who
+will check the fix against its own findings, a researcher you will ask
+follow-up questions. Name it after its job:
+
+```bash
+taskfleet run create --kind spinoff --resident --name proto-login --headless \
+  --title "Login prototype rounds" --prompt-file <brief> --output json
+```
+
+Do not create one for independent or parallel units, for a next step that
+needs a different profile or model, for work whose next round is days away,
+for a large implementation that lands once, or to supervise releases (those
+are programs that call back).
+
+The worker's context is a cache, not a record. Every round still ends with the
+result in the issue's `result.md` (or the brief's named artifact) and in
+commits, written as if the next round started fresh. Taskfleet adds the round
+protocol to the worker's prompt (commit, `taskfleet node round-report <run-id>
+--summary-file <file>`, stop); the brief says where each round's result goes.
+
+The person never messages a worker directly. They talk to you, and you relay.
+`taskfleet run wait <name>` settles as soon as the round is reported
+(`round_reported: true`, the summary in `resident.last_round`). Then:
+
+1. Land the round with `taskfleet run land <name> --output json`, so every
+   round's work reaches the source branch when the round ends. A
+   `land_conflict` lands nothing and changes nothing; the next message hands
+   the conflict to the worker.
+2. Relay the next instruction with `taskfleet run message <name> --body-file
+   <file>`: the user's decision, the fix to verify, the follow-up question,
+   and what changed since its last round. Taskfleet first rebases the
+   worker's branch onto the source tip, so decisions and other landings are
+   in its tree (conflicts become the round's first task), then resumes the
+   same Pi or Claude session.
+3. Wait again.
+
+Stop it when the line of work is done, when the next step needs another
+profile, when its context is near full (ask it for a final `result.md`, then
+continue with a fresh worker), or when it would otherwise idle for days.
+Stopping is `taskfleet run merge <name>`, which lands the last round and ends
+the run, or `taskfleet run cancel <name>` with nothing left to land. A worker
+idle past its expiry (default 24 h, `--idle-expiry`) with everything landed
+goes dormant: its worktree is removed and the next message recreates it and
+resumes. With unlanded work it is preserved and raises attention; land it,
+message it, or finish it. Names resolve only among this repository's live
+runs; outside the repository use the run id.
 
 ## What is at stake
 

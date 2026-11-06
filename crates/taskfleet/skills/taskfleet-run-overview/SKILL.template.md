@@ -267,7 +267,11 @@ the parent environment and works with the same host-neutral waiting guidance abo
 
 A run *settles* the wait when it goes terminal or when it can no longer
 progress on its own: stalled, attention-required, or awaiting input past a
-short grace. A settled run can therefore still be `pending` or `running`; that
+short grace. A named resident run also settles, at once, when its worker
+reports a round: `round_reported: true` and the round summary in
+`resident.last_round`. That is not an error and never trips
+`--fail-on-error`; land the round (`run land <name>`) and send the next
+message (`run message <name>`), or finish it with `run merge`. A settled run can therefore still be `pending` or `running`; that
 is the wait telling you it needs a hand, not a defect. `--any` returns on the
 first settled run; `--all` (the default) waits for every one.
 

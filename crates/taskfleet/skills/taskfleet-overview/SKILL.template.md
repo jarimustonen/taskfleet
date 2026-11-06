@@ -136,6 +136,14 @@ is for a blocked outcome with nothing to merge. The `worktree-merge` skill
 covers the closing step; `taskfleet-run-overview` covers reading run state and
 what each state calls for.
 
+A named resident run (`run create --resident --name <name>`) is the one
+exception to "one unit, then merge": its worker ends each round with
+`node round-report`, its process exits while the worktree, branch, and native
+session stay, and `run message <name>` resumes the same session after rebasing
+onto the source. `run land <name>` merges a round without ending the run;
+`run show` exposes `resident.round_state` (`working`, `waiting`, `dormant`).
+`worktree-spinoff` covers when to use one ("Named support workers").
+
 Inside a worker's worktree, `run show --current` resolves the exact owning run
 from durable ownership metadata. A branch name contains a run-id-looking
 fragment, but it is not authoritative and may be ambiguous.

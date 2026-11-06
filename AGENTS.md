@@ -341,7 +341,10 @@ merge`, or supervisor cleanup. What follows is what each one protects.
    `TASKFLEET_DEATH_GRACE_SECS`) has elapsed, and it re-checks under the lock so
    an exit or merge that landed in the window wins. A clean exit with no merge
    stays non-terminal and attention-required: the worker skipped `run merge`,
-   and auto-failing it would discard a finished unit.
+   and auto-failing it would discard a finished unit. A named resident's told
+   round report (ADR 0003) outranks the exit that follows it: that exit ends a
+   round (`RoundWaiting`), and only `run merge`, `run land`, and the
+   fail-closed idle expiry ever touch a resident's branch or worktree.
 
 ## Conventions the bundled skills depend on
 

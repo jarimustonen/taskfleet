@@ -9,15 +9,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.20.0] - 2026-11-08
+
+### Added
+
 - `run interrupt <run-id|name>` stops a resident worker's current round without ending the run (`resident-interrupt-round`). It records the round as interrupted (`node.round_reported` with `interrupted: true`), then signals the recorded worker only after re-verifying its start identity (Claude `SIGINT`, Pi `SIGTERM`, escalating to `SIGTERM` on a stuck Claude or a repeat) and waits for its told exit. Worktree, branch, uncommitted changes and the native session stay; `run wait` settles with `round_interrupted: true`, `run show` / `run list` expose `resident.last_round.interrupted`, and the next `run message` resumes the same session with a note that the round was interrupted. The bundled skills tell a parent agent when to interrupt.
 - `run list --creator-session <pi:uuid|current>` lists the runs one conversation created (`resident-names-per-session`).
+
+- Interrupt a resident worker's current round without ending the run (`resident-interrupt-round`).
 
 ### Changed
 
 - Resident names are scoped by repository and creator session (`resident-names-per-session`): two conversations in one repository may each have a resident with the same name. `run create` refuses a name only while the same session has it live; `run show` / `wait` / `message` / `land` / `cancel` / `merge` resolve a name within the caller's own session first. An attributed caller whose session has no such run gets `resident_name_other_session` with the other run ids instead of reaching another conversation's worker; an unattributed caller keeps the repository-wide lookup, and an ambiguous name lists every full run id.
 
-### Fixed
-<!-- oss-changelog:unreleased-end -->
+- Scope resident names by creator session, not only by repository (`resident-names-per-session`).
 
 ## [0.19.0] - 2026-11-08
 

@@ -9,12 +9,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Named resident workers (ADR 0003, `named-resident-workers`): `run create --resident --name <name> [--idle-expiry 24h]` starts a single worker that works in rounds. The worker ends a round with `node round-report <run-id> --summary-file <file>` and its process exits while the worktree, branch, and native session stay; `run wait` settles at once (`round_reported: true`). `run message <name> <text>` rebases the branch onto the source tip (conflicts become the round's first task) and resumes the same Pi (`--session`) or Claude (`--resume`) session in the same worktree. `run land <name>` merges a round into the source without ending the run. Idle expiry removes a wholly landed worktree (the next message recreates it) and preserves unlanded work with attention; it never merges. Names resolve among this repository's live runs in `run show`, `wait`, `message`, `land`, `cancel`, and `merge`; `run show` / `run list` expose `resident` round state.
-
 ### Changed
 
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
+
+## [0.19.0] - 2026-11-08
+
+### Added
+
+- Named resident workers (ADR 0003, `named-resident-workers`): `run create --resident --name <name> [--idle-expiry 24h]` starts a single worker that works in rounds. The worker ends a round with `node round-report <run-id> --summary-file <file>` and its process exits while the worktree, branch, and native session stay; `run wait` settles at once (`round_reported: true`). `run message <name> <text>` rebases the branch onto the source tip (conflicts become the round's first task) and resumes the same Pi (`--session`) or Claude (`--resume`) session in the same worktree. `run land <name>` merges a round into the source without ending the run. Idle expiry removes a wholly landed worktree (the next message recreates it) and preserves unlanded work with attention; it never merges. Names resolve among this repository's live runs in `run show`, `wait`, `message`, `land`, `cancel`, and `merge`; `run show` / `run list` expose `resident` round state.
+
+- Named resident workers that work in rounds, land, sleep and resume (`named-resident-workers`).
 
 ## [0.18.0] - 2026-10-27
 

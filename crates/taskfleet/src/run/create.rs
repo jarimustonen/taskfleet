@@ -432,7 +432,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 CliError::system("io_error", format!("read current directory: {e}"))
             })?,
         };
-        super::resident::ensure_name_free(&root, &policy.name, &repo)?;
+        super::resident::ensure_name_free(
+            &root,
+            &policy.name,
+            &repo,
+            created_by_session.as_ref(),
+        )?;
     }
 
     if args.dry_run {

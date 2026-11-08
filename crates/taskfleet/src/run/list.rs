@@ -22,6 +22,7 @@ pub struct Args<'a> {
     pub status: Option<String>,
     pub kind: Option<String>,
     pub repo: Option<PathBuf>,
+    pub creator_session: Option<String>,
     pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
@@ -81,6 +82,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .transpose()?
         .flatten();
     let mut source_identities: HashMap<String, Option<PathBuf>> = HashMap::new();
+    let creator_session = args
+        .creator_session
+        .as_deref()
+        .map(parse_creator_session_filter)
+        .transpose()?;
 
     // Strict-input rule from AGENTS-AI-FIRST-CLI §1: only validate that
     // the filter values are well-formed strings. We don't reject unknown
@@ -289,6 +295,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 .kind
                 .as_ref()
                 .is_some_and(|filter| &summary.kind != filter)
+            || creator_session
+                .as_ref()
+                .is_some_and(|filter| m.created_by_session.as_ref() != Some(filter))
         {
             continue;
         }
@@ -323,6 +332,31 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     out.sort_by_key(|r| std::cmp::Reverse(r.created_at));
     emit(out, args.spec, &output_warnings)
+}
+
+/// `--creator-session`: `current` (this process's `TASKFLEET_CREATOR_SESSION`)
+/// or an explicit `pi:<uuid>`. Matching is exact against the recorded
+/// create-time attribution; unattributed runs never match.
+fn parse_creator_session_filter(
+    value: &str,
+) -> Result<taskfleet_core::schema::CreatorSession, CliError> {
+    if value == "current" {
+        return crate::home::creator_session()?.ok_or_else(|| {
+            CliError::user(
+                "creator_session_unset",
+                "--creator-session current needs TASKFLEET_CREATOR_SESSION=pi:<session uuid> in \
+                 the environment; pass the session explicitly instead",
+            )
+            .with_invalid_value(value)
+        });
+    }
+    taskfleet_core::schema::CreatorSession::parse_str(value).map_err(|reason| {
+        CliError::user(
+            "invalid_creator_session",
+            format!("--creator-session {value:?}: {reason}, or `current`"),
+        )
+        .with_invalid_value(value)
+    })
 }
 
 /// Resolve a repository's identity as its absolute git common-dir.

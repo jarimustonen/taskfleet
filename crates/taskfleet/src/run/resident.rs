@@ -7,9 +7,17 @@
 //! (`run/resume.rs`). This module holds what the resident verbs share:
 //!
 //! - **Name resolution.** A name resolves only among the *current
-//!   repository's* non-terminal runs and refuses ambiguity. Names start with a
-//!   lowercase letter and run-id prefixes with `0`-`7`, so the two selector
-//!   forms never overlap and an id keeps resolving exactly as before.
+//!   repository's* non-terminal runs, and within those first among the runs
+//!   of the caller's own creator session (`TASKFLEET_CREATOR_SESSION`, the
+//!   same create-time attribution `run.created` records; unattributed callers
+//!   form one shared scope). Names are unique per (repository, creator
+//!   session), so two conversations may each have a `reviewer`. An attributed
+//!   caller never reaches another session's run by name; an unattributed
+//!   caller falls back to all sessions as before. Ambiguity is refused with
+//!   the full run ids. The scope is a namespace, not access control: any
+//!   caller can still address any run by id. Names start with a lowercase
+//!   letter and run-id prefixes with `0`-`7`, so the two selector forms never
+//!   overlap and an id keeps resolving exactly as before.
 //! - **The resident operation lock.** `run message` (resume), `run land` and the
 //!   supervisor's idle expiry each act on the worktree while no worker runs.
 //!   They serialize on an exclusive `flock` of `<run-dir>/resident.lock`, which
@@ -27,6 +35,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use fs4::{FileExt, TryLockError};
 use serde::Serialize;
+use taskfleet_core::schema::CreatorSession;
 use taskfleet_core::{
     read_manifest_opt, Manifest, Node, ResidentPolicy, ResidentState, RunId, RunPaths,
 };
@@ -49,16 +58,20 @@ pub(crate) fn resolve_run_ref(root: &Path, arg: &str) -> Result<RunPaths, CliErr
 
 /// Resolve `arg` as a resident name. When it is not a name, or no live run
 /// of this repository carries it, the original run-id error stands (a typo
-/// keeps its `invalid_run_id` class); an ambiguous name is its own error.
+/// keeps its `invalid_run_id` class); an ambiguous name, a name held only by
+/// other sessions, and an invalid caller attribution are their own errors.
 fn resolve_name_or(root: &Path, arg: &str, id_error: CliError) -> Result<RunId, CliError> {
     if ResidentPolicy::validate_name(arg).is_err() {
         return Err(id_error);
     }
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::system("io_error", format!("read current directory: {e}")))?;
-    match resolve_name(root, arg, &cwd) {
+    let caller = crate::home::creator_session()?;
+    match resolve_name(root, arg, &cwd, caller.as_ref()) {
         Ok(rid) => Ok(rid),
-        Err(e) if e.code == "ambiguous_run_name" => Err(e),
+        Err(e) if e.code == "ambiguous_run_name" || e.code == "resident_name_other_session" => {
+            Err(e)
+        }
         Err(_) => {
             let mut error = id_error;
             error
@@ -90,9 +103,20 @@ fn repository_of(path: &Path) -> Result<Option<PathBuf>, CliError> {
     crate::run::list::repository_identity(path, false)
 }
 
+/// One live resident run carrying a name, with the creator session that
+/// scopes it (`None` for an unattributed creator).
+struct NamedRun {
+    run_id: RunId,
+    creator: Option<CreatorSession>,
+}
+
 /// Every non-terminal resident run named `name` whose recorded source
 /// repository is the repository identified by `repo_identity`.
-fn live_runs_named(root: &Path, name: &str, repo_identity: &Path) -> Result<Vec<RunId>, CliError> {
+fn live_runs_named(
+    root: &Path,
+    name: &str,
+    repo_identity: &Path,
+) -> Result<Vec<NamedRun>, CliError> {
     let dir = runs_root(root);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -128,16 +152,55 @@ fn live_runs_named(root: &Path, name: &str, repo_identity: &Path) -> Result<Vec<
             continue;
         };
         if repository_of(Path::new(source))?.as_deref() == Some(repo_identity) {
-            matches.push(rid);
+            matches.push(NamedRun {
+                run_id: rid,
+                creator: manifest.created_by_session,
+            });
         }
     }
-    matches.sort();
+    matches.sort_by(|a, b| a.run_id.cmp(&b.run_id));
     Ok(matches)
 }
 
+/// `pi:<uuid>` for messages, or `unattributed`.
+fn scope_label(scope: Option<&CreatorSession>) -> String {
+    scope.map_or_else(
+        || "unattributed".to_string(),
+        |s| format!("{}:{}", s.harness, s.session_id),
+    )
+}
+
+fn id_list(runs: &[NamedRun]) -> String {
+    runs.iter()
+        .map(|r| r.run_id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn ids_value(runs: &[NamedRun]) -> serde_json::Value {
+    serde_json::Value::Array(
+        runs.iter()
+            .map(|r| serde_json::Value::String(r.run_id.to_string()))
+            .collect(),
+    )
+}
+
 /// Resolve a resident name among the live runs of the repository containing
-/// `cwd`. Zero matches is `run_not_found`; several is `ambiguous_run_name`.
-pub(crate) fn resolve_name(root: &Path, name: &str, cwd: &Path) -> Result<RunId, CliError> {
+/// `cwd`, for a caller attributed to `caller` (`None`: unattributed).
+///
+/// The caller's own scope is searched first: one match resolves, several are
+/// `ambiguous_run_name`. With no match there, an attributed caller is refused
+/// with `resident_name_other_session` listing the other sessions' run ids (a
+/// name must not reach another conversation's worker by accident), while an
+/// unattributed caller (a terminal user) keeps the repository-wide lookup.
+/// Zero matches anywhere is `run_not_found`. Every refusal names the full run
+/// ids so the caller can address the intended run by id.
+pub(crate) fn resolve_name(
+    root: &Path,
+    name: &str,
+    cwd: &Path,
+    caller: Option<&CreatorSession>,
+) -> Result<RunId, CliError> {
     let repo = repository_of(cwd)?.ok_or_else(|| {
         CliError::user(
             "resident_name_needs_repository",
@@ -148,32 +211,63 @@ pub(crate) fn resolve_name(root: &Path, name: &str, cwd: &Path) -> Result<RunId,
         )
         .with_invalid_value(name)
     })?;
-    let mut matches = live_runs_named(root, name, &repo)?;
-    match matches.len() {
+    let all = live_runs_named(root, name, &repo)?;
+    let (mut own, others): (Vec<NamedRun>, Vec<NamedRun>) =
+        all.into_iter().partition(|r| r.creator.as_ref() == caller);
+    let scope = scope_label(caller);
+    let candidates = match (own.len(), caller) {
+        (1, _) => return Ok(own.pop().expect("one match").run_id),
+        (0, Some(_)) if !others.is_empty() => {
+            return Err(CliError::user(
+                "resident_name_other_session",
+                format!(
+                    "no live resident run named {name:?} was created by this session ({scope}) in \
+                     this repository; {} run(s) of other sessions carry that name ({}). Address \
+                     another session's run by its full run id",
+                    others.len(),
+                    id_list(&others)
+                ),
+            )
+            .with_invalid_value(name)
+            .with_expected(ids_value(&others)));
+        }
+        (0, Some(_)) => Vec::new(),
+        (0, None) => others,
+        _ => own,
+    };
+    match candidates.len() {
         0 => Err(CliError::user(
             "run_not_found",
             format!("no live resident run named {name:?} in this repository"),
         )
         .with_invalid_value(name)),
-        1 => Ok(matches.pop().expect("one match")),
+        1 => Ok(candidates.into_iter().next().expect("one match").run_id),
         n => Err(CliError::user(
             "ambiguous_run_name",
-            format!("{n} live runs in this repository are named {name:?}; use a run id"),
+            format!(
+                "{n} live runs in this repository are named {name:?} ({}); use a full run id",
+                candidates
+                    .iter()
+                    .map(|r| format!("{} by {}", r.run_id, scope_label(r.creator.as_ref())))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         )
         .with_invalid_value(name)
-        .with_expected(serde_json::Value::Array(
-            matches
-                .into_iter()
-                .map(|r| serde_json::Value::String(r.to_string()))
-                .collect(),
-        ))),
+        .with_expected(ids_value(&candidates))),
     }
 }
 
-/// Refuse a resident name that is already live in the repository `repo`
-/// (best-effort: a concurrent create can still race, and resolution then
-/// refuses the ambiguity instead of guessing).
-pub(crate) fn ensure_name_free(root: &Path, name: &str, repo: &Path) -> Result<(), CliError> {
+/// Refuse a resident name that is already live in the repository `repo` for
+/// the same creator session `creator` (both unattributed counts as the same
+/// scope). Best-effort: a concurrent create can still race, and resolution
+/// then refuses the ambiguity instead of guessing.
+pub(crate) fn ensure_name_free(
+    root: &Path,
+    name: &str,
+    repo: &Path,
+    creator: Option<&CreatorSession>,
+) -> Result<(), CliError> {
     let Some(identity) = repository_of(repo)? else {
         return Err(CliError::user(
             "resident_name_needs_repository",
@@ -184,12 +278,15 @@ pub(crate) fn ensure_name_free(root: &Path, name: &str, repo: &Path) -> Result<(
         ));
     };
     let live = live_runs_named(root, name, &identity)?;
-    if let Some(existing) = live.first() {
+    if let Some(existing) = live.iter().find(|r| r.creator.as_ref() == creator) {
         return Err(CliError::user(
             "resident_name_in_use",
             format!(
-                "a live resident run named {name:?} already exists in this repository ({existing}); \
-                 message it, or finish it with `run merge` / `run cancel` first"
+                "a live resident run named {name:?} created by this session ({}) already exists \
+                 in this repository ({}); message it, or finish it with `run merge` / \
+                 `run cancel` first",
+                scope_label(creator),
+                existing.run_id
             ),
         )
         .with_invalid_value(name));

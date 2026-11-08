@@ -9,7 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `run list --creator-session <pi:uuid|current>` lists the runs one conversation created (`resident-names-per-session`).
+
 ### Changed
+
+- Resident names are scoped by repository and creator session (`resident-names-per-session`): two conversations in one repository may each have a resident with the same name. `run create` refuses a name only while the same session has it live; `run show` / `wait` / `message` / `land` / `cancel` / `merge` resolve a name within the caller's own session first. An attributed caller whose session has no such run gets `resident_name_other_session` with the other run ids instead of reaching another conversation's worker; an unattributed caller keeps the repository-wide lookup, and an ambiguous name lists every full run id.
 
 ### Fixed
 <!-- oss-changelog:unreleased-end -->

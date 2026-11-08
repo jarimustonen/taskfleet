@@ -209,9 +209,12 @@ pub enum RunAction {
         /// run. Autonomous single-worker kinds only. Requires `--name`.
         #[arg(long, requires = "name")]
         resident: bool,
-        /// Repository-scoped resident name (`[a-z][a-z0-9-]*`, at most 48
-        /// bytes). Resolves only among this repository's live runs; refused
-        /// while another live run here has it.
+        /// Resident name (`[a-z][a-z0-9-]*`, at most 48 bytes), scoped by
+        /// repository and creator session (`TASKFLEET_CREATOR_SESSION`):
+        /// refused only while a live run of this repository created by the
+        /// same session has it. A name resolves among this repository's live
+        /// runs, the caller's own session first; an attributed caller never
+        /// reaches another session's run by name (use its run id).
         #[arg(long, requires = "resident")]
         name: Option<String>,
         /// Idle expiry after an open round report with the worker exited
@@ -281,6 +284,13 @@ pub enum RunAction {
         /// worktrees. Runs without recorded repository identity do not match.
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Include only runs whose recorded creator session
+        /// (`created_by_session`) is this one: `pi:<session uuid>`, or
+        /// `current` for this process's `TASKFLEET_CREATOR_SESSION`.
+        /// Unattributed runs never match.
+        /// Example: taskfleet run list --repo . --creator-session current --json
+        #[arg(long)]
+        creator_session: Option<String>,
     },
     /// Show one run's manifest and counters. Pass an id, or use `--current`
     /// inside a worker worktree to resolve its exact owning run from durable
@@ -693,10 +703,16 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             spec,
             warnings,
         ),
-        RunAction::List { status, kind, repo } => list::run(list::Args {
+        RunAction::List {
             status,
             kind,
             repo,
+            creator_session,
+        } => list::run(list::Args {
+            status,
+            kind,
+            repo,
+            creator_session,
             spec,
             warnings,
         }),

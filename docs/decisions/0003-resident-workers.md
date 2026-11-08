@@ -41,6 +41,18 @@ prefix (which starts with `0`–`7`). A name resolves only among the
 repository's non-terminal runs and refuses ambiguity; `run create` refuses a
 name that is already live in the same repository.
 
+*Amended 2026-11-08 (`resident-names-per-session`):* names are scoped by
+repository **and creator session**, the `created_by_session` attribution
+`run create` records from `TASKFLEET_CREATOR_SESSION` (unattributed creators
+share one scope). `run create` refuses a name only while a live run of the
+same repository and session has it, so two conversations may each have a
+`reviewer`. Resolution searches the caller's own session first. An attributed
+caller with no such run is refused (`resident_name_other_session`, listing the
+other sessions' run ids) instead of reaching another conversation's worker;
+an unattributed caller keeps the repository-wide lookup. Every ambiguity is
+refused with the full run ids. This is a namespace, not access control: the
+attribution is still a same-user claim, and any run stays addressable by id.
+
 ### A round ends with a typed report, and the exit that follows is expected
 
 The worker ends a round with `taskfleet node round-report <run-id>

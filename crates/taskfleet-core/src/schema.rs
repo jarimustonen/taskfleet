@@ -749,8 +749,10 @@ pub struct Manifest {
 /// in told rounds and is resumed from its native session by the next message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResidentPolicy {
-    /// Repository-scoped name; resolves only among live runs of the same
-    /// repository. Starts with a lowercase letter, so it is never a run-id prefix.
+    /// Name scoped by repository and creator session (`created_by_session`);
+    /// resolves only among live runs of the same repository, the caller's own
+    /// session first. Starts with a lowercase letter, so it is never a run-id
+    /// prefix.
     pub name: String,
     /// Seconds after the open round report (worker exited) before idle expiry.
     pub idle_expiry_secs: u64,

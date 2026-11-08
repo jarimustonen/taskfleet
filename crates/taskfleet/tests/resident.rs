@@ -73,7 +73,8 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
         command
             .env("TASKFLEET_HOME", self.home.path())
-            .env("HOME", self.home.path());
+            .env("HOME", self.home.path())
+            .env_remove("TASKFLEET_CREATOR_SESSION");
         self.tools
             .configure(&mut command, &self.worktree, "headless");
         command
@@ -654,4 +655,153 @@ fn a_dormant_resident_settles_with_its_saved_pane_as_evidence() {
         std::fs::read_to_string(pane).unwrap(),
         "fixture final pane\n"
     );
+}
+
+/// Resident names are scoped by (repository, creator session): two
+/// conversations may each have a `reviewer`, each reaches its own by name, an
+/// attributed caller never reaches another session's run by name, and an
+/// unattributed caller sees the ambiguity with every full run id.
+#[test]
+fn resident_names_are_scoped_by_creator_session() {
+    const A: &str = "pi:11111111-1111-4111-8111-111111111111";
+    const B: &str = "pi:22222222-2222-4222-8222-222222222222";
+    const C: &str = "pi:33333333-3333-4333-8333-333333333333";
+    let home = TestHome::new();
+    let repo = TempDir::new().unwrap();
+    git(repo.path(), &["init", "-q", "-b", "main"]);
+    git(
+        repo.path(),
+        &[
+            "-c",
+            "user.name=F",
+            "-c",
+            "user.email=f@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    let run = |session: Option<&str>, args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
+        command
+            .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
+            .env_remove("TASKFLEET_CREATOR_SESSION")
+            .current_dir(repo.path())
+            .args(args);
+        if let Some(session) = session {
+            command.env("TASKFLEET_CREATOR_SESSION", session);
+        }
+        let output = command.output().unwrap();
+        let body = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let value: Value = serde_json::from_slice(body).unwrap_or_else(|e| {
+            panic!("{args:?}: {e}: {}", String::from_utf8_lossy(&output.stderr))
+        });
+        (output.status.success(), value)
+    };
+    let create = |session: Option<&str>, name: &str| {
+        run(
+            session,
+            &[
+                "--output",
+                "json",
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--headless",
+                "--title",
+                "t",
+                "--task",
+                "x",
+                "--source-branch",
+                "main",
+                "--source-repo",
+                ".",
+                "--resident",
+                "--name",
+                name,
+                "--skip-materialize",
+            ],
+        )
+    };
+    let (ok, a) = create(Some(A), "reviewer");
+    assert!(ok, "{a}");
+    let a_id = a["data"]["run_id"].as_str().unwrap().to_string();
+    let (ok, b) = create(Some(B), "reviewer");
+    assert!(ok, "another session may reuse the name: {b}");
+    let b_id = b["data"]["run_id"].as_str().unwrap().to_string();
+
+    // The same session cannot hold two live runs of one name.
+    let (ok, dup) = create(Some(A), "reviewer");
+    assert!(!ok);
+    assert_eq!(dup["error"]["code"], "resident_name_in_use");
+    assert!(dup["error"]["message"].as_str().unwrap().contains(&a_id));
+
+    // Each session resolves the name to its own run.
+    let show = |session: Option<&str>| run(session, &["run", "show", "reviewer", "--json"]);
+    assert_eq!(show(Some(A)).1["data"]["run_id"], a_id);
+    assert_eq!(show(Some(B)).1["data"]["run_id"], b_id);
+
+    // An attributed session without such a run is refused, never routed to
+    // another conversation's worker; the error names the full ids.
+    let (ok, other) = show(Some(C));
+    assert!(!ok);
+    assert_eq!(other["error"]["code"], "resident_name_other_session");
+    let mut both = vec![a_id.clone(), b_id.clone()];
+    both.sort();
+    assert_eq!(other["error"]["expected"], serde_json::json!(both));
+    // `run message` and `run land` share the resolver.
+    let (ok, msg) = run(Some(C), &["run", "message", "reviewer", "hi", "--json"]);
+    assert!(!ok);
+    assert_eq!(msg["error"]["code"], "resident_name_other_session");
+
+    // An unattributed caller (a terminal user) sees the ambiguity, with ids.
+    let (ok, ambiguous) = show(None);
+    assert!(!ok);
+    assert_eq!(ambiguous["error"]["code"], "ambiguous_run_name");
+    let message = ambiguous["error"]["message"].as_str().unwrap();
+    assert!(message.contains(&a_id) && message.contains(&b_id), "{message}");
+    assert_eq!(ambiguous["error"]["expected"].as_array().unwrap().len(), 2);
+
+    // `run list --creator-session` lists one conversation's runs.
+    let (ok, listed) = run(
+        Some(B),
+        &["run", "list", "--creator-session", "current", "--json"],
+    );
+    assert!(ok, "{listed}");
+    let ids: Vec<&str> = listed["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["run_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![b_id.as_str()]);
+    let (ok, unset) = run(None, &["run", "list", "--creator-session", "current", "--json"]);
+    assert!(!ok);
+    assert_eq!(unset["error"]["code"], "creator_session_unset");
+
+    // A verb acting by name from session A touches only A's run.
+    let (ok, cancelled) = run(Some(A), &["run", "cancel", "reviewer", "--json"]);
+    assert!(ok, "{cancelled}");
+    assert_eq!(show(None).1["data"]["run_id"], b_id, "B's run is now unique");
+    let (ok, b_shown) = run(None, &["run", "show", &b_id, "--json"]);
+    assert!(ok);
+    assert_eq!(b_shown["data"]["status"], "pending");
+
+    // An unattributed creator forms its own scope.
+    let (ok, plain) = create(None, "reviewer");
+    assert!(ok, "{plain}");
+    let plain_id = plain["data"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(show(None).1["data"]["run_id"], plain_id);
+    assert_eq!(show(Some(B)).1["data"]["run_id"], b_id);
+    let (ok, dup) = create(None, "reviewer");
+    assert!(!ok);
+    assert_eq!(dup["error"]["code"], "resident_name_in_use");
 }

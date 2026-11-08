@@ -176,8 +176,17 @@ the run, or `taskfleet run cancel <name>` with nothing left to land. A worker
 idle past its expiry (default 24 h, `--idle-expiry`) with everything landed
 goes dormant: its worktree is removed and the next message recreates it and
 resumes. With unlanded work it is preserved and raises attention; land it,
-message it, or finish it. Names resolve only among this repository's live
-runs; outside the repository use the run id.
+message it, or finish it.
+
+A name belongs to the repository and to your conversation: Taskfleet scopes it
+by the creator session it records at `run create` (`TASKFLEET_CREATOR_SESSION`),
+so another conversation in the same repository may have its own `reviewer`,
+and your `run message reviewer` reaches yours. If another session holds a name
+and you have none, the name is refused with `resident_name_other_session` and
+the other run ids; leave that run alone and pick your own name. List your own
+workers with `taskfleet run list --repo . --creator-session current --output
+json`. Outside the repository, or for another session's run, use the full run
+id.
 
 ## What is at stake
 

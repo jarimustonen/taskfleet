@@ -375,7 +375,7 @@ expression: value
         "long": "name",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Repository-scoped resident name (`[a-z][a-z0-9-]*`, at most 48 bytes). Resolves only among this repository's live runs; refused while another live run here has it",
+        "help": "Resident name (`[a-z][a-z0-9-]*`, at most 48 bytes), scoped by repository and creator session (`TASKFLEET_CREATOR_SESSION`): refused only while a live run of this repository created by the same session has it. A name resolves among this repository's live runs, the caller's own session first; an attributed caller never reaches another session's run by name (use its run id)",
         "value_names": [
           "NAME"
         ],

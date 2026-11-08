@@ -3,7 +3,7 @@ created: 2026-11-08
 updated: 2026-11-08
 type: improvement
 reporter: jari
-status: open
+status: done
 priority: normal
 provenance: other
 provenance_detail: open-habitat helpers-across-conversations
@@ -12,6 +12,7 @@ originating_run: 01m6y4rex13ekh2vp7pyr61g0x
 originating_run_kind: spinoff
 lane: resident
 lane_seq: 1
+closed: 2026-11-08
 ---
 
 # Scope resident names by creator session, not only by repository
@@ -80,3 +81,9 @@ run by id; only name lookup and the uniqueness check change.
 Open Habitat's shipped helper recipe tells the agent to take `<name>-2` on
 `resident_name_in_use`, leave the other run alone, and address its helper by
 run id.
+
+## Resolution
+
+### 2026-11-08T18:17:46Z · @issuectl
+
+Shipped; see result.md.

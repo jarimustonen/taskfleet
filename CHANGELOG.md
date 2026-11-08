@@ -9,6 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `run interrupt <run-id|name>` stops a resident worker's current round without ending the run (`resident-interrupt-round`). It records the round as interrupted (`node.round_reported` with `interrupted: true`), then signals the recorded worker only after re-verifying its start identity (Claude `SIGINT`, Pi `SIGTERM`, escalating to `SIGTERM` on a stuck Claude or a repeat) and waits for its told exit. Worktree, branch, uncommitted changes and the native session stay; `run wait` settles with `round_interrupted: true`, `run show` / `run list` expose `resident.last_round.interrupted`, and the next `run message` resumes the same session with a note that the round was interrupted. The bundled skills tell a parent agent when to interrupt.
 - `run list --creator-session <pi:uuid|current>` lists the runs one conversation created (`resident-names-per-session`).
 
 ### Changed

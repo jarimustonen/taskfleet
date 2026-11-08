@@ -796,8 +796,14 @@ pub struct RoundReport {
     pub reported_at: DateTime<Utc>,
     /// Event sequence of the report.
     pub event_seq: u64,
-    /// Worker-written summary of the round (bounded).
+    /// Worker-written summary of the round (bounded). For an interrupted round
+    /// it is Taskfleet's note until the worker's own report amends it.
     pub summary: String,
+    /// The parent stopped this round with `run interrupt` (the worker did not
+    /// end it itself). Sticky for the round: a worker report that races the
+    /// interrupt amends the summary, but the round stays interrupted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
     /// Set when the next message resumed the worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<DateTime<Utc>>,

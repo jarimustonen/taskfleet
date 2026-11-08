@@ -15,6 +15,7 @@ pub mod create;
 pub mod discard;
 pub mod dto;
 pub mod false_failed;
+pub mod interrupt;
 pub mod land;
 pub mod landed;
 pub mod list;
@@ -347,6 +348,27 @@ pub enum RunAction {
         #[arg(long, value_parser = wait::parse_duration, default_value = "2m")]
         wait_exit: Duration,
         /// Report how many commits would land without moving anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Interrupt a resident worker's current round (ADR 0003): stop its
+    /// process the way Esc stops your own turn, keeping worktree, branch,
+    /// uncommitted changes, and native session. Records the round as
+    /// interrupted first (`run wait` settles with `round_interrupted: true`),
+    /// then signals the recorded worker only after re-verifying its start
+    /// identity (Claude SIGINT, Pi SIGTERM; SIGTERM again on a repeat) and
+    /// waits for its told exit. The next `run message` resumes the same
+    /// session. A worker that already reported its round or exited is left
+    /// alone. Example: taskfleet run interrupt proto-login --json
+    Interrupt {
+        /// Run id, unambiguous prefix, or resident name (this repository).
+        run: String,
+        #[arg(long, default_value = "n-0001")]
+        node: String,
+        /// How long to wait for the worker's told exit after the signal.
+        #[arg(long, value_parser = wait::parse_duration, default_value = "30s")]
+        wait_exit: Duration,
+        /// Report what would be signalled without recording or signalling.
         #[arg(long)]
         dry_run: bool,
     },
@@ -845,6 +867,19 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             wait_exit,
             dry_run,
         } => land::run(land::Args {
+            run,
+            node,
+            wait_exit,
+            dry_run,
+            spec,
+            warnings,
+        }),
+        RunAction::Interrupt {
+            run,
+            node,
+            wait_exit,
+            dry_run,
+        } => interrupt::run(interrupt::Args {
             run,
             node,
             wait_exit,

@@ -140,6 +140,14 @@ expression: value
         "has_subcommands": false
       },
       {
+        "command": "taskfleet run interrupt",
+        "about": "Interrupt a resident worker's current round (ADR 0003): stop its process the way Esc stops your own turn, keeping worktree, branch, uncommitted changes, and native session. Records the round as interrupted first (`run wait` settles with `round_interrupted: true`), then signals the recorded worker only after re-verifying its start identity (Claude SIGINT, Pi SIGTERM; SIGTERM again on a repeat) and waits for its told exit. The next `run message` resumes the same session. A worker that already reported its round or exited is left alone. Example: taskfleet run interrupt proto-login --json",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
         "command": "taskfleet run land",
         "about": "Land a resident worker's committed rounds (ADR 0003): rebase its branch onto the source tip and fast-forward the source, recorded and recoverable like `run merge`, but non-terminal: worktree, branch, and native session stay. Only while no worker process runs (waits up to --wait-exit after a round report). A conflict lands nothing and leaves the worktree unchanged; message the worker to resolve it. Example: taskfleet run land proto-m365 --json",
         "aliases": [],

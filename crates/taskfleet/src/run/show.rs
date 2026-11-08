@@ -489,6 +489,26 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     hint = att.resume_hint,
                 );
             }
+            if let Some(resident) = &payload.summary.resident {
+                let round = resident.last_round.as_ref().map_or_else(String::new, |r| {
+                    format!(
+                        ", last round {}{}{}",
+                        r.round,
+                        if r.interrupted {
+                            " interrupted"
+                        } else {
+                            " reported"
+                        },
+                        if r.open { " (open)" } else { "" }
+                    )
+                });
+                println!(
+                    "resident:      {} {}, {} round(s){round}",
+                    resident.name,
+                    resident.round_state.wire(),
+                    resident.rounds_reported
+                );
+            }
             println!(
                 "landed:        {} ({})",
                 payload.landed, payload.landed_method

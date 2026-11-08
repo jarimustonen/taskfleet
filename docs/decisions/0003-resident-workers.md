@@ -145,13 +145,32 @@ The deadline is anchored on the told round report, not on observed activity.
 It is a timer on a fact, the same kind of thing as the post-death grace in
 A4, not one of the activity clocks ADR 0001 deleted.
 
+### Interrupting a round is a told round end (amended 2026-11-08)
+
+`run interrupt <name|id>` (issue `resident-interrupt-round`; Jari decided it is
+the parent agent's tool, not a person's button) stops the current round and
+keeps the run. Under the resident operation lock it appends
+`node.round_reported` for the current attempt with `interrupted: true` and a
+Taskfleet summary, and only then signals the recorded worker after
+re-verifying its start identity, the fence `run salvage` uses: Claude gets
+`SIGINT`, Pi `SIGTERM` (its graceful shutdown), and a stuck Claude or a repeated
+interrupt `SIGTERM`. Because the round report is recorded first, the signalled
+exit falls under the existing first row of the outcome table (`waiting`); no
+new outcome, supervisor rule, or inference exists. A worker that already
+reported its round or exited is left alone. An interrupt never amends a round
+the worker reported, and a worker report that races the interrupt amends the
+summary but leaves the round interrupted. The worktree, branch, uncommitted
+changes, and native session stay; the next message resumes the session and
+tells the worker its round was interrupted.
+
 ### Read surfaces
 
 `run show` and `run list` expose `resident` (name, `round_state` of
 `working | waiting | dormant`, rounds reported, the latest report summary, its
 landed and expiry state). `run wait` settles immediately on an open round
 report (`round_reported: true`) with no awaiting-input grace, so the parent
-and Habitat wake when the round ends.
+and Habitat wake when the round ends; an interrupted round adds
+`round_interrupted: true` and `resident.last_round.interrupted`.
 
 ## Consequences
 

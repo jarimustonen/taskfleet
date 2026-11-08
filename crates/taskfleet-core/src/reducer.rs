@@ -2145,9 +2145,12 @@ fn require_resident(paths: &RunPaths, events_path: &Path, ev: &Event) -> Result<
 /// Fold `node.round_reported` (ADR 0003): the worker's told end of a round.
 ///
 /// Payload: `attempt` (the reporting worker attempt, which must be the node's
-/// current one) and a bounded non-blank `summary`. A second report from the
-/// same attempt amends the open round (same number) rather than opening a new
-/// one. A settled node, or a report from a superseded attempt, is a no-op.
+/// current one), a bounded non-blank `summary`, and an optional boolean
+/// `interrupted` (`run interrupt`: the parent ended the round). A second
+/// report from the same attempt amends the open round (same number) rather
+/// than opening a new one; an interrupt never amends a round the worker
+/// already reported, and a worker report never clears an interrupt. A settled
+/// node, or a report from a superseded attempt, is a no-op.
 fn reduce_node_round_reported(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let node_id = require_envelope_node_id(&events_path, ev)?;
@@ -2167,6 +2170,11 @@ fn reduce_node_round_reported(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
         })?
         .to_string();
     let attempt = evidence_attempt(&events_path, ev)?;
+    let interrupted = match ev.data.get("interrupted") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(corrupt(&events_path, ev, "`interrupted` must be a boolean")),
+    };
     require_resident(paths, &events_path, ev)?;
     let Some(mut n) = read_node_opt(paths, &node_id)? else {
         return Ok(vec![]);
@@ -2176,6 +2184,10 @@ fn reduce_node_round_reported(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
     }
     let state = n.resident.get_or_insert_with(Box::default);
     match state.last_round.as_mut() {
+        // The worker already ended this round; the interrupt has nothing to do.
+        Some(open) if open.closed_at.is_none() && open.attempt == attempt && interrupted => {
+            return Ok(vec![]);
+        }
         Some(open) if open.closed_at.is_none() && open.attempt == attempt => {
             open.summary = summary;
             open.reported_at = ev.ts;
@@ -2189,6 +2201,7 @@ fn reduce_node_round_reported(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
                 reported_at: ev.ts,
                 event_seq: ev.seq,
                 summary,
+                interrupted,
                 closed_at: None,
                 closed_by: None,
             });

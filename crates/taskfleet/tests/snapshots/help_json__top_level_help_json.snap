@@ -4193,6 +4193,214 @@ expression: value
             "subcommands": []
           },
           {
+            "command": "taskfleet run interrupt",
+            "about": "Interrupt a resident worker's current round (ADR 0003): stop its process the way Esc stops your own turn, keeping worktree, branch, uncommitted changes, and native session. Records the round as interrupted first (`run wait` settles with `round_interrupted: true`), then signals the recorded worker only after re-verifying its start identity (Claude SIGINT, Pi SIGTERM; SIGTERM again on a repeat) and waits for its told exit. The next `run message` resumes the same session. A worker that already reported its round or exited is left alone. Example: taskfleet run interrupt proto-login --json",
+            "aliases": [],
+            "hidden": false,
+            "deprecated": false,
+            "flags": [
+              {
+                "name": "dry_run",
+                "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Report what would be signalled without recording or signalling",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "help",
+                "long": "help",
+                "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "node",
+                "long": "node",
+                "long_aliases": [],
+                "short_aliases": [],
+                "value_names": [
+                  "NODE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "n-0001"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "output",
+                "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "wait_exit",
+                "long": "wait-exit",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "How long to wait for the worker's told exit after the signal",
+                "value_names": [
+                  "WAIT_EXIT"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "30s"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run",
+                "help": "Run id, unambiguous prefix, or resident name (this repository)",
+                "value_names": [
+                  "RUN"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
+                "deprecated": false
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "command": "taskfleet run land",
             "about": "Land a resident worker's committed rounds (ADR 0003): rebase its branch onto the source tip and fast-forward the source, recorded and recoverable like `run merge`, but non-terminal: worktree, branch, and native session stay. Only while no worker process runs (waits up to --wait-exit after a round report). A conflict lands nothing and leaves the worktree unchanged; message the worker to resolve it. Example: taskfleet run land proto-m365 --json",
             "aliases": [],

@@ -248,6 +248,11 @@ struct RunOutcome {
     /// not an error and never grades as a failure under `--fail-on-error`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     round_reported: bool,
+    /// Resident only: the open round that satisfied the wait was ended by the
+    /// parent's `run interrupt`, not reported by the worker. Implies
+    /// `round_reported`; equally not an error.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    round_interrupted: bool,
     /// Resident round view (name, `round_state`, latest report summary).
     #[serde(skip_serializing_if = "Option::is_none")]
     resident: Option<crate::run::resident::ResidentView>,
@@ -552,6 +557,7 @@ fn wait_loop(
                 awaiting_input: settle.awaiting_input.clone(),
                 caller: settle.caller.clone(),
                 round: settle.round,
+                round_interrupted: settle.round_interrupted,
             };
             // A run is settled when it reaches a terminal status, OR when it is
             // stalled (a supervisor that died — before creating any node, or
@@ -687,6 +693,8 @@ struct Settle {
     /// Resident only: event seq of the open round report (ADR 0003). Settles
     /// the wait immediately, with no awaiting-input grace.
     round: Option<u64>,
+    /// Whether that open round was ended by `run interrupt`.
+    round_interrupted: bool,
 }
 
 /// The two non-terminal settle verdicts a poll can latch for a run — the stall
@@ -702,6 +710,7 @@ struct LatchedSettle {
     awaiting_input: Option<AwaitingInput>,
     caller: Option<CallerPiLifecycle>,
     round: Option<u64>,
+    round_interrupted: bool,
 }
 
 /// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
@@ -744,12 +753,13 @@ fn current_settle(
             .and_then(crate::run::attention::node_attention)
             .map(|(reason, _)| reason);
         let attention = attention_reason.is_some();
-        let round = node
+        let open_round = node
             .as_ref()
             .filter(|n| !n.status.is_terminal())
             .and_then(|n| n.resident.as_deref())
-            .and_then(taskfleet_core::ResidentState::open_round)
-            .map(|r| r.event_seq);
+            .and_then(taskfleet_core::ResidentState::open_round);
+        let round = open_round.map(|r| r.event_seq);
+        let round_interrupted = open_round.is_some_and(|r| r.interrupted);
         // Resolve attention-over-stall precedence HERE (design.md §2.5), at snapshot
         // construction — not only in `read_outcome` — so the `--progress` JSONL and
         // the settled-count decision agree with the final outcome. A clean-exited
@@ -779,6 +789,7 @@ fn current_settle(
             awaiting_input,
             caller,
             round,
+            round_interrupted,
         }))
     })
     .map_err(from_core)
@@ -1038,6 +1049,11 @@ fn read_outcome(
         recoverable_work,
         caller_agent,
         round_reported: !status.is_terminal() && latched.round.is_some(),
+        // Latched with the round that settled the wait, so a resume that
+        // closes it before this read cannot relabel the wake.
+        round_interrupted: !status.is_terminal()
+            && latched.round.is_some()
+            && latched.round_interrupted,
         resident: git_inputs.resident,
     })
 }
@@ -1201,6 +1217,14 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                         "  stalled=true (`run reattach {id}` or `run cancel {id}`)",
                         id = r.run_id
                     );
+                }
+                if r.round_interrupted {
+                    print!(
+                        "  round_interrupted=true (`run message {}` resumes it)",
+                        r.run_id
+                    );
+                } else if r.round_reported {
+                    print!("  round_reported=true");
                 }
                 if r.awaiting_input {
                     let count = r
@@ -1395,6 +1419,7 @@ mod tests {
             recoverable_work: None,
             caller_agent: None,
             round_reported: false,
+            round_interrupted: false,
             resident: None,
         };
         let mk_round = || RunOutcome {

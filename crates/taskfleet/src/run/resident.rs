@@ -368,6 +368,17 @@ pub enum RoundState {
     Dormant,
 }
 
+impl RoundState {
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Dormant => "dormant",
+        }
+    }
+}
+
 #[must_use]
 pub fn round_state(state: Option<&ResidentState>) -> RoundState {
     match state {
@@ -384,6 +395,8 @@ pub struct RoundView {
     pub attempt: u32,
     pub reported_at: DateTime<Utc>,
     pub summary: String,
+    /// The parent stopped this round with `run interrupt`.
+    pub interrupted: bool,
     pub open: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<DateTime<Utc>>,
@@ -457,6 +470,7 @@ pub fn view(manifest: &Manifest, node: Option<&Node>) -> Option<ResidentView> {
                 attempt: r.attempt,
                 reported_at: r.reported_at,
                 summary: r.summary.clone(),
+                interrupted: r.interrupted,
                 open: r.closed_at.is_none(),
                 closed_at: r.closed_at,
             }),
@@ -615,6 +629,7 @@ mod tests {
             reported_at: Utc::now(),
             event_seq: 9,
             summary: "done".into(),
+            interrupted: false,
             closed_at: None,
             closed_by: None,
         });

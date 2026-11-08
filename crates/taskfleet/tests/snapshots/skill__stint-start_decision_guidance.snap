@@ -12,7 +12,9 @@ between rounds (`run create --resident`): any message resumes it, Pi or Claude.
 When the round structure itself is the plan (prototype rounds, analysis then
 fix, a reviewer checking a fix), use one; `/worktree-spinoff` describes when
 and how under "Named support workers". The user never messages it directly;
-you land each round (`run land <name>`) and relay.
+you land each round (`run land <name>`) and relay. When a round has gone wrong
+while it runs, `run interrupt <name>` stops it and keeps the worker for the
+next message.
 
 Keep autonomous Claude profiles available. For non-Pi or headless briefs,
 pre-authorize safe defaults and require a terminal `success: false` report with

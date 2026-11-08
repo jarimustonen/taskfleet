@@ -548,6 +548,8 @@ fn resident_flags_and_round_reports_are_validated() {
     let plain_id = plain["data"]["run_id"].as_str().unwrap();
     let refused = f.fail(&["node", "round-report", plain_id, "--summary", "x", "--json"]);
     assert_eq!(refused["error"]["code"], "not_resident");
+    let not_resident = f.fail(&["run", "interrupt", plain_id, "--json"]);
+    assert_eq!(not_resident["error"]["code"], "not_resident");
     let unknown = f.fail(&["run", "show", "nobody-here", "--json"]);
     assert_eq!(unknown["error"]["code"], "invalid_run_id");
     f.ok(&["run", "cancel", plain_id, "--json"]);
@@ -767,7 +769,10 @@ fn resident_names_are_scoped_by_creator_session() {
     assert!(!ok);
     assert_eq!(ambiguous["error"]["code"], "ambiguous_run_name");
     let message = ambiguous["error"]["message"].as_str().unwrap();
-    assert!(message.contains(&a_id) && message.contains(&b_id), "{message}");
+    assert!(
+        message.contains(&a_id) && message.contains(&b_id),
+        "{message}"
+    );
     assert_eq!(ambiguous["error"]["expected"].as_array().unwrap().len(), 2);
 
     // `run list --creator-session` lists one conversation's runs.
@@ -783,14 +788,21 @@ fn resident_names_are_scoped_by_creator_session() {
         .map(|r| r["run_id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![b_id.as_str()]);
-    let (ok, unset) = run(None, &["run", "list", "--creator-session", "current", "--json"]);
+    let (ok, unset) = run(
+        None,
+        &["run", "list", "--creator-session", "current", "--json"],
+    );
     assert!(!ok);
     assert_eq!(unset["error"]["code"], "creator_session_unset");
 
     // A verb acting by name from session A touches only A's run.
     let (ok, cancelled) = run(Some(A), &["run", "cancel", "reviewer", "--json"]);
     assert!(ok, "{cancelled}");
-    assert_eq!(show(None).1["data"]["run_id"], b_id, "B's run is now unique");
+    assert_eq!(
+        show(None).1["data"]["run_id"],
+        b_id,
+        "B's run is now unique"
+    );
     let (ok, b_shown) = run(None, &["run", "show", &b_id, "--json"]);
     assert!(ok);
     assert_eq!(b_shown["data"]["status"], "pending");
@@ -804,4 +816,152 @@ fn resident_names_are_scoped_by_creator_session() {
     let (ok, dup) = create(None, "reviewer");
     assert!(!ok);
     assert_eq!(dup["error"]["code"], "resident_name_in_use");
+}
+
+/// `run interrupt` (issue `resident-interrupt-round`): the parent stops a
+/// resident's current round. Pi gets SIGTERM after the round is recorded as
+/// interrupted; the exit is a round end (waiting), the dirty worktree and the
+/// native session stay, `run wait` reports the interrupted round, and the
+/// next message resumes the same session and says the round was interrupted.
+#[test]
+fn pi_resident_interrupt_stops_the_round_and_message_resumes_it() {
+    let f = Fixture::new("pi");
+    let id = f.create("helper", &[]);
+    let first = f.argv(0);
+    let session = flag_value(&first, "--session").to_string();
+    std::fs::write(f.worktree.join("HALF-DONE"), "uncommitted").unwrap();
+
+    // Dry run plans the signal and records nothing.
+    let plan = f.ok(&["run", "interrupt", "helper", "--dry-run", "--json"]);
+    assert_eq!(plan["data"]["outcome"], "would-interrupt");
+    assert_eq!(plan["data"]["signals"], serde_json::json!(["SIGTERM"]));
+    assert_eq!(plan["data"]["worker_state"], "live");
+    assert!(!kinds(&f.events(&id)).contains(&"node.round_reported".to_string()));
+
+    let stopped = f.ok(&["run", "interrupt", "helper", "--json"]);
+    assert_eq!(stopped["data"]["outcome"], "interrupted", "{stopped}");
+    assert_eq!(stopped["data"]["signals"], serde_json::json!(["SIGTERM"]));
+    assert_eq!(stopped["data"]["round"], 1);
+    assert_eq!(stopped["data"]["harness"], "pi");
+    let node = f.node(&id);
+    assert!(node["worker_exit"].is_object(), "the told exit was awaited");
+    assert_eq!(node["resident"]["last_round"]["interrupted"], true);
+    assert!(
+        f.home
+            .path()
+            .join(".creating")
+            .join(format!("round-{id}-0.reported"))
+            .exists(),
+        "the Pi stop marker is written as for a round report"
+    );
+
+    // The signalled exit after the recorded interrupt is a round end.
+    std::thread::sleep(Duration::from_millis(1500));
+    let shown = f.show("helper");
+    assert_eq!(shown["status"], "pending");
+    assert_eq!(shown["attention_required"], false);
+    assert_eq!(shown["resident"]["round_state"], "waiting");
+    assert_eq!(shown["resident"]["last_round"]["interrupted"], true);
+    assert!(f.worktree.join("HALF-DONE").exists(), "worktree untouched");
+    let waited = f.ok(&["run", "wait", "helper", "--timeout", "10s", "--json"]);
+    let outcome = &waited["data"]["runs"][0];
+    assert_eq!(outcome["round_reported"], true);
+    assert_eq!(outcome["round_interrupted"], true);
+    let text = f
+        .cmd()
+        .args([
+            "--output",
+            "text",
+            "run",
+            "wait",
+            "helper",
+            "--timeout",
+            "10s",
+        ])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&text.stdout).contains("round_interrupted=true"));
+
+    // Interrupting again does nothing: no worker process runs.
+    let again = f.ok(&["run", "interrupt", &id, "--json"]);
+    assert_eq!(again["data"]["outcome"], "between-rounds");
+    assert_eq!(again["data"]["signals"], serde_json::json!([]));
+
+    // The next message resumes the same session and tells the worker.
+    let msg = f.ok(&[
+        "run",
+        "message",
+        "helper",
+        "stop the refactor; only fix the test",
+        "--json",
+    ]);
+    assert_eq!(msg["data"]["delivery"], "resumed");
+    assert_eq!(msg["data"]["resumed"]["attempt"], 1);
+    assert_eq!(msg["data"]["resumed"]["round"], 2);
+    assert_eq!(msg["data"]["resumed"]["rebase"]["state"], "up-to-date");
+    assert!(
+        f.worktree.join("HALF-DONE").exists(),
+        "uncommitted work survives the resume"
+    );
+    let second = f.argv(1);
+    assert_eq!(
+        flag_value(&second, "--session"),
+        session,
+        "same native session"
+    );
+    let input = second.last().unwrap();
+    assert!(input.contains("interrupted your previous round"), "{input}");
+    assert!(input.contains("only fix the test"));
+    assert_eq!(f.show(&id)["resident"]["round_state"], "working");
+
+    // A worker that reported its own round is left to stop by itself.
+    f.report_round(&id, "fixed the test");
+    let reported = f.ok(&["run", "interrupt", "helper", "--json"]);
+    assert_eq!(reported["data"]["outcome"], "round-reported");
+    assert_eq!(reported["data"]["signals"], serde_json::json!([]));
+    assert_ne!(f.node(&id)["resident"]["last_round"]["interrupted"], true);
+    f.end_attempt(1, 0);
+    f.wait_exit_recorded(&id, 1);
+    f.ok(&["run", "cancel", &id, "--json"]);
+}
+
+/// Claude: SIGINT to the verified `--print` process; the next message resumes
+/// the same Claude session with `--resume`.
+#[test]
+fn claude_resident_interrupt_uses_sigint_and_resumes_the_session() {
+    let f = Fixture::new("claude");
+    let id = f.create("reviewer", &[]);
+    let session = flag_value(&f.argv(0), "--session-id").to_string();
+
+    let stopped = f.ok(&["run", "interrupt", "reviewer", "--json"]);
+    assert_eq!(stopped["data"]["outcome"], "interrupted", "{stopped}");
+    assert_eq!(stopped["data"]["signals"], serde_json::json!(["SIGINT"]));
+    assert_eq!(stopped["data"]["harness"], "claude");
+    assert!(f.node(&id)["worker_exit"].is_object());
+
+    std::thread::sleep(Duration::from_millis(1500));
+    let shown = f.show(&id);
+    assert_eq!(
+        shown["status"], "pending",
+        "a signalled exit after the interrupt is no failure"
+    );
+    assert_eq!(shown["resident"]["round_state"], "waiting");
+    assert_eq!(shown["resident"]["last_round"]["interrupted"], true);
+
+    let msg = f.ok(&[
+        "run",
+        "message",
+        "reviewer",
+        "review only the API",
+        "--json",
+    ]);
+    assert_eq!(msg["data"]["delivery"], "resumed");
+    let second = f.argv(1);
+    assert_eq!(flag_value(&second, "--resume"), session);
+    assert!(second
+        .last()
+        .unwrap()
+        .contains("interrupted your previous round"));
+    f.ok(&["run", "cancel", &id, "--json"]);
+    f.end_attempt(1, 0);
 }

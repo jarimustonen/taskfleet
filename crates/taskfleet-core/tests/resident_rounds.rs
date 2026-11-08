@@ -242,3 +242,58 @@ fn resident_events_are_rejected_for_ordinary_runs_and_bad_payloads() {
     )
     .is_err());
 }
+
+#[test]
+fn an_interrupt_opens_a_sticky_round_and_never_amends_a_reported_one() {
+    let run = Run::new(true);
+    run.append(
+        "node.round_reported",
+        Some("n-0001"),
+        json!({"attempt": 0, "summary": "interrupted by the parent", "interrupted": true}),
+    )
+    .unwrap();
+    let open = run.node().resident.unwrap().open_round().cloned().unwrap();
+    assert!(open.interrupted);
+    assert_eq!(open.round, 1);
+    // A worker report racing the interrupt amends the summary; the round stays
+    // interrupted.
+    run.append(
+        "node.round_reported",
+        Some("n-0001"),
+        json!({"attempt": 0, "summary": "half done"}),
+    )
+    .unwrap();
+    let open = run.node().resident.unwrap().open_round().cloned().unwrap();
+    assert!(open.interrupted);
+    assert_eq!(open.summary, "half done");
+    assert_eq!(open.round, 1);
+
+    // An interrupt after the worker's own report changes nothing.
+    let run = Run::new(true);
+    run.append(
+        "node.round_reported",
+        Some("n-0001"),
+        json!({"attempt": 0, "summary": "finished"}),
+    )
+    .unwrap();
+    run.append(
+        "node.round_reported",
+        Some("n-0001"),
+        json!({"attempt": 0, "summary": "interrupted", "interrupted": true}),
+    )
+    .unwrap();
+    let state = run.node().resident.unwrap();
+    let open = state.open_round().unwrap();
+    assert!(!open.interrupted);
+    assert_eq!(open.summary, "finished");
+    assert_eq!(state.rounds_reported, 1);
+
+    // A non-boolean flag is a corrupt event.
+    assert!(run
+        .append(
+            "node.round_reported",
+            Some("n-0001"),
+            json!({"attempt": 0, "summary": "x", "interrupted": "yes"}),
+        )
+        .is_err());
+}

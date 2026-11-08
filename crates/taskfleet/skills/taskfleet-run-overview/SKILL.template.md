@@ -271,7 +271,10 @@ short grace. A named resident run also settles, at once, when its worker
 reports a round: `round_reported: true` and the round summary in
 `resident.last_round`. That is not an error and never trips
 `--fail-on-error`; land the round (`run land <name>`) and send the next
-message (`run message <name>`), or finish it with `run merge`. A settled run can therefore still be `pending` or `running`; that
+message (`run message <name>`), or finish it with `run merge`. A round the
+parent stopped with `run interrupt` settles the same way with
+`round_interrupted: true` as well (`resident.last_round.interrupted`): the
+worker did not finish it, so send the next message before landing. A settled run can therefore still be `pending` or `running`; that
 is the wait telling you it needs a hand, not a defect. `--any` returns on the
 first settled run; `--all` (the default) waits for every one.
 

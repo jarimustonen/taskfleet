@@ -141,6 +141,7 @@ exception to "one unit, then merge": its worker ends each round with
 `node round-report`, its process exits while the worktree, branch, and native
 session stay, and `run message <name>` resumes the same session after rebasing
 onto the source. `run land <name>` merges a round without ending the run;
+`run interrupt <name>` stops the current round and keeps the worker;
 `run show` exposes `resident.round_state` (`working`, `waiting`, `dormant`).
 `worktree-spinoff` covers when to use one ("Named support workers").
 

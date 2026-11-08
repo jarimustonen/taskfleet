@@ -168,6 +168,23 @@ The person never messages a worker directly. They talk to you, and you relay.
    same Pi or Claude session.
 3. Wait again.
 
+Interrupting a round is your tool, the way Esc is for your own turn. Use it
+when the round has become wrong while it runs: the user changed their mind or
+answered the question the worker is working around, the worker is visibly
+heading down a path you already know is rejected, or the round would take far
+longer than its result is worth. Do not interrupt a round just because it is
+slow; long rounds are normal, and the round report is a better result than a
+half-finished tree. `taskfleet run interrupt <name> --output json` records the
+round as interrupted, stops the worker's process (Claude and Pi alike) and
+waits for it to exit; the worktree, branch, uncommitted changes and native
+session stay. `run wait <name>` then reports `round_interrupted: true`, and
+`resident.last_round.interrupted` is `true` on `run show`. Then message it
+with the new instruction, saying what to keep and what to drop from the
+interrupted work; Taskfleet tells the worker its round was interrupted. Land
+only after a round the worker itself reported, since an interrupted round's
+commits may be half-finished. `outcome: round-reported` means the worker had
+already ended its round on its own; read its report instead.
+
 Stop it when the line of work is done, when the next step needs another
 profile, when its context is near full (ask it for a final `result.md`, then
 continue with a fresh worker), or when it would otherwise idle for days.

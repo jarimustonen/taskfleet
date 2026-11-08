@@ -185,10 +185,17 @@ fn conflicted_files(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn message_input(run_id: &str, round: u32, rebase: &str, text: &str) -> String {
+fn message_input(run_id: &str, round: u32, rebase: &str, interrupted: bool, text: &str) -> String {
+    let interrupted = if interrupted {
+        "The parent agent interrupted your previous round (`taskfleet run interrupt`) before you \
+         reported it, stopping your process mid-turn. Anything you had not committed is still in \
+         the worktree (`git status`); the message below says how to continue.\n\n"
+    } else {
+        ""
+    };
     format!(
         "# Taskfleet round {round}: message relayed by the parent agent\n\n\
-         {rebase}\n\n\
+         {interrupted}{rebase}\n\n\
          End this round as before: commit the result, run \
          `taskfleet node round-report {run_id} --summary-file <file>`, and stop.\n\n\
          ---\n\n{text}\n"
@@ -328,10 +335,16 @@ pub(crate) fn resume(
         .as_deref()
         .map_or(0, |s| s.rounds_reported)
         .saturating_add(1);
+    let interrupted = node
+        .resident
+        .as_deref()
+        .and_then(taskfleet_core::ResidentState::open_round)
+        .is_some_and(|r| r.interrupted);
     let input = message_input(
         paths.run_id.as_str(),
         round,
         &rebase.preamble(&source),
+        interrupted,
         text,
     );
     let attempt = node.retry_attempts.saturating_add(1);

@@ -3,13 +3,15 @@ created: 2026-11-08
 updated: 2026-11-08
 type: improvement
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: open-habitat helpers-across-conversations
 source_ref: taskfleet:01m6y4rex13ekh2vp7pyr61g0x/open-habitat:helpers-across-conversations
 originating_run: 01m6y4rex13ekh2vp7pyr61g0x
 originating_run_kind: spinoff
+lane: resident
+lane_seq: 1
 ---
 
 # Scope resident names by creator session, not only by repository

@@ -5,6 +5,8 @@ type: feature
 reporter: jari
 status: open
 priority: normal
+lane: resident
+lane_seq: 2
 ---
 
 # Interrupt a resident worker's current round without ending the run
@@ -26,6 +28,9 @@ to its recorded process; record an interrupted round (open round report
 `interrupted: true`, no merge), uncommitted changes stay in the worktree,
 `run wait` settles as an interrupted round, `run message` resumes. Fenced to
 the recorded worker identity like salvage.
+
+Decision (Jari 8.11.): the interrupt is the main agent's tool, not a
+person's button in Open Habitat; Habitat only teaches its agent the command.
 
 ## Acceptance Criteria
 
